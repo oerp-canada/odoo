@@ -4,7 +4,7 @@
 from odoo import api, fields, models
 
 
-class PeopleRole(models.Model):
+class CrmIapLeadRole(models.Model):
     """ CRM Reveal People Roles for People """
     _name = 'crm.iap.lead.role'
     _description = 'People Role'
@@ -13,27 +13,11 @@ class PeopleRole(models.Model):
     reveal_id = fields.Char(required=True)
     color = fields.Integer(string='Color Index')
 
-    _sql_constraints = [
-        ('name_uniq', 'unique (name)', 'Role name already exists!'),
-    ]
+    _name_uniq = models.Constraint(
+        'unique (name)',
+        'Role name already exists!',
+    )
 
     def _compute_display_name(self):
         for role in self:
-            role.display_name = role.name.replace('_', ' ').title()
-
-
-class PeopleSeniority(models.Model):
-    """ Seniority for People Rules """
-    _name = 'crm.iap.lead.seniority'
-    _description = 'People Seniority'
-
-    name = fields.Char(string='Name', required=True, translate=True)
-    reveal_id = fields.Char(required=True)
-
-    _sql_constraints = [
-        ('name_uniq', 'unique (name)', 'Name already exists!'),
-    ]
-
-    def _compute_display_name(self):
-        for seniority in self:
-            seniority.display_name = seniority.name.replace('_', ' ').title()
+            role.display_name = (role.name or '').replace('_', ' ').title()

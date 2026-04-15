@@ -1,75 +1,145 @@
-# -*- coding: utf-8 -*-
-# Part of Odoo. See LICENSE file for full copyright and licensing details.
-
-from base64 import b64encode
-
-from odoo import api, fields, models, _
-from odoo.addons.account_edi_proxy_client.models.account_edi_proxy_user import AccountEdiProxyError
-from odoo.exceptions import UserError, ValidationError
+from odoo import _, api, fields, models
 
 
 class ResConfigSettings(models.TransientModel):
     _inherit = 'res.config.settings'
 
+    account_peppol_edi_user = fields.Many2one(related='company_id.account_peppol_edi_user')
+    account_peppol_edi_mode = fields.Selection(related='account_peppol_edi_user.edi_mode')
+    account_peppol_contact_email = fields.Char(
+        compute='_compute_account_peppol_contact_email',
+        inverse='_inverse_account_peppol_contact_email',
+    )
+
     account_peppol_eas = fields.Selection(related='company_id.peppol_eas', readonly=False)
+    account_peppol_edi_identification = fields.Char(related='account_peppol_edi_user.edi_identification')
     account_peppol_endpoint = fields.Char(related='company_id.peppol_endpoint', readonly=False)
-    account_peppol_proxy_state = fields.Selection(related='company_id.account_peppol_proxy_state')
+    account_peppol_migration_key = fields.Char(related='company_id.account_peppol_migration_key', readonly=False)
+    account_peppol_phone_number = fields.Char(related='company_id.account_peppol_phone_number', readonly=False)
+    account_peppol_proxy_state = fields.Selection(related='company_id.account_peppol_proxy_state', readonly=False)
     account_peppol_purchase_journal_id = fields.Many2one(related='company_id.peppol_purchase_journal_id', readonly=False)
-    account_peppol_attachment_ids = fields.Many2many(
-        comodel_name='ir.attachment',
-        string='Peppol Identification Documents',
-        related='company_id.account_peppol_attachment_ids', readonly=False,
-    )
-    is_account_peppol_eligible = fields.Boolean(
-        string='PEPPOL eligible',
-        compute='_compute_is_account_peppol_eligible',
-    ) # technical field used for showing the Peppol settings conditionally
-    is_account_peppol_participant = fields.Boolean(
-        string='Use PEPPOL',
-        related='company_id.is_account_peppol_participant', readonly=False,
-        help='Register as a PEPPOL user',
+    peppol_external_provider = fields.Char(related='company_id.peppol_external_provider', readonly=False)
+    peppol_use_parent_company = fields.Boolean(compute='_compute_peppol_use_parent_company')
+    peppol_parent_company_name = fields.Char(compute='_compute_peppol_use_parent_company')
+    account_is_token_out_of_sync = fields.Boolean(related='account_peppol_edi_user.is_token_out_of_sync', readonly=False)
+    peppol_participation_role = fields.Selection(
+        selection=[
+            ('sending_and_receiving', 'Sending & Receiving'),
+            ('sending_only', 'Sending Only'),
+        ],
+        compute='_compute_peppol_participation_role',
+        inverse='_inverse_peppol_participation_role',
     )
 
-    @api.depends("company_id.country_id")
-    def _compute_is_account_peppol_eligible(self):
-        # we want to show Peppol settings only to BE and LU customers at first
-        # but keeping an option to see them for testing purposes using a config param
-        for config in self:
-            peppol_param = config.env['ir.config_parameter'].sudo().get_param(
-                'account_peppol.edi.mode', False
+    # -------------------------------------------------------------------------
+    # COMPUTE METHODS
+    # -------------------------------------------------------------------------
+
+    @api.depends('company_id.peppol_parent_company_id')
+    def _compute_peppol_use_parent_company(self):
+        for setting in self:
+            setting.peppol_use_parent_company = (
+                setting.company_id != setting.company_id.peppol_parent_company_id
+                and setting.company_id.peppol_can_send
+                and setting.company_id.peppol_parent_company_id.peppol_can_send
             )
-            config.is_account_peppol_eligible = config.company_id.country_id.code in {'BE', 'LU'} \
-                or peppol_param == 'test'
+            if setting.peppol_use_parent_company:
+                setting.peppol_parent_company_name = setting.company_id.peppol_parent_company_id.name
+            else:
+                setting.peppol_parent_company_name = None
 
-    def button_create_peppol_proxy_user(self):
-        self.ensure_one()
+    @api.depends('account_peppol_proxy_state')
+    def _compute_peppol_participation_role(self):
+        for record in self:
+            state = record.company_id.account_peppol_proxy_state
+            if state == 'sender':
+                record.peppol_participation_role = 'sending_only'
+            elif state in ('smp_registration', 'receiver'):
+                record.peppol_participation_role = 'sending_and_receiving'
+            else:
+                record.peppol_participation_role = False
 
-        if self.account_peppol_proxy_state != 'not_registered':
-            raise UserError(
-                _('Cannot register a user with a %s application', self.account_peppol_proxy_state))
+    def _inverse_peppol_participation_role(self):
+        for record in self:
+            if record.account_peppol_edi_user:
+                if record.peppol_participation_role == 'sending_only' and record.account_peppol_proxy_state != 'sender':
+                    # Reset the participant back to sender and unregister it from the SMP
+                    record.account_peppol_edi_user._peppol_deregister_participant_to_sender()
+                elif record.peppol_participation_role == 'sending_and_receiving' and record.account_peppol_proxy_state not in ('smp_registration', 'receiver'):
+                    # Set the participant to sender as well as register it on the SMP
+                    record.account_peppol_edi_user._peppol_register_sender_as_receiver()
+                    record.account_peppol_edi_user._peppol_get_participant_status()
 
-        if not self.company_id.account_peppol_attachment_ids:
-            raise ValidationError(
-                _('Please upload a document that would help verifying your application'))
-        edi_proxy_client = self.env['account_edi_proxy_client.user']
-        edi_identification = edi_proxy_client._get_proxy_identification(self.company_id)
-        edi_user = edi_proxy_client.sudo()._register_proxy_user(
-            self.company_id, 'peppol', 'prod', edi_identification)
+    @api.depends('company_id.account_peppol_contact_email')
+    def _compute_account_peppol_contact_email(self):
+        for record in self:
+            record.account_peppol_contact_email = record.company_id.account_peppol_contact_email
 
-        params = {'documents': []}
-        for attachment in self.company_id.account_peppol_attachment_ids:
-            params['documents'].append((attachment.name, b64encode(attachment.raw).decode()))
+    def _inverse_account_peppol_contact_email(self):
+        for record in self:
+            company = record.company_id
+            if record.account_peppol_contact_email == company.account_peppol_contact_email:
+                continue
 
-        try:
-            response = edi_user._make_request(
-                f"{edi_user._get_server_url()}/api/peppol/1/activate_participant",
+            # Update company field
+            company.account_peppol_contact_email = record.account_peppol_contact_email
+
+            # No Peppol user yet: keep new value but skip proxy sync.
+            if not record.account_peppol_edi_user:
+                continue
+
+            # Sync with IAP (Peppol proxy)
+            params = {
+                'update_data': {
+                    'peppol_contact_email': record.account_peppol_contact_email,
+                }
+            }
+            record.account_peppol_edi_user._call_peppol_proxy(
+                endpoint='/api/peppol/1/update_user',
                 params=params,
             )
-        except AccountEdiProxyError as e:
-            raise UserError(e.message)
-        if 'error' in response:
-            raise UserError(response['error'])
 
-        self.company_id.account_peppol_proxy_state = 'pending'
-        # we don't need to store the attachments once they've been sent to the proxy
-        self.company_id.account_peppol_attachment_ids.unlink()
+    # -------------------------------------------------------------------------
+    # BUSINESS ACTIONS
+    # -------------------------------------------------------------------------
+
+    def action_open_peppol_form(self):
+        registration_wizard = self.env['peppol.registration'].create({'company_id': self.company_id.id})
+        registration_action = registration_wizard._action_open_peppol_form(reopen=False)
+        return registration_action
+
+    def button_peppol_disconnect_branch_from_parent(self):
+        self.ensure_one()
+        previous_parent_company_name = self.company_id.peppol_parent_company_id.name
+        self.account_peppol_edi_user._peppol_deregister_participant()
+        return {
+            'type': 'ir.actions.client',
+            'tag': 'display_notification',
+            'params': {
+                'title': None,
+                'type': 'success',
+                'message': _("Disconnected this branch company peppol configuration from %s.", previous_parent_company_name),
+                'next': {'type': 'ir.actions.act_window_close'},
+            }
+        }
+
+    def button_reconnect_this_database(self):
+        """Re-establish an out-of-sync connection"""
+        self.ensure_one()
+        self.account_peppol_edi_user._peppol_out_of_sync_reconnect_this_database()
+
+    def button_disconnect_this_database(self):
+        """Disconnect the current database from the Peppol network.
+        This does not delete or affect the IAP connection, which will remain intact.
+        So don't use this to deregister the participant/connection.
+        """
+        self.ensure_one()
+        self.account_peppol_edi_user._peppol_out_of_sync_disconnect_this_database()
+
+    def button_peppol_deregister(self):
+        """Unregister the user from Peppol network."""
+        self.ensure_one()
+
+        if self.account_peppol_edi_user:
+            self.account_peppol_edi_user._peppol_deregister_participant()
+        return True

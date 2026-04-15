@@ -1,40 +1,15 @@
-# -*- coding: utf-8 -*-
 # Part of Odoo. See LICENSE file for full copyright and licensing details.
-
-import json
 import logging
 import re
-
 from ast import literal_eval
-from lxml import etree
 
 from odoo import api, models, _
 from odoo.exceptions import AccessError, RedirectWarning, UserError
-from odoo.tools import ustr
 
 _logger = logging.getLogger(__name__)
 
 
-class ResConfigModuleInstallationMixin(object):
-    __slots__ = ()
-
-    @api.model
-    def _install_modules(self, modules):
-        """ Install the requested modules.
-
-        :param modules: a recordset of ir.module.module records
-        :return: the next action to execute
-        """
-        result = None
-
-        to_install_modules = modules.filtered(lambda module: module.state == 'uninstalled')
-        if to_install_modules:
-            result = to_install_modules.button_immediate_install()
-
-        return result
-
-
-class ResConfigConfigurable(models.TransientModel):
+class ResConfig(models.TransientModel):
     ''' Base classes for new-style configuration items
 
     Configuration items should inherit from this class, implement
@@ -120,214 +95,14 @@ class ResConfigConfigurable(models.TransientModel):
         return self.cancel() or self.next()
 
 
-class ResConfigInstaller(models.TransientModel, ResConfigModuleInstallationMixin):
-    """ New-style configuration base specialized for addons selection
-    and installation.
-
-    Basic usage
-    -----------
-
-    Subclasses can simply define a number of boolean fields. The field names
-    should be the names of the addons to install (when selected). Upon action
-    execution, selected boolean fields (and those only) will be interpreted as
-    addons to install, and batch-installed.
-
-    Additional addons
-    -----------------
-
-    It is also possible to require the installation of an additional
-    addon set when a specific preset of addons has been marked for
-    installation (in the basic usage only, additionals can't depend on
-    one another).
-
-    These additionals are defined through the ``_install_if``
-    property. This property is a mapping of a collection of addons (by
-    name) to a collection of addons (by name) [#]_, and if all the *key*
-    addons are selected for installation, then the *value* ones will
-    be selected as well. For example::
-
-        _install_if = {
-            ('sale','crm'): ['sale_crm'],
-        }
-
-    This will install the ``sale_crm`` addon if and only if both the
-    ``sale`` and ``crm`` addons are selected for installation.
-
-    You can define as many additionals as you wish, and additionals
-    can overlap in key and value. For instance::
-
-        _install_if = {
-            ('sale','crm'): ['sale_crm'],
-            ('sale','project'): ['sale_service'],
-        }
-
-    will install both ``sale_crm`` and ``sale_service`` if all of
-    ``sale``, ``crm`` and ``project`` are selected for installation.
-
-    Hook methods
-    ------------
-
-    Subclasses might also need to express dependencies more complex
-    than that provided by additionals. In this case, it's possible to
-    define methods of the form ``_if_%(name)s`` where ``name`` is the
-    name of a boolean field. If the field is selected, then the
-    corresponding module will be marked for installation *and* the
-    hook method will be executed.
-
-    Hook methods take the usual set of parameters (cr, uid, ids,
-    context) and can return a collection of additional addons to
-    install (if they return anything, otherwise they should not return
-    anything, though returning any "falsy" value such as None or an
-    empty collection will have the same effect).
-
-    Complete control
-    ----------------
-
-    The last hook is to simply overload the ``modules_to_install``
-    method, which implements all the mechanisms above. This method
-    takes the usual set of parameters (cr, uid, ids, context) and
-    returns a ``set`` of addons to install (addons selected by the
-    above methods minus addons from the *basic* set which are already
-    installed) [#]_ so an overloader can simply manipulate the ``set``
-    returned by ``ResConfigInstaller.modules_to_install`` to add or
-    remove addons.
-
-    Skipping the installer
-    ----------------------
-
-    Unless it is removed from the view, installers have a *skip*
-    button which invokes ``action_skip`` (and the ``cancel`` hook from
-    ``res.config``). Hooks and additionals *are not run* when skipping
-    installation, even for already installed addons.
-
-    Again, setup your hooks accordingly.
-
-    .. [#] note that since a mapping key needs to be hashable, it's
-           possible to use a tuple or a frozenset, but not a list or a
-           regular set
-
-    .. [#] because the already-installed modules are only pruned at
-           the very end of ``modules_to_install``, additionals and
-           hooks depending on them *are guaranteed to execute*. Setup
-           your hooks accordingly.
-    """
-    _name = 'res.config.installer'
-    _inherit = 'res.config'
-    _description = 'Config Installer'
-
-    _install_if = {}
-
-    def already_installed(self):
-        """ For each module, check if it's already installed and if it
-        is return its name
-
-        :returns: a list of the already installed modules in this
-                  installer
-        :rtype: [str]
-        """
-        return [m.name for m in self._already_installed()]
-
-    def _already_installed(self):
-        """ For each module (boolean fields in a res.config.installer),
-        check if it's already installed (either 'to install', 'to upgrade'
-        or 'installed') and if it is return the module's record
-
-        :returns: a list of all installed modules in this installer
-        :rtype: recordset (collection of Record)
-        """
-        selectable = [name for name, field in self._fields.items()
-                      if field.type == 'boolean']
-        return self.env['ir.module.module'].search([('name', 'in', selectable),
-                            ('state', 'in', ['to install', 'installed', 'to upgrade'])])
-
-    def modules_to_install(self):
-        """ selects all modules to install:
-
-        * checked boolean fields
-        * return values of hook methods. Hook methods are of the form
-          ``_if_%(addon_name)s``, and are called if the corresponding
-          addon is marked for installation. They take the arguments
-          cr, uid, ids and context, and return an iterable of addon
-          names
-        * additionals, additionals are setup through the ``_install_if``
-          class variable. ``_install_if`` is a dict of {iterable:iterable}
-          where key and value are iterables of addon names.
-
-          If all the addons in the key are selected for installation
-          (warning: addons added through hooks don't count), then the
-          addons in the value are added to the set of modules to install
-        * not already installed
-        """
-        base = set(module_name
-                   for installer in self.read()
-                   for module_name, to_install in installer.items()
-                   if self._fields[module_name].type == 'boolean' and to_install)
-
-        hooks_results = set()
-        for module in base:
-            hook = getattr(self, '_if_%s'% module, None)
-            if hook:
-                hooks_results.update(hook() or set())
-
-        additionals = set(module
-                          for requirements, consequences in self._install_if.items()
-                          if base.issuperset(requirements)
-                          for module in consequences)
-
-        return (base | hooks_results | additionals) - set(self.already_installed())
-
-    @api.model
-    def default_get(self, fields_list):
-        ''' If an addon is already installed, check it by default
-        '''
-        defaults = super(ResConfigInstaller, self).default_get(fields_list)
-        return dict(defaults, **dict.fromkeys(self.already_installed(), True))
-
-    @api.model
-    def fields_get(self, allfields=None, attributes=None):
-        """ If an addon is already installed, set it to readonly as
-        res.config.installer doesn't handle uninstallations of already
-        installed addons
-        """
-        fields = super().fields_get(allfields=allfields, attributes=attributes)
-
-        for name in self.already_installed():
-            if name not in fields:
-                continue
-            fields[name].update(
-                readonly=True,
-                help= ustr(fields[name].get('help', '')) +
-                     _('\n\nThis addon is already installed on your system'))
-        return fields
-
-    def execute(self):
-        to_install = list(self.modules_to_install())
-        _logger.info('Selecting addons %s to install', to_install)
-
-        IrModule = self.env['ir.module.module']
-        modules = IrModule.search([('name', 'in', to_install)])
-        module_names = {module.name for module in modules}
-        to_install_missing_names = [name for name in to_install if name not in module_names]
-
-        result = self._install_modules(modules)
-        #FIXME: if result is not none, the corresponding todo will be skipped because it was just marked done
-        if to_install_missing_names:
-            return {
-                'type': 'ir.actions.client',
-                'tag': 'apps',
-                'params': {'modules': to_install_missing_names},
-            }
-        return result
-
-
-class ResConfigSettings(models.TransientModel, ResConfigModuleInstallationMixin):
+class ResConfigSettings(models.TransientModel):
     """ Base configuration wizard for application settings.  It provides support for setting
         default values, assigning groups to employee users, and installing modules.
         To make such a 'settings' wizard, define a model like::
 
             class MyConfigWizard(models.TransientModel):
                 _name = 'my.settings'
-                _inherit = 'res.config.settings'
+                _inherit = ['res.config.settings']
 
                 default_foo = fields.type(..., default_model='my.model'),
                 group_bar = fields.Boolean(..., group='base.group_user', implied_group='my.group'),
@@ -383,33 +158,26 @@ class ResConfigSettings(models.TransientModel, ResConfigModuleInstallationMixin)
     def copy(self, default=None):
         raise UserError(_("Cannot duplicate configuration!"))
 
-    def onchange_module(self, field_value, module_name):
-        module_sudo = self.env['ir.module.module']._get(module_name[7:])
-        if not int(field_value) and module_sudo.state in ('to install', 'installed', 'to upgrade'):
-            deps = module_sudo.downstream_dependencies()
-            dep_names = (deps | module_sudo).mapped('shortdesc')
-            message = '\n'.join(dep_names)
-            return {
-                'warning': {
-                    'title': _('Warning!'),
-                    'message': _('Disabling this option will also uninstall the following modules \n%s', message),
-                }
-            }
-        return {}
+    @api.model
+    def _install_modules(self, modules):
+        """ Install the requested modules.
 
-    def _register_hook(self):
-        """ Add an onchange method for each module field. """
-        def make_method(name):
-            return lambda self: self.onchange_module(self[name], name)
+        :param modules: a recordset of ir.module.module records
+        :return: the next action to execute
+        """
+        result = None
 
-        for name in self._fields:
-            if name.startswith('module_'):
-                method = make_method(name)
-                self._onchange_methods[name].append(method)
+        to_install_modules = modules.filtered(lambda module: module.state == 'uninstalled')
+        if to_install_modules:
+            result = to_install_modules.button_immediate_install()
+
+        return result
 
     @api.model
     def _get_classified_fields(self, fnames=None):
-        """ return a dictionary with the fields classified by category::
+        """ return a dictionary with the fields classified by category:
+
+            .. code-block:: python
 
                 {   'default': [('default_foo', 'model', 'foo'), ...],
                     'group':   [('group_bar', [browse_group], browse_implied_group), ...],
@@ -443,7 +211,7 @@ class ResConfigSettings(models.TransientModel, ResConfigModuleInstallationMixin)
                 if not hasattr(field, 'implied_group'):
                     raise Exception("Field %s without attribute 'implied_group'" % field)
                 field_group_xmlids = getattr(field, 'group', 'base.group_user').split(',')
-                field_groups = Groups.concat(*(ref(it) for it in field_group_xmlids))
+                field_groups = Groups.concat(ref(it) for it in field_group_xmlids)
                 groups.append((name, field_groups, ref(field.implied_group)))
             elif name.startswith('module_'):
                 if field.type not in ('boolean', 'selection'):
@@ -458,6 +226,7 @@ class ResConfigSettings(models.TransientModel, ResConfigModuleInstallationMixin)
 
         return {'default': defaults, 'group': groups, 'module': modules, 'config': configs, 'other': others}
 
+    @api.model
     def get_values(self):
         """
         Return values for the fields other that `default`, `group` and `module`
@@ -482,7 +251,7 @@ class ResConfigSettings(models.TransientModel, ResConfigModuleInstallationMixin)
 
         # groups: which groups are implied by the group Employee
         for name, groups, implied_group in classified['group']:
-            res[name] = all(implied_group in group.implied_ids for group in groups)
+            res[name] = all(implied_group in group.all_implied_ids for group in groups)
             if self._fields[name].type == 'selection':
                 res[name] = str(int(res[name]))     # True, False -> '1', '0'
 
@@ -491,33 +260,26 @@ class ResConfigSettings(models.TransientModel, ResConfigModuleInstallationMixin)
             res[f'module_{module.name}'] = module.state in ('installed', 'to install', 'to upgrade')
 
         # config: get & convert stored ir.config_parameter (or default)
-        WARNING_MESSAGE = "Error when converting value %r of field %s for ir.config.parameter %r"
         for name, icp in classified['config']:
             field = self._fields[name]
-            value = IrConfigParameter.get_param(icp, field.default(self) if field.default else False)
-            if value is not False:
-                if field.type == 'many2one':
-                    try:
-                        # Special case when value is the id of a deleted record, we do not want to
-                        # block the settings screen
-                        value = self.env[field.comodel_name].browse(int(value)).exists().id
-                    except (ValueError, TypeError):
-                        _logger.warning(WARNING_MESSAGE, value, field, icp)
-                        value = False
-                elif field.type == 'integer':
-                    try:
-                        value = int(value)
-                    except (ValueError, TypeError):
-                        _logger.warning(WARNING_MESSAGE, value, field, icp)
-                        value = 0
-                elif field.type == 'float':
-                    try:
-                        value = float(value)
-                    except (ValueError, TypeError):
-                        _logger.warning(WARNING_MESSAGE, value, field, icp)
-                        value = 0.0
-                elif field.type == 'boolean':
-                    value = bool(value)
+            match field.type:
+                case 'char' | 'datetime' | 'selection':
+                    value = IrConfigParameter.get_str(icp, field.default(self) if field.default else False)
+                case 'integer':
+                    value = IrConfigParameter.get_int(icp, field.default(self) if field.default else 0)
+                case 'many2one':
+                    value = IrConfigParameter.get_int(icp, field.default(self) if field.default else 0)
+                    if isinstance(value, models.BaseModel):
+                        value = value.id
+                    # Special case when value is the id of a deleted record, we do not want to
+                    # block the settings screen
+                    value = self.env[field.comodel_name].browse(value).exists().id
+                case 'float':
+                    value = IrConfigParameter.get_float(icp, field.default(self) if field.default else 0.0)
+                case 'boolean':
+                    value = IrConfigParameter.get_bool(icp, field.default(self) if field.default else False)
+                case _:
+                    raise ValueError(f"Invalid field type: {field.type}")
             res[name] = value
 
         res.update(self.get_values())
@@ -561,21 +323,25 @@ class ResConfigSettings(models.TransientModel, ResConfigModuleInstallationMixin)
         for name, icp in classified['config']:
             field = self._fields[name]
             value = self[name]
-            current_value = IrConfigParameter.get_param(icp)
 
-            if field.type == 'char':
-                # storing developer keys as ir.config_parameter may lead to nasty
-                # bugs when users leave spaces around them
-                value = (value or "").strip() or False
-            elif field.type in ('integer', 'float'):
-                value = repr(value) if value else False
-            elif field.type == 'many2one':
-                # value is a (possibly empty) recordset
-                value = value.id
-
-            if current_value == str(value) or current_value == value:
-                continue
-            IrConfigParameter.set_param(icp, value)
+            match field.type:
+                case 'char' | 'datetime' | 'selection':
+                    # logically set the config as undefined when the value is False
+                    # storing developer keys as ir.config_parameter may lead to nasty
+                    # bugs when users leave spaces around them
+                    value = None if value is False else str(value).strip()
+                    IrConfigParameter.set_str(icp, value)
+                case 'integer':
+                    IrConfigParameter.set_int(icp, value)
+                case 'many2one':
+                    value = value.id or None
+                    IrConfigParameter.set_int(icp, value)
+                case 'float':
+                    IrConfigParameter.set_float(icp, value)
+                case 'boolean':
+                    IrConfigParameter.set_bool(icp, value)
+                case _:
+                    raise ValueError(f"Invalid field type: {field.type}")
 
     def execute(self):
         """
@@ -611,15 +377,23 @@ class ResConfigSettings(models.TransientModel, ResConfigModuleInstallationMixin)
             self.env.flush_all()
 
         if to_uninstall:
-            to_uninstall.button_immediate_uninstall()
+            return {
+                'type': 'ir.actions.act_window',
+                'target': 'new',
+                'name': _('Uninstall modules'),
+                'view_mode': 'form',
+                'res_model': 'base.module.uninstall',
+                'context': {
+                    'default_module_ids': to_uninstall.ids,
+                },
+            }
 
         installation_status = self._install_modules(to_install)
 
         if installation_status or to_uninstall:
             # After the uninstall/install calls, the registry and environments
             # are no longer valid. So we reset the environment.
-            self.env.reset()
-            self = self.env()[self._name]
+            self.env.transaction.reset()
 
         # pylint: disable=next-method-called
         config = self.env['res.config'].next() or {}
@@ -652,9 +426,10 @@ class ResConfigSettings(models.TransientModel, ResConfigModuleInstallationMixin)
 
         :param string menu_xml_id: the xml id of the menuitem where the view is located,
             structured as follows: module_name.menuitem_xml_id (e.g.: "sales_team.menu_sale_config")
-        :return tuple:
-            - t[0]: string: full path to the menuitem (e.g.: "Settings/Configuration/Sales")
-            - t[1]: int or long: id of the menuitem's action
+        :return: a 2-value tuple where
+
+          - t[0]: string: full path to the menuitem (e.g.: "Settings/Configuration/Sales")
+          - t[1]: int or long: id of the menuitem's action
         """
         ir_ui_menu = self.env.ref(menu_xml_id)
         return (ir_ui_menu.complete_name, ir_ui_menu.action.id)
@@ -666,7 +441,8 @@ class ResConfigSettings(models.TransientModel, ResConfigModuleInstallationMixin)
 
         :param string full_field_name: the full name of the field, structured as follows:
             model_name.field_name (e.g.: "sale.config.settings.fetchmail_lead")
-        :return string: human readable name of the field (e.g.: "Create leads from incoming mails")
+        :return: human readable name of the field (e.g.: "Create leads from incoming mails")
+        :rtype: str
         """
         model_name, field_name = full_field_name.rsplit('.', 1)
         return self.env[model_name].fields_get([field_name])[field_name]['string']
@@ -674,31 +450,51 @@ class ResConfigSettings(models.TransientModel, ResConfigModuleInstallationMixin)
     @api.model
     def get_config_warning(self, msg):
         """
-        Helper: return a Warning exception with the given message where the %(field:xxx)s
-        and/or %(menu:yyy)s are replaced by the human readable field's name and/or menuitem's
-        full path.
+        Helper: return a Warning exception with the given message where the ``%(field:xxx)s``
+        and/or ``%(menu:yyy)s`` are replaced by the human readable field's name and/or
+        menuitem's full path.
 
         Usage:
         ------
-        Just include in your error message %(field:model_name.field_name)s to obtain the human
-        readable field's name, and/or %(menu:module_name.menuitem_xml_id)s to obtain the menuitem's
-        full path.
+        Just include in your error message ``%(field:model_name.field_name)s`` to obtain the
+        human readable field's name, and/or %(menu:module_name.menuitem_xml_id)s to obtain the
+        menuitem's full path.
 
         Example of use:
         ---------------
-        from odoo.addons.base.models.res_config import get_warning_config
-        raise get_warning_config(cr, _("Error: this action is prohibited. You should check the field %(field:sale.config.settings.fetchmail_lead)s in %(menu:sales_team.menu_sale_config)s."), context=context)
+
+        .. code-block:: python
+
+            raise env['ir..config.settings'](_(
+                "Error: this action is prohibited. You should check the "
+                "field %(field:sale.config.settings.fetchmail_lead)s in "
+                "%(menu:sales_team.menu_sale_config)s."))
 
         This will return an exception containing the following message:
-            Error: this action is prohibited. You should check the field Create leads from incoming mails in Settings/Configuration/Sales.
+
+            Error: this action is prohibited. You should check the field Create
+            leads from incoming mails in Settings/Configuration/Sales.
 
         What if there is another substitution in the message already?
         -------------------------------------------------------------
-        You could have a situation where the error message you want to upgrade already contains a substitution. Example:
-            Cannot find any account journal of %s type for this company.\n\nYou can create one in the menu: \nConfiguration\Journals\Journals.
-        What you want to do here is simply to replace the path by %menu:account.menu_account_config)s, and leave the rest alone.
-        In order to do that, you can use the double percent (%%) to escape your new substitution, like so:
-            Cannot find any account journal of %s type for this company.\n\nYou can create one in the %%(menu:account.menu_account_config)s.
+        You could have a situation where the error message you want to upgrade already contains
+        a substitution.
+
+        Example:
+
+            Cannot find any account journal of %s type for this company.
+
+            You can create one in the menu:
+            Configuration/Journals/Journals.
+
+        What you want to do here is simply to replace the path by
+        ``%menu:account.menu_account_config)s``, and leave the rest alone.
+        In order to do that, you can use the double percent (``%%``) to escape your new
+        substitution, like so:
+
+            Cannot find any account journal of %s type for this company.
+
+            You can create one in the %%(menu:account.menu_account_config)s.
         """
         self = self.sudo()
 
@@ -744,7 +540,7 @@ class ResConfigSettings(models.TransientModel, ResConfigModuleInstallationMixin)
                 old_value = field0.convert_to_record(
                     field0.convert_to_cache(vals[fname0], self), self)
                 for fname in fnames:
-                    old_value = next(iter(old_value), old_value)[fname]
+                    old_value = old_value[:1][fname]
 
                 # determine the new value
                 new_value = field.convert_to_record(
@@ -758,7 +554,7 @@ class ResConfigSettings(models.TransientModel, ResConfigModuleInstallationMixin)
 
     def action_open_template_user(self):
         action = self.env["ir.actions.actions"]._for_xml_id("base.action_res_users")
-        template_user_id = literal_eval(self.env['ir.config_parameter'].sudo().get_param('base.template_portal_user_id', 'False'))
+        template_user_id = self.env['ir.config_parameter'].sudo().get_int('base.template_portal_user_id')
         template_user = self.env['res.users'].browse(template_user_id)
         if not template_user.exists():
             raise UserError(_('Invalid template user. It seems it has been deleted.'))

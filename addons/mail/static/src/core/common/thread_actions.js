@@ -1,147 +1,129 @@
-/* @odoo-module */
-
-import { useComponent, useState } from "@odoo/owl";
+import { useSubEnv } from "@web/owl2/utils";
 
 import { _t } from "@web/core/l10n/translation";
 import { registry } from "@web/core/registry";
+import { SearchMessagesPanel } from "@mail/core/common/search_messages_panel";
+import { Action, ACTION_TAGS, useAction, UseActions } from "@mail/core/common/action";
+import { MeetingChat } from "@mail/discuss/call/common/meeting_chat";
 
 export const threadActionsRegistry = registry.category("mail.thread/actions");
 
-threadActionsRegistry
-    .add("fold-chat-window", {
-        condition(component) {
-            return !component.ui.isSmall && component.props.chatWindow;
-        },
-        icon: "fa fa-fw fa-minus",
-        name(component) {
-            return !component.props.chatWindow?.isOpen ? _t("Open") : _t("Fold");
-        },
-        open(component) {
-            component.toggleFold();
-        },
-        displayActive(component) {
-            return !component.props.chatWindow?.isOpen;
-        },
-        sequence: 99,
-    })
-    .add("rename-thread", {
-        condition(component) {
-            return (
-                component.thread &&
-                component.props.chatWindow?.isOpen &&
-                (component.thread.is_editable || component.thread.type === "chat")
-            );
-        },
-        icon: "fa fa-fw fa-pencil",
-        name: _t("Rename"),
-        open(component) {
-            component.state.editingName = true;
-        },
-        sequence: 17,
-    })
-    .add("close", {
-        condition(component) {
-            return component.props.chatWindow;
-        },
-        icon: "fa fa-fw fa-close",
-        name: _t("Close Chat Window"),
-        open(component) {
-            component.close();
-        },
-        sequence: 100,
-    });
+/** @typedef {import("@odoo/owl").Component} Component */
+/** @typedef {import("@mail/core/common/action").ActionDefinition} ActionDefinition */
+/** @typedef {import("models").Thread} Thread */
 
-function transformAction(component, id, action) {
-    return {
-        /** Closes this action. */
-        close() {
-            if (this.toggle) {
-                component.threadActions.activeAction = null;
-            }
-            action.close?.(component, this);
-        },
-        /** Optional component that should be displayed in the view when this action is active. */
-        component: action.component,
-        /** Condition to display the component of this action. */
-        get componentCondition() {
-            return this.isActive && this.component && this.condition && !this.popover;
-        },
-        /** Props to pass to the component of this action. */
-        get componentProps() {
-            return action.componentProps?.(this);
-        },
-        /** Condition to display this action. */
-        get condition() {
-            return action.condition(component);
-        },
-        /** Condition to disable the button of this action (but still display it). */
-        get disabledCondition() {
-            return action.disabledCondition?.(component);
-        },
-        /** Icon for the button this action. */
-        icon: action.icon,
-        /** Large icon for the button this action. */
-        iconLarge: action.iconLarge ?? action.icon,
-        /** Unique id of this action. */
-        id,
-        /** States whether this action is currently active. */
-        get isActive() {
-            return id === component.threadActions.activeAction?.id;
-        },
-        /** Name of this action, displayed to the user. */
-        get name() {
-            const res = this.isActive && action.nameActive ? action.nameActive : action.name;
-            return typeof res === "function" ? res(component) : res;
-        },
-        /** Action to execute when this action is selected (on or off). */
-        onSelect() {
-            if (this.toggle && this.isActive) {
-                this.close();
-            } else {
-                this.open();
-            }
-        },
-        /** Opens this action. */
-        open() {
-            if (this.toggle) {
-                component.threadActions.activeAction = this;
-            }
-            action.open?.(component, this);
-        },
-        /** Determines whether this is a popover linked to this action. */
-        popover: null,
-        /** Determines the order of this action (smaller first). */
-        get sequence() {
-            return typeof action.sequence === "function"
-                ? action.sequence(component)
-                : action.sequence;
-        },
-        /** Component setup to execute when this action is registered. */
-        setup: action.setup,
-        /** Text for the button of this action */
-        text: action.text,
-        /** Determines whether this action is a one time effect or can be toggled (on or off). */
-        toggle: action.toggle,
-    };
+/**
+ * @typedef {ActionDefinition} ThreadActionDefinition
+ */
+
+/**
+ * @param {string} id
+ * @param {ThreadActionDefinition} definition
+ */
+export function registerThreadAction(id, definition) {
+    threadActionsRegistry.add(id, definition);
 }
 
-export function useThreadActions() {
-    const component = useComponent();
-    const transformedActions = threadActionsRegistry
-        .getEntries()
-        .map(([id, action]) => transformAction(component, id, action));
-    for (const action of transformedActions) {
-        if (action.setup) {
-            action.setup(action);
+registerThreadAction("fold-chat-window", {
+    condition: ({ owner }) => owner.props.chatWindow && !owner.isDiscussSidebarChannelActions,
+    icon: "oi oi-fw oi-minus",
+    name: ({ owner }) => (!owner.props.chatWindow?.isOpen ? _t("Open") : _t("Fold")),
+    onSelected: ({ owner }) => owner.toggleFold(),
+    displayActive: ({ owner }) => !owner.props.chatWindow?.isOpen,
+    sequence: 99,
+    sequenceQuick: 20,
+});
+registerThreadAction("rename-thread", {
+    condition: ({ channel, owner, thread }) =>
+        channel &&
+        channel.isAllowedToRename &&
+        owner.props.chatWindow?.isOpen &&
+        !owner.isDiscussSidebarChannelActions,
+    icon: "fa fa-fw fa-pencil",
+    name: _t("Rename Thread"),
+    onSelected: ({ owner }) => (owner.state.editingName = true),
+    sequence: 30,
+    sequenceGroup: 20,
+});
+registerThreadAction("close", {
+    condition: ({ owner }) => owner.props.chatWindow && !owner.isDiscussSidebarChannelActions,
+    icon: "oi fa-fw oi-close",
+    name: _t("Close Chat Window (ESC)"),
+    onSelected: ({ owner }) => owner.close(),
+    sequence: 100,
+    sequenceQuick: 10,
+});
+registerThreadAction("search-messages", {
+    actionPanelComponent: SearchMessagesPanel,
+    actionPanelComponentProps: ({ thread }) => ({ thread }),
+    actionPanelOuterClass: "o-mail-SearchMessagesPanel bg-inherit",
+    condition: ({ owner, thread }) =>
+        ["discuss.channel", "mail.box"].includes(thread?.model) &&
+        (!owner.props.chatWindow || owner.props.chatWindow.isOpen) &&
+        !owner.isDiscussSidebarChannelActions,
+    hotkey: "f",
+    icon: "oi oi-fw oi-search",
+    name: ({ action }) => (action.isActive ? _t("Close Search") : _t("Search Messages")),
+    sequence: 20,
+    sequenceGroup: 20,
+    setup: ({ action }) =>
+        useSubEnv({
+            searchMenu: {
+                open: () => action.actionPanelOpen(),
+                close: () => {
+                    if (action.isActive) {
+                        action.actionPanelClose();
+                    }
+                },
+            },
+        }),
+});
+registerThreadAction("meeting-chat", {
+    actionPanelComponent: MeetingChat,
+    actionPanelOuterClass: "bg-100 border border-secondary",
+    badge: ({ thread }) => thread.isUnread,
+    badgeIcon: ({ channel }) => !channel.importantCounter && "fa fa-circle o-text-white opacity-75",
+    badgeText: ({ channel }) => channel.importantCounter || undefined,
+    condition: ({ owner }) => owner.env.inMeetingView,
+    icon: "fa fa-fw fa-comments",
+    name: _t("Chat"),
+    sequence: 30,
+    tags: ({ channel }) => {
+        const tags = [];
+        if (channel.importantCounter) {
+            tags.push(ACTION_TAGS.IMPORTANT_BADGE);
         }
+        return tags;
+    },
+});
+
+export class ThreadAction extends Action {
+    /** @type {() => Thread} */
+    threadFn;
+
+    /**
+     * @param {Object} param0
+     * @param {Thread|() => Thread} thread
+     */
+    constructor({ thread }) {
+        super(...arguments);
+        this.threadFn = typeof thread === "function" ? thread : () => thread;
     }
-    const state = useState({
-        get actions() {
-            return transformedActions
-                .filter((action) => action.condition)
-                .sort((a1, a2) => a1.sequence - a2.sequence);
-        },
-        activeAction: null,
-    });
-    return state;
+
+    get params() {
+        const thread = this.threadFn();
+        return Object.assign(super.params, { channel: thread?.channel, thread });
+    }
+}
+
+class UseThreadActions extends UseActions {
+    ActionClass = ThreadAction;
+}
+
+/**
+ * @param {Object} [params0={}]
+ * @param {Thread|() => Thread} thread
+ */
+export function useThreadActions({ thread } = {}) {
+    return useAction(threadActionsRegistry, UseThreadActions, ThreadAction, { thread });
 }

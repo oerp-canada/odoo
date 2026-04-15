@@ -1,21 +1,13 @@
-# -*- coding: utf-8 -*-
-# Part of Odoo. See LICENSE file for full copyright and licensing details.
+import logging
 
-from . import models
-from . import tools
-from . import wizard
+from . import controllers, models, tools
 
-
-def _l10n_it_edi_update_export_tax(env):
-    for company in env['res.company'].search([('chart_template', '=', 'it')]):
-        tax = env.ref(f'l10n_it.{company.id}_00eu', raise_if_not_found=False)
-        if tax:
-            tax.write({
-                'l10n_it_has_exoneration': True,
-                'l10n_it_kind_exoneration': 'N3.2',
-                'l10n_it_law_reference': 'Art. 41, DL n. 331/93',
-            })
+_logger = logging.getLogger(__name__)
 
 
 def _l10n_it_edi_post_init(env):
-    _l10n_it_edi_update_export_tax(env)
+    env['ir.config_parameter'].set_str('l10n_it_edi.proxy_user_edi_mode', 'prod')
+
+
+def uninstall_hook(env):
+    env["res.partner"]._clear_removed_edi_formats("it_edi_xml")

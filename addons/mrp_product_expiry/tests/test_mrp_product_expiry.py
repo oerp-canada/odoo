@@ -3,7 +3,7 @@
 
 from datetime import datetime, timedelta
 from odoo.addons.stock.tests.common import TestStockCommon
-from odoo.tests.common import Form
+from odoo.tests import tagged, Form
 from odoo.exceptions import UserError
 
 
@@ -15,7 +15,7 @@ class TestStockLot(TestStockCommon):
         # Creates a tracked product using expiration dates.
         cls.product_apple = cls.ProductObj.create({
             'name': 'Apple',
-            'type': 'product',
+            'is_storable': True,
             'tracking': 'lot',
             'use_expiration_date': True,
             'expiration_time': 10,
@@ -27,13 +27,11 @@ class TestStockLot(TestStockCommon):
         lot_form = Form(cls.LotObj)
         lot_form.name = 'good-apple-lot'
         lot_form.product_id = cls.product_apple
-        lot_form.company_id = cls.env.company
         cls.lot_good_apple = lot_form.save()
         # Creates an expired apple lot.
         lot_form = Form(cls.LotObj)
         lot_form.name = 'expired-apple-lot-01'
         lot_form.product_id = cls.product_apple
-        lot_form.company_id = cls.env.company
         cls.lot_expired_apple = lot_form.save()
         lot_form = Form(cls.lot_expired_apple)  # Edits the lot to make it expired.
         lot_form.expiration_date = datetime.today() - timedelta(days=10)
@@ -42,29 +40,19 @@ class TestStockLot(TestStockCommon):
         # Creates a producible product and its BOM.
         cls.product_apple_pie = cls.ProductObj.create({
             'name': 'Apple Pie',
-            'type': 'product',
+            'is_storable': True,
         })
         cls.bom_apple_pie = cls.env['mrp.bom'].create({
             'product_id': cls.product_apple_pie.id,
             'product_tmpl_id': cls.product_apple_pie.product_tmpl_id.id,
-            'product_uom_id': cls.uom_unit.id,
+            'uom_id': cls.uom_unit.id,
             'product_qty': 1.0,
-            'consumption': 'flexible',
             'type': 'normal',
             'bom_line_ids': [
                 (0, 0, {'product_id': cls.product_apple.id, 'product_qty': 3}),
             ]})
 
         cls.location_stock = cls.env['stock.location'].browse(cls.stock_location)
-
-        # Creation of a routing
-        cls.workcenter = cls.env['mrp.workcenter'].create({
-            'name': 'Bakery',
-            'default_capacity': 2,
-            'time_start': 10,
-            'time_stop': 5,
-            'time_efficiency': 80,
-        })
 
     def test_01_product_produce(self):
         """ Checks user doesn't get a confirmation wizard when they produces with
@@ -81,8 +69,8 @@ class TestStockLot(TestStockCommon):
         mo_form.qty_producing = 1
         mo = mo_form.save()
         details_operation_form = Form(mo.move_raw_ids[0], view=self.env.ref('stock.view_stock_move_operations'))
-        with details_operation_form.move_line_ids.new() as ml:
-            ml.qty_done = 3
+        with details_operation_form.move_line_ids.edit(0) as ml:
+            ml.quantity = 3
             ml.lot_id = self.lot_good_apple
         details_operation_form.save()
         res = mo.button_mark_done()
@@ -104,8 +92,8 @@ class TestStockLot(TestStockCommon):
         mo_form.qty_producing = 1
         mo = mo_form.save()
         details_operation_form = Form(mo.move_raw_ids[0], view=self.env.ref('stock.view_stock_move_operations'))
-        with details_operation_form.move_line_ids.new() as ml:
-            ml.qty_done = 3
+        with details_operation_form.move_line_ids.edit(0) as ml:
+            ml.quantity = 3
             ml.lot_id = self.lot_expired_apple
         details_operation_form.save()
         res = mo.button_mark_done()

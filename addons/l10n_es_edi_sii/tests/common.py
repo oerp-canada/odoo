@@ -1,38 +1,41 @@
-# coding: utf-8
-import base64
-from pytz import timezone
-from datetime import datetime
+from datetime import datetime, UTC
 
-from odoo.tools import misc
 from odoo.addons.account_edi.tests.common import AccountEdiTestCommon
+
+
+def mocked_l10n_es_edi_call_web_service_sign(edi_format, invoices, info_list):
+    return {inv: {"success": True} for inv in invoices}
 
 
 class TestEsEdiCommon(AccountEdiTestCommon):
 
     @classmethod
-    def setUpClass(cls, chart_template_ref='es_full', edi_format_ref='l10n_es_edi_sii.edi_es_sii'):
-        super().setUpClass(chart_template_ref=chart_template_ref, edi_format_ref=edi_format_ref)
+    @AccountEdiTestCommon.setup_edi_format('l10n_es_edi_sii.edi_es_sii')
+    @AccountEdiTestCommon.setup_country('es')
+    def setUpClass(cls):
+        super().setUpClass()
 
-        cls.frozen_today = datetime(year=2019, month=1, day=1, hour=0, minute=0, second=0, tzinfo=timezone('utc'))
+        cls.frozen_today = datetime(year=2019, month=1, day=1, hour=0, minute=0, second=0, tzinfo=UTC)
 
         # Allow to see the full result of AssertionError.
         cls.maxDiff = None
 
         # ==== Config ====
 
-        cls.certificate = cls.env['l10n_es_edi.certificate'].create({
-            'content': base64.encodebytes(
-                misc.file_open("l10n_es_edi_sii/demo/certificates/sello_entidad_act.p12", 'rb').read()),
-            'password': 'IZDesa2021',
+        cls.certificate = cls.env['certificate.certificate'].create({
+            'name': 'Test ES certificate',
+            'content': cls.file_read("l10n_es_edi_sii/demo/certificates/aeat_1234.p12"),
+            'pkcs12_password': '1234',
+            'scope': 'sii',
+            'company_id': cls.company_data['company'].id,
         })
 
         cls.company_data['company'].write({
-            'country_id': cls.env.ref('base.es').id,
             'state_id': cls.env.ref('base.state_es_z').id,
-            'l10n_es_edi_certificate_id': cls.certificate.id,
+            'l10n_es_sii_certificate_id': cls.certificate.id,
             'vat': 'ES59962470K',
-            'l10n_es_edi_test_env': True,
-            'l10n_es_edi_tax_agency': 'bizkaia',
+            'l10n_es_sii_test_env': True,
+            'l10n_es_sii_tax_agency': 'bizkaia',
         })
 
         # To be sure it is put by default on purchase journals as well (tbai module)
@@ -64,7 +67,7 @@ class TestEsEdiCommon(AccountEdiTestCommon):
         return cls.env.ref(f'account.{cls.env.company.id}_account_tax_template_{trailing_xml_id}')
 
     @classmethod
-    def create_invoice(cls, **kwargs):
+    def _create_invoice_es(cls, **kwargs):
         return cls.env['account.move'].with_context(edi_test_mode=True).create({
             'move_type': 'out_invoice',
             'partner_id': cls.partner_a.id,

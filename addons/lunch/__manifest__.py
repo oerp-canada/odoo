@@ -1,9 +1,6 @@
-# -*- coding: utf-8 -*-
-
 {
     'name': 'Lunch',
     'sequence': 300,
-    'version': '1.0',
     'depends': ['mail'],
     'category': 'Human Resources/Lunch',
     'summary': 'Handle lunch orders of your employees',
@@ -38,22 +35,21 @@ If you want to save your employees' time and avoid them to always have coins in 
         'data/lunch_data.xml',
     ],
     'demo': ['data/lunch_demo.xml'],
-    'installable': True,
     'application': True,
     'assets': {
         'web.assets_backend': [
             'lunch/static/src/components/*',
             'lunch/static/src/mixins/*.js',
             'lunch/static/src/views/*',
-            'lunch/static/src/scss/lunch_view.scss',
             'lunch/static/src/scss/lunch_kanban.scss',
         ],
         'web.assets_tests': [
             'lunch/static/tests/tours/*.js',
         ],
-        'web.qunit_suite_tests': [
-            'lunch/static/tests/lunch_kanban_tests.js',
+        'web.assets_unit_tests': [
+            'lunch/static/tests/**/*.test.js',
         ],
     },
+    'author': 'Odoo S.A.',
     'license': 'LGPL-3',
 }

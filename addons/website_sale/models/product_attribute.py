@@ -1,32 +1,37 @@
-# -*- coding: utf-8 -*-
 # Part of Odoo. See LICENSE file for full copyright and licensing details.
 
-from collections import OrderedDict
-
-from odoo import models, fields
+from odoo import api, fields, models
 
 
 class ProductAttribute(models.Model):
-    _inherit = 'product.attribute'
+    _inherit = "product.attribute"
 
-    visibility = fields.Selection([('visible', 'Visible'), ('hidden', 'Hidden')], default='visible')
+    category_id = fields.Many2one(
+        string="Category",
+        help="Set a category to regroup similar attributes under the same section in the Comparison"
+        " page of eCommerce.",
+        comodel_name="product.attribute.category",
+        index=True,
+    )
 
+    visibility = fields.Selection(
+        selection=[("visible", "Visible"), ("hidden", "Hidden")], default="visible"
+    )
+    preview_variants = fields.Selection(
+        string="On Product Cards",
+        selection=[("visible", "Visible"), ("hidden", "Hidden"), ("hover", "Hover")],
+        default="hidden",
+        help="Instantly created variants are available for selection from your /shop page.",
+    )
+    is_thumbnail_visible = fields.Boolean(
+        string="Show Thumbnails",
+        help="Use product variant images instead of the attribute values displays.",
+    )
 
-class ProductTemplateAttributeLine(models.Model):
-    _inherit = 'product.template.attribute.line'
-
-    def _prepare_single_value_for_display(self):
-        """On the product page group together the attribute lines that concern
-        the same attribute and that have only one value each.
-
-        Indeed those are considered informative values, they do not generate
-        choice for the user, so they are displayed below the configurator.
-
-        The returned attributes are ordered as they appear in `self`, so based
-        on the order of the attribute lines.
-        """
-        single_value_lines = self.filtered(lambda ptal: len(ptal.value_ids) == 1)
-        single_value_attributes = OrderedDict([(pa, self.env['product.template.attribute.line']) for pa in single_value_lines.attribute_id])
-        for ptal in single_value_lines:
-            single_value_attributes[ptal.attribute_id] |= ptal
-        return single_value_attributes
+    @api.onchange("create_variant", "display_type")
+    def _onchange_disable_preview_variants(self):
+        """Disable preview variants for multi display types and if variant creation method is not
+        set to instant."""
+        if self.create_variant != "always" or self.display_type == "multi":
+            self.preview_variants = "hidden"
+            self.is_thumbnail_visible = False

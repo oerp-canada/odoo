@@ -1,6 +1,7 @@
 # # -*- coding: utf-8 -*-
 # Part of Odoo. See LICENSE file for full copyright and licensing details.
 
+from odoo.exceptions import UserError
 from odoo.tests.common import TransactionCase, tagged
 
 
@@ -71,10 +72,9 @@ class TestPrivacyWizard(TransactionCase):
         self.assertEqual((wizard.line_ids - partner_line).resource_ref, None)
 
     def test_wizard_direct_reference(self):
-        bank = self.env['res.bank'].create({
-            'name': 'ING',
-            'bic': 'BBRUBEBB',
-            'email': 'rintin.tin@gmail.com'
+        guest = self.env['mail.guest'].create({
+            'name': 'Guest',
+            'email': 'rintin.tin@gmail.com',
         })
 
         wizard = self.env['privacy.lookup.wizard'].with_context(
@@ -88,8 +88,8 @@ class TestPrivacyWizard(TransactionCase):
         self.assertEqual(wizard.line_ids[0].res_id, self.partner.id)
         self.assertEqual(wizard.line_ids[0].res_model, self.partner._name)
 
-        self.assertEqual(wizard.line_ids[1].res_id, bank.id)
-        self.assertEqual(wizard.line_ids[1].res_model, bank._name)
+        self.assertEqual(wizard.line_ids[1].res_id, guest.id)
+        self.assertEqual(wizard.line_ids[1].res_model, guest._name)
 
     def test_wizard_indirect_reference(self):
         self.env.company.partner_id = self.partner
@@ -101,17 +101,13 @@ class TestPrivacyWizard(TransactionCase):
 
         # Lookup
         wizard.action_lookup()
-        self.assertEqual(len(wizard.line_ids), 2)
-        self.assertEqual(wizard.line_ids[0].res_id, self.partner.id)
-        self.assertEqual(wizard.line_ids[0].res_model, self.partner._name)
-
-        self.assertEqual(wizard.line_ids[1].res_id, self.env.company.id)
-        self.assertEqual(wizard.line_ids[1].res_model, self.env.company._name)
+        self.assertTrue(wizard.line_ids.filtered(lambda l: l.res_model == 'res.partner' and l.res_id == self.partner.id))
+        self.assertTrue(wizard.line_ids.filtered(lambda l: l.res_model == 'res.company' and l.res_id == self.env.company.id))
 
     def test_wizard_indirect_reference_cascade(self):
         # Don't retrieve ondelete cascade records
         self.env["res.partner.bank"].create({
-            'acc_number': '0123-%s' % self.partner.id,
+            'account_number': '0123-%s' % self.partner.id,
             'partner_id': self.partner.id,
             'company_id': self.env.company.id
         })
@@ -151,3 +147,12 @@ class TestPrivacyWizard(TransactionCase):
         wizard.line_ids[1]._onchange_is_active()
         wizard.execution_details
         self.assertEqual(1, self.env['privacy.log'].search_count([('anonymized_email', '=', 'r*****.t**@gmail.com')]))
+
+    def test_wizard_lookup_with_invalid_email(self):
+        # lookup with an invalid email should raise UserError
+        wizard = self.env['privacy.lookup.wizard'].create({
+            'email': 'demo',
+            'name': self.partner.name,
+        })
+        with self.assertRaises(UserError, msg='Invalid email address "%s"' % wizard.email):
+            wizard.action_lookup()

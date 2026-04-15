@@ -1,16 +1,21 @@
 .o_command_palette {
     $-app-icon-size: 1.8rem;
-
+    @include media-breakpoint-up(md) {
+        top: 120px;
+        position: absolute;
+    }
     > .modal-body {
         padding: 0;
     }
 
     &_listbox {
-        max-height: 50vh;
+        @include media-breakpoint-up(md) {
+            max-height: 50vh;
+        }
 
         .o_command {
             &.focused {
-                background: rgba($o-action, 0.25);
+                background: rgba($o-component-active-bg, .65);
             }
 
             &_hotkey {
@@ -19,10 +24,6 @@
                 background-color: inherit;
                 padding: 0.5rem 1.3em;
                 display: flex;
-                > icon {
-                    position: relative;
-                    top: 0.4em;
-                }
             }
             a {
                 text-decoration: none;

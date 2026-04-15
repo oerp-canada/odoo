@@ -21,7 +21,11 @@ class TestSMSPost(TestMassMailCommon):
             })
 
         # tracking info
-        cls.utm_c = cls.env.ref('utm.utm_campaign_fall_drive')
+        cls.utm_c = cls.env['utm.campaign'].create({
+            'name': 'UTM C',
+            'stage_id': cls.env.ref('utm.default_utm_stage').id,
+            'is_auto_campaign': True,
+        })
         cls.utm_m = cls.env.ref('mass_mailing_sms.utm_medium_sms')
         cls.tracker_values = {
             'campaign_id': cls.utm_c.id,
@@ -31,7 +35,7 @@ class TestSMSPost(TestMassMailCommon):
     def setUp(self):
         super(TestSMSPost, self).setUp()
         self._web_base_url = 'https://test.odoo.com'
-        self.env['ir.config_parameter'].sudo().set_param('web.base.url', self._web_base_url)
+        self.env['ir.config_parameter'].sudo().set_str('web.base.url', self._web_base_url)
 
     def test_body_link_shorten(self):
         link = 'http://www.example.com'

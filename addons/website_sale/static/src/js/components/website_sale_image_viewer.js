@@ -1,26 +1,41 @@
-/** @odoo-module **/
-
-import { useWowlService } from '@web/legacy/utils';
+import { onRendered, useLayoutEffect, useRef, useState } from "@web/owl2/utils";
+import { onMounted } from "@odoo/owl";
 import { Dialog } from "@web/core/dialog/dialog";
 import { useHotkey } from "@web/core/hotkeys/hotkey_hook";
-
-const { Component, onRendered, useRef, useEffect, useState, xml } = owl;
+import { useDebounced } from "@web/core/utils/timing";
 
 const ZOOM_STEP = 0.1;
+const TOUCHMOVE_STEP = 96;
 
 export class ProductImageViewer extends Dialog {
+    static template = "website_sale.ProductImageViewer";
+    static props = {
+        ...Dialog.props,
+        images: { type: NodeList },
+        selectedImageIdx: { type: Number, optional: true },
+        imageRatio: { type: String, optional: true },
+        imageRatioMobile: { type: String, optional: true },
+        close: Function,
+    };
+    static defaultProps = {
+        ...Dialog.defaultProps,
+        imageRatio: 'auto',
+        imageRatioMobile: 'auto',
+    }
+
     setup() {
         super.setup();
         this.imageContainerRef = useRef("imageContainer");
         this.images = [...this.props.images].map(image => {
             return {
                 src: image.dataset.zoomImage || image.src,
-                thumbnailSrc: image.src.replace('/image_1024/', '/image_128/'),
+                thumbnailSrc: image.src.replace('/image_1024/', '/image_256/'),
             };
         });
         this.state = useState({
             selectedImageIdx: this.props.selectedImageIdx || 0,
             imageScale: 1,
+            carouselOffset: 0,
         });
         this.isDragging = false;
         this.dragStartPos = { x: 0, y: 0 };
@@ -35,9 +50,15 @@ export class ProductImageViewer extends Dialog {
             this.updateImage();
         });
 
+        // Debounce update in line with `ease-out` animation.
+        this.updateCarousel = useDebounced(this._updateCarousel, 250, {
+            immediate: true,
+            trailing: true,
+        });
+
         // Not using a t-on-click on purpose because we want to be able to cancel the drag
         // when we go outside of the window.
-        useEffect(
+        useLayoutEffect(
             (document) => {
                 const onGlobalClick = this.onGlobalClick.bind(this);
                 document.addEventListener("click", onGlobalClick);
@@ -45,6 +66,11 @@ export class ProductImageViewer extends Dialog {
             },
             () => [document],
         );
+        onMounted(() => {
+            document.querySelector(
+                '.o_wsale_image_viewer_carousel li:last-of-type img'
+            )?.addEventListener('load', this.updateCarousel.bind(this), { once: true });
+        });
         // For some reason the styling does not always update properly.
         onRendered(() => {
             this.updateImage();
@@ -59,6 +85,7 @@ export class ProductImageViewer extends Dialog {
         this.state.imageScale = 1;
         this.imageTranslate = { x: 0, y: 0 };
         this.state.selectedImageIdx = this.images.indexOf(image);
+        this.updateCarousel();
     }
 
     get imageStyle() {
@@ -86,11 +113,34 @@ export class ProductImageViewer extends Dialog {
         this.imageContainerRef.el.style = this.imageContainerStyle;
     }
 
+    /**
+     * Centers the thumbnail row element on the currently selected image.
+     *
+     * @private
+     */
+    _updateCarousel() {
+        const thumbnailList = document.querySelector('.o_wsale_image_viewer_carousel ol');
+        const viewWidth = window.visualViewport.width;
+        if (!thumbnailList || thumbnailList.scrollWidth <= viewWidth) {
+            return;
+        }
+        const { selectedImageIdx } = this.state;
+        const thumbnail = thumbnailList.childNodes[selectedImageIdx];
+        const { left: thumbOffset, width: thumbWidth } = thumbnail.getBoundingClientRect();
+
+        this.state.carouselOffset += (viewWidth - thumbWidth) / 2 - thumbOffset;
+        thumbnailList.style.transform = `translate(${this.state.carouselOffset}px)`;
+    }
+
     onGlobalClick(ev) {
         if (ev.target.tagName === "IMG") {
             // Only zoom if the image did not move
             if (this.dragStartPos.clientX === ev.clientX && this.dragStartPos.clientY === ev.clientY) {
-                this.zoomIn(ZOOM_STEP * 3);
+                if (this.state.imageScale <= 1) {
+                    this.zoomIn(ZOOM_STEP * 3);
+                } else {
+                    this.zoomOut(this.state.imageScale - 1);
+                }
             }
         }
         if (ev.target.classList.contains('o_wsale_image_viewer_void') && !this.isDragging) {
@@ -111,6 +161,10 @@ export class ProductImageViewer extends Dialog {
     }
 
     onWheelImage(ev) {
+        if (!ev.deltaY) {
+            return;
+        }
+        ev.preventDefault();
         if (ev.deltaY > 0) {
             this.zoomOut();
         } else {
@@ -136,23 +190,35 @@ export class ProductImageViewer extends Dialog {
         this.imageTranslate.y = ev.clientY - this.dragStartPos.y;
         this.updateImage();
     }
-}
-ProductImageViewer.props = {
-    ...Dialog.props,
-    images: { type: NodeList, required: true },
-    selectedImageIdx: { type: Number, optional: true },
-    close: Function,
-};
-delete ProductImageViewer.props.slots;
-ProductImageViewer.template = "website_sale.ProductImageViewer";
 
-export class ProductImageViewerWrapper extends Component {
-    setup() {
-        this.dialogs = useWowlService('dialog');
+    _onTouchstartCarousel(ev) {
+        const touch = ev.touches?.item(0);
+        if (!touch) {
+            return;
+        }
+        this.state.touchClientX = touch.clientX;
+        if (!this.state.touchmoveStep) {
+            const thumbnail = document.querySelector('img.o_wsale_image_viewer_thumbnail');
+            this.state.touchmoveStep = 0.75 * thumbnail?.clientWidth;
+        }
+    }
 
-        onRendered(() => {
-            this.dialogs.add(ProductImageViewer, this.props);
-        });
+    _onTouchmoveCarousel(ev) {
+        const touch = ev.touches?.item(0);
+        if (!touch) {
+            return;
+        }
+        ev.preventDefault();
+        const { selectedImageIdx, touchmoveStep, touchClientX } = this.state;
+        const deltaX = touch.clientX - touchClientX;
+        const step = touchmoveStep || TOUCHMOVE_STEP;
+        if (deltaX > step && selectedImageIdx > 0) {
+            this.state.touchClientX += step;
+            this.previousImage();
+        } else if (deltaX < -step && selectedImageIdx < this.images.length - 1) {
+            this.state.touchClientX -= step;
+            this.nextImage();
+        }
     }
 }
-ProductImageViewerWrapper.template = xml``;
+delete ProductImageViewer.props.slots;

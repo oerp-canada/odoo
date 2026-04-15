@@ -1,6 +1,4 @@
 .din_page {
-    width: 180mm;
-    margin-left: -1rem;
     font-size: 9pt;
 
     .container-fluid & { // center the invoice in portal preview
@@ -21,18 +19,13 @@
                 margin-bottom: -10mm;
             }
             img {
+                padding-top: 10mm;
                 float: right;
             }
         }
     }
     &.invoice_note {
         tr {
-            td {
-                vertical-align: bottom;
-            }
-            &:nth-child(2) td {
-                vertical-align: top;
-            }
             .address, .information_block, .shipping_address, .invoice_address {
                 margin: 0;
             }
@@ -45,10 +38,10 @@
                 .company_invoice_line {
                     margin-top: 1mm;
                 }
-                > span {
+                .colored_address {
                     color: $o-default-report-secondary-color;
-                    font-size: 0.8em;
                 }
+                font-size: 0.8em;
             }
             .information_block, .invoice_address {
                 width: 75mm;
@@ -59,7 +52,7 @@
                 }
             }
         }
-        h2, [name=payment_communication], [name=payment_term], [name=comment], [name=note], [name=incoterm] {
+        h2 {
             margin-left: 5mm;
             margin-right: 10mm;
             margin-top: 8.46mm;
@@ -81,19 +74,12 @@
                 }
             }
 
-            tr {
-                td {
-                    vertical-align: bottom;
-                }
-            }
-        }
-        [name=payment_communication] {  // re-align payment communication (otherwise it's cropped)
-            margin-left: 5mm;
         }
     }
     &.footer {
         padding-left: 5mm;
         padding-right: 10mm;
+        font-size: 0.7em;
         .page_number {
             margin-top: 4.23mm;
             width: 100%;
@@ -111,6 +97,9 @@
                     padding-right: 3mm;
                     li {
                         font-size: 0.7em;
+                        p {
+                            line-height: 1.3em;
+                        }
                     }
                     &:last-child {
                         padding-right: initial;
@@ -119,4 +108,35 @@
             }
         }
     }
+    table.o_main_table{
+        tr {
+            &.o_line_section td {
+                background-color: rgba($gray-300, .5);
+            }
+    
+            th {
+                font-weight: bolder;
+            }
+        }
+    }
+    div#total {
+        tr {
+            &.o_subtotal,
+            &.o_total {
+                td {
+                    border-top: 1px solid black !important;
+                }
+                &.o_border_bottom {
+                    td {
+                        border-bottom: 1px solid black !important;
+                    }
+                }
+            }
+        }
+    }
+}
+
+.din_page_pdf {
+    width: 180mm;
+    margin-left: -1rem;
 }

@@ -1,7 +1,5 @@
-/** @odoo-module **/
-
 const PRODUCTION_DECORATORS = {
-    draft: "muted",
+    draft: "secondary",
     confirmed: "info",
     progress: "warning",
     done: "success",
@@ -14,12 +12,11 @@ const PURCHASE_DECORATORS = {
     sent: "info",
     ['to approve']: "info",
     purchase: "info",
-    done: "info",
-    cancel: "muted",
+    cancel: "secondary",
 };
 
 const PICKING_DECORATORS = {
-    draft: "muted",
+    draft: "secondary",
     waiting: "warning",
     confirmed: "warning",
     assigned: "info",
@@ -28,12 +25,11 @@ const PICKING_DECORATORS = {
 };
 
 const OPERATION_DECORATORS = {
-    pending: "info",
-    waiting: "info",
-    ready: "info",
-    progress: "warning",
+    blocked: "warning",
+    ready: "muted",
+    progress: "info",
     done: "success",
-    cancel: "muted",
+    cancel: "danger",
 };
 
 const PRODUCT_DECORATORS = {

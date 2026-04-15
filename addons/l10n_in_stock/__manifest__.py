@@ -1,10 +1,7 @@
-# -*- coding: utf-8 -*-
 # Part of Odoo. See LICENSE file for full copyright and licensing details.
 
 {
     'name': 'Indian - Stock Report(GST)',
-    'countries': ['in'],
-    'version': '1.0',
     'description': """GST Stock Report""",
     'category': 'Accounting/Localizations',
     'depends': [
@@ -17,7 +14,7 @@
     'demo': [
         'data/product_demo.xml',
     ],
-    'installable': True,
     'auto_install': True,
+    'author': 'Odoo S.A.',
     'license': 'LGPL-3',
 }

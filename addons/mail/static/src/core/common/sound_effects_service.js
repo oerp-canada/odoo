@@ -1,28 +1,34 @@
-/* @odoo-module */
-
 import { browser } from "@web/core/browser/browser";
 import { registry } from "@web/core/registry";
+import { url } from "@web/core/utils/urls";
 
 export class SoundEffects {
+    /**
+     * @param {import("@web/env").OdooEnv} env
+     */
     constructor(env) {
         this.soundEffects = {
-            "channel-join": { defaultVolume: 0.3, path: "/mail/static/src/audio/channel_01_in" },
-            "channel-leave": { path: "/mail/static/src/audio/channel_04_out" },
-            deafen: { defaultVolume: 0.15, path: "/mail/static/src/audio/deafen_new_01" },
-            "incoming-call": { defaultVolume: 0.15, path: "/mail/static/src/audio/call_02_in_" },
-            "member-leave": { defaultVolume: 0.5, path: "/mail/static/src/audio/channel_01_out" },
-            mute: { defaultVolume: 0.2, path: "/mail/static/src/audio/mute_1" },
-            "new-message": { path: "/mail/static/src/audio/dm_02" },
-            "push-to-talk-on": { defaultVolume: 0.05, path: "/mail/static/src/audio/ptt_push_1" },
-            "push-to-talk-off": {
-                defaultVolume: 0.05,
-                path: "/mail/static/src/audio/ptt_release_1",
+            "call-join": { defaultVolume: 0.75, path: "/mail/static/src/audio/call-join" },
+            "call-leave": { defaultVolume: 0.75, path: "/mail/static/src/audio/call-leave" },
+            "earphone-off": { defaultVolume: 0.15, path: "/mail/static/src/audio/earphone-off" },
+            "earphone-on": { defaultVolume: 0.15, path: "/mail/static/src/audio/earphone-on" },
+            "mic-off": { defaultVolume: 0.2, path: "/mail/static/src/audio/mic-off" },
+            "mic-on": { defaultVolume: 0.2, path: "/mail/static/src/audio/mic-on" },
+            "ptt-press": { defaultVolume: 0.1, path: "/mail/static/src/audio/ptt-press" },
+            "ptt-release": { defaultVolume: 0.1, path: "/mail/static/src/audio/ptt-release" },
+            "call-invitation": {
+                defaultVolume: 0.5,
+                path: "/mail/static/src/audio/call-invitation",
             },
-            "screen-sharing": { defaultVolume: 0.5, path: "/mail/static/src/audio/share_02" },
-            undeafen: { defaultVolume: 0.15, path: "/mail/static/src/audio/undeafen_new_01" },
-            unmute: { defaultVolume: 0.2, path: "/mail/static/src/audio/unmute_1" },
+            "new-message": { defaultVolume: 1, path: "/mail/static/src/audio/new-message" },
+            "screen-sharing": {
+                defaultVolume: 0.75,
+                path: "/mail/static/src/audio/screen-sharing",
+            },
+            "member-leave": { defaultVolume: 0.5, path: "/mail/static/src/audio/channel_01_out" },
         };
     }
+
     /**
      * @param {String} param0 soundEffectName
      * @param {Object} param1
@@ -41,7 +47,7 @@ export class SoundEffects {
         if (!soundEffect.audio) {
             const audio = new browser.Audio();
             const ext = audio.canPlayType("audio/ogg; codecs=vorbis") ? ".ogg" : ".mp3";
-            audio.src = soundEffect.path + ext;
+            this._setAudioSrc(audio, url(soundEffect.path + ext));
             soundEffect.audio = audio;
         }
         if (!soundEffect.audio.paused) {
@@ -51,6 +57,10 @@ export class SoundEffects {
         soundEffect.audio.loop = loop;
         soundEffect.audio.volume = volume ?? soundEffect.defaultVolume ?? 1;
         Promise.resolve(soundEffect.audio.play()).catch(() => {});
+    }
+    /** To be patched in tests to use data-src */
+    _setAudioSrc(audio, srcPath) {
+        audio.src = srcPath;
     }
     /**
      * Resets the audio to the start of the track and pauses it.
@@ -75,6 +85,9 @@ export class SoundEffects {
 }
 
 export const soundEffects = {
+    /**
+     * @param {import("@web/env").OdooEnv} env
+     */
     start(env) {
         return new SoundEffects(env);
     },

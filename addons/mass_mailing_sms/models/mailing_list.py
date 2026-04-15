@@ -2,6 +2,7 @@
 # Part of Odoo. See LICENSE file for full copyright and licensing details.
 
 from odoo import fields, models
+from odoo.tools.sql import SQL
 
 
 class MailingList(models.Model):
@@ -25,6 +26,22 @@ class MailingList(models.Model):
     def action_view_contacts_sms(self):
         action = self.action_view_contacts()
         action['context'] = dict(action.get('context', {}), search_default_filter_valid_sms_recipient=1)
+        return action
+
+    def action_send_mailing_sms(self):
+        view = self.env.ref('mass_mailing_sms.mailing_mailing_view_form_sms')
+        action = self.env["ir.actions.actions"]._for_xml_id('mass_mailing_sms.mailing_mailing_action_sms')
+        action.update({
+            'context': {
+                'default_contact_list_ids': self.ids,
+                'default_model_id': self.env['ir.model']._get_id('mailing.list'),
+                'default_mailing_type': 'sms',
+            },
+            'target': 'current',
+            'view_type': 'form',
+            'views': [(view.id, 'form')],
+        })
+
         return action
 
     def _get_contact_statistics_fields(self):
@@ -57,9 +74,23 @@ class MailingList(models.Model):
         on one list but not on another, one opted in and the other one opted out,
         send mailing anyway.
 
-        :return list: opt-outed record IDs
+        :return: opt-outed record IDs
+        :rtype: list
         """
         subscriptions = self.subscription_ids if self else mailing.contact_list_ids.subscription_ids
         opt_out_contacts = subscriptions.filtered(lambda sub: sub.opt_out).mapped('contact_id')
         opt_in_contacts = subscriptions.filtered(lambda sub: not sub.opt_out).mapped('contact_id')
         return list(set(c.id for c in opt_out_contacts if c not in opt_in_contacts))
+
+    def _mailing_list_get_contact_condition(self):
+        models_to_flush, condition = super()._mailing_list_get_contact_condition()
+        return (
+            models_to_flush + [self.env['phone.blacklist']],
+            SQL(
+                "%(super_condition)s AND src_contact.phone_sanitized NOT IN (select number from phone_blacklist where active = TRUE)",
+                super_condition=condition
+            )
+        )
+
+    def _mailing_list_get_select_fields(self):
+        return super()._mailing_list_get_select_fields() + [(SQL('phone_sanitized'), SQL('mobile'))]

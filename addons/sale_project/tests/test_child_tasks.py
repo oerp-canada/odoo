@@ -3,9 +3,10 @@
 
 from odoo import Command
 
-from odoo.tests.common import TransactionCase, new_test_user
+from odoo.tests.common import tagged, TransactionCase, new_test_user
 
 
+@tagged('at_install', '-post_install')  # LEGACY at_install
 class TestNestedTaskUpdate(TransactionCase):
 
     @classmethod
@@ -31,6 +32,7 @@ class TestNestedTaskUpdate(TransactionCase):
         sale_order.action_confirm()
 
         cls.project = cls.order_line.project_id
+        cls.project.reinvoiced_sale_order_id = False
         cls.project.sale_line_id = False
         cls.user = new_test_user(cls.env, login='mla')
 
@@ -42,16 +44,16 @@ class TestNestedTaskUpdate(TransactionCase):
 
     def test_default_values_creating_subtask(self):
         parent = self.env['project.task'].create({'name': 'parent', 'user_ids': [Command.link(self.user.id)], 'project_id': self.project.id})
-        child = self.env['project.task'].create({'name': 'child', 'parent_id': parent.id})
+        child = self.env['project.task'].create({'name': 'child', 'parent_id': parent.id, 'project_id': self.project.id})
         self.assertTrue(parent.allow_billable, "The parent task should be billable as the project linked is billable")
         self.assertEqual(parent.partner_id, self.project.partner_id, "The partner set on the parent task should the one set on the project linked")
-        self.assertFalse(child.project_id, "The project set on the subtask should be False by default")
+        self.assertEqual(child.project_id, parent.project_id, "The project set on the subtask be inheritted from parent")
         self.assertTrue(child.allow_billable, "The subtask should be billable since its parent task's project is billable")
         self.assertEqual(child.partner_id, self.project.partner_id, "The partner set on the subtask should the one set on the project linked to the parent")
 
     def test_creating_subtask_user_id_on_parent_dont_go_on_child(self):
-        parent = self.env['project.task'].create({'name': 'parent', 'user_ids': [(4, self.user.id)]})
-        child = self.env['project.task'].create({'name': 'child', 'parent_id': parent.id, 'user_ids': False})
+        parent = self.env['project.task'].create({'name': 'parent', 'user_ids': [(4, self.user.id)], 'project_id': self.project.id})
+        child = self.env['project.task'].create({'name': 'child', 'parent_id': parent.id, 'user_ids': False, 'project_id': self.project.id})
         self.assertFalse(child.user_ids)
 
     def test_creating_subtask_partner_id_on_parent_goes_on_child(self):
@@ -99,8 +101,8 @@ class TestNestedTaskUpdate(TransactionCase):
     #----------------------------------------
 
     def test_write_user_id_on_parent_dont_write_on_child(self):
-        parent = self.env['project.task'].create({'name': 'parent', 'user_ids': False})
-        child = self.env['project.task'].create({'name': 'child', 'user_ids': False, 'parent_id': parent.id})
+        parent = self.env['project.task'].create({'name': 'parent', 'user_ids': False, 'project_id': self.project.id})
+        child = self.env['project.task'].create({'name': 'child', 'user_ids': False, 'parent_id': parent.id, 'project_id': self.project.id})
         self.assertFalse(child.user_ids)
         parent.write({'user_ids': [(4, self.user.id)]})
         self.assertFalse(child.user_ids)
@@ -108,8 +110,13 @@ class TestNestedTaskUpdate(TransactionCase):
         self.assertFalse(child.user_ids)
 
     def test_write_partner_id_on_parent_write_on_child(self):
-        parent = self.env['project.task'].create({'name': 'parent', 'partner_id': False})
-        child = self.env['project.task'].create({'name': 'child', 'partner_id': False, 'parent_id': parent.id})
+        parent = self.env['project.task'].create({'name': 'parent', 'partner_id': False, 'project_id': self.project.id})
+        child = self.env['project.task'].create({
+            'name': 'child',
+            'partner_id': False,
+            'parent_id': parent.id,
+            'project_id': self.env['project.project'].create({'name': 'proute'}).id,
+        })
         self.assertFalse(child.partner_id)
         parent.write({'partner_id': self.user.partner_id.id})
         self.assertNotEqual(child.partner_id, parent.partner_id)
@@ -138,7 +145,7 @@ class TestNestedTaskUpdate(TransactionCase):
 
     def test_write_sale_line_id_on_parent_dont_write_on_child_if_other_partner(self):
         parent = self.env['project.task'].create({'name': 'parent', 'partner_id': self.partner.id, 'project_id': self.project.id})
-        child = self.env['project.task'].create({'name': 'child', 'parent_id': parent.id, 'partner_id': self.user.partner_id.id})
+        child = self.env['project.task'].create({'name': 'child', 'parent_id': parent.id, 'partner_id': self.user.partner_id.id, 'project_id': self.project.id})
         self.assertFalse(child.sale_line_id)
         parent.write({'sale_line_id': self.order_line.id})
         self.assertFalse(child.sale_line_id)
@@ -150,15 +157,15 @@ class TestNestedTaskUpdate(TransactionCase):
     #----------------------------------
 
     def test_linking_user_id_on_parent_dont_write_on_child(self):
-        parent = self.env['project.task'].create({'name': 'parent', 'user_ids': [(4, self.user.id)]})
-        child = self.env['project.task'].create({'name': 'child', 'user_ids': False})
+        parent = self.env['project.task'].create({'name': 'parent', 'user_ids': [(4, self.user.id)], 'project_id': self.project.id})
+        child = self.env['project.task'].create({'name': 'child', 'user_ids': False, 'project_id': self.project.id})
         self.assertFalse(child.user_ids)
         child.write({'parent_id': parent.id})
         self.assertFalse(child.user_ids)
 
     def test_linking_partner_id_on_parent_write_on_child(self):
         parent = self.env['project.task'].create({'name': 'parent', 'partner_id': self.user.partner_id.id, 'project_id': self.project.id})
-        child = self.env['project.task'].create({'name': 'child', 'partner_id': False})
+        child = self.env['project.task'].create({'name': 'child', 'partner_id': False, 'project_id': self.project.id})
         self.assertFalse(child.partner_id)
         child.write({'parent_id': parent.id, 'project_id': self.project.id})
         self.assertEqual(child.partner_id, self.user.partner_id)
@@ -223,26 +230,63 @@ class TestNestedTaskUpdate(TransactionCase):
             'project_id': self.project.id,
             'child_ids': [
                 Command.create({
-                    'name': 'Subtask with project set',
+                    'name': 'Subtask 1',
                     'project_id': self.project.id,
                 }),
                 Command.create({
-                    'name': 'Subtask without any project set',
-                    'child_ids': [Command.create({'name': 'Subsubtask'})],
+                    'name': 'Subtask 2',
+                    'project_id': self.project.id,
+                    'child_ids': [
+                        Command.create({'name': 'Subsubtask', 'project_id': self.project.id})
+                    ],
                 }),
             ],
         })
-        subtask_with_project = parent.child_ids.filtered('project_id')
-        subtask_without_project = parent.child_ids - subtask_with_project
-        subsubtask = subtask_without_project.child_ids
+        self.assertTrue(all((parent + parent._get_all_subtasks()).mapped('allow_billable')))
 
-        self.assertTrue(self.project.allow_billable)
-        self.assertTrue(parent.allow_billable)
-        self.assertTrue(subtask_with_project.allow_billable)
-        self.assertTrue(subtask_without_project.allow_billable)
-        self.assertTrue(subsubtask.allow_billable)
-
+        subtask2 = parent.child_ids.filtered(lambda t: t.name == 'Subtask 2')
+        subsubtask = subtask2.child_ids
         project_non_billable = self.env['project.project'].create({'name': 'Non-billable project', 'allow_billable': False})
-        subtask_without_project.project_id = project_non_billable
-        self.assertFalse(subtask_without_project.allow_billable)
+
+        subtask2.project_id = project_non_billable
+        self.assertFalse(subtask2.allow_billable)
         self.assertFalse(subsubtask.allow_billable)
+
+    # ----------------------------------
+    #
+    #   When copying a project template, some values go on the child
+    #
+    # ----------------------------------
+
+    def test_associate_copied_task_to_copied_project(self):
+        """
+            When confirming an SO with a product generating a project from a template,
+            check that the copied task and subtask are correctly assigned to the copied
+            project rather than its template.
+        """
+        project_tempalte = self.env['project.project'].create({'name': 'Super Project'})
+        parent = self.env['project.task'].create({'name': 'parent task', 'project_id': project_tempalte.id})
+        child = self.env['project.task'].create({'name': 'child task', 'parent_id': parent.id, 'project_id': project_tempalte.id})
+        super_product = self.env['product.product'].create({
+            'name': 'Super product',
+            'type': 'service',
+            'service_tracking': 'project_only',
+            'project_template_id': project_tempalte.id,
+        })
+        sale_order = self.env['sale.order'].create({
+            'partner_id': self.partner.id,
+            'order_line': [
+                Command.create({
+                    'name': super_product.name,
+                    'product_id': super_product.id,
+                    'product_uom_qty': 1,
+                    'price_unit': 100,
+                })
+            ]
+        })
+        sale_order.action_confirm()
+        self.assertEqual(project_tempalte.tasks, parent | child)
+        super_project = sale_order.order_line.project_id
+        self.assertFalse(super_project.tasks & project_tempalte.tasks)
+        self.assertEqual(len(super_project.tasks), 2)
+        self.assertEqual(super_project.tasks.parent_id, super_project.tasks.child_ids.parent_id)

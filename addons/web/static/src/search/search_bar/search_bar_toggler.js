@@ -1,17 +1,29 @@
-/** @odoo-module **/
-
-import { Component, useEffect, useState } from "@odoo/owl";
+import { useLayoutEffect, useState } from "@web/owl2/utils";
+import { Component, onWillStart } from "@odoo/owl";
 import { browser } from "@web/core/browser/browser";
 import { useService } from "@web/core/utils/hooks";
 import { useDebounced } from "@web/core/utils/timing";
 
-export class SearchBarToggler extends Component {}
-SearchBarToggler.template = "web.SearchBar.Toggler";
-SearchBarToggler.props = {
-    isSmall: Boolean,
-    showSearchBar: Boolean,
-    toggleSearchBar: Function,
-};
+export class SearchBarToggler extends Component {
+    static template = "web.SearchBar.Toggler";
+    static props = {
+        isSmall: Boolean,
+        showSearchBar: Boolean,
+        toggleSearchBar: Function,
+    };
+}
+
+export class OfflineSearchBarToggler extends SearchBarToggler {
+    static template = "web.SearchBar.Toggler.Offline";
+    setup() {
+        const offlineService = useService("offline");
+        onWillStart(async () => {
+            const { actionId, viewType } = this.env.config;
+            const availableSearches = await offlineService.getAvailableSearches(actionId, viewType);
+            this.isDisabled = Object.keys(availableSearches).length <= 1;
+        });
+    }
+}
 
 export function useSearchBarToggler() {
     const ui = useService("ui");
@@ -33,7 +45,7 @@ export function useSearchBarToggler() {
     }
 
     const onResize = useDebounced(updateState, 200);
-    useEffect(
+    useLayoutEffect(
         () => {
             browser.addEventListener("resize", onResize);
             return () => browser.removeEventListener("resize", onResize);
@@ -44,6 +56,7 @@ export function useSearchBarToggler() {
     return {
         state,
         component: SearchBarToggler,
+        offlineComponent: OfflineSearchBarToggler,
         get props() {
             return {
                 isSmall: state.isSmall,

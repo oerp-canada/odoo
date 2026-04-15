@@ -1,10 +1,7 @@
-# -*- coding: utf-8 -*-
 # Part of Odoo. See LICENSE file for full copyright and licensing details.
 import re
-import base64
 import io
 
-from PyPDF2 import PdfFileReader, PdfFileMerger, PdfFileWriter
 from reportlab.platypus import Frame, Paragraph, KeepInFrame
 from reportlab.lib.units import mm
 from reportlab.lib.pagesizes import A4
@@ -14,6 +11,8 @@ from reportlab.pdfgen.canvas import Canvas
 from odoo import fields, models, api, _
 from odoo.addons.iap.tools import iap_tools
 from odoo.exceptions import AccessError, UserError
+from odoo.tools import BinaryBytes
+from odoo.tools.pdf import PdfFileReader, PdfFileWriter
 from odoo.tools.safe_eval import safe_eval
 
 DEFAULT_ENDPOINT = 'https://iap-snailmail.odoo.com'
@@ -43,8 +42,8 @@ class SnailmailLetter(models.Model):
         default=lambda self: self.env.company.id)
     report_template = fields.Many2one('ir.actions.report', 'Optional report to print and attach')
 
-    attachment_id = fields.Many2one('ir.attachment', string='Attachment', ondelete='cascade')
-    attachment_datas = fields.Binary('Document', related='attachment_id.datas')
+    attachment_id = fields.Many2one('ir.attachment', string='Attachment', ondelete='cascade', index='btree_not_null')
+    attachment_raw = fields.Binary('Document', related='attachment_id.raw')
     attachment_fname = fields.Char('Attachment Filename', related='attachment_id.name')
     color = fields.Boolean(string='Color', default=lambda self: self.env.company.snailmail_color)
     cover = fields.Boolean(string='Cover Page', default=lambda self: self.env.company.snailmail_cover)
@@ -53,17 +52,17 @@ class SnailmailLetter(models.Model):
         ('pending', 'In Queue'),
         ('sent', 'Sent'),
         ('error', 'Error'),
-        ('canceled', 'Canceled')
+        ('canceled', 'Cancelled')
         ], 'Status', readonly=True, copy=False, default='pending', required=True,
         help="When a letter is created, the status is 'Pending'.\n"
              "If the letter is correctly sent, the status goes in 'Sent',\n"
              "If not, it will got in state 'Error' and the error message will be displayed in the field 'Error Message'.")
     error_code = fields.Selection([(err_code, err_code) for err_code in ERROR_CODES], string="Error")
-    info_msg = fields.Char('Information')
+    info_msg = fields.Html('Information')
 
     reference = fields.Char(string='Related Record', compute='_compute_reference', readonly=True, store=False)
 
-    message_id = fields.Many2one('mail.message', string="Snailmail Status Message")
+    message_id = fields.Many2one('mail.message', string="Snailmail Status Message", index='btree_not_null')
     notification_ids = fields.One2many('mail.notification', 'letter_id', "Notifications")
 
     street = fields.Char('Street')
@@ -120,14 +119,26 @@ class SnailmailLetter(models.Model):
 
         self.env['mail.notification'].sudo().create(notification_vals)
 
-        letters.attachment_id.check('read')
+        letters.attachment_id.check_access('read')
         return letters
 
     def write(self, vals):
         res = super().write(vals)
         if 'attachment_id' in vals:
-            self.attachment_id.check('read')
+            self.attachment_id.check_access('read')
         return res
+
+    def _generate_report_pdf(self, report):
+        obj = self.env[self.model].browse(self.res_id)
+        if report.print_report_name:
+            report_name = safe_eval(report.print_report_name, {'object': obj})
+        elif report.attachment:
+            report_name = safe_eval(report.attachment, {'object': obj})
+        else:
+            report_name = 'Document'
+        filename = "%s.%s" % (report_name, "pdf")
+        pdf_bin = self.env['ir.actions.report'].with_context(snailmail_layout=not self.cover, lang='en_US')._render_qweb_pdf(report, self.res_id)[0]
+        return filename, pdf_bin
 
     def _fetch_attachment(self):
         """
@@ -135,7 +146,6 @@ class SnailmailLetter(models.Model):
         and res_ids and create them if not found.
         """
         self.ensure_one()
-        obj = self.env[self.model].browse(self.res_id)
         if not self.attachment_id:
             report = self.report_template
             if not report:
@@ -145,23 +155,25 @@ class SnailmailLetter(models.Model):
                     return False
                 else:
                     self.write({'report_template': report.id})
-            if report.print_report_name:
-                report_name = safe_eval(report.print_report_name, {'object': obj})
-            elif report.attachment:
-                report_name = safe_eval(report.attachment, {'object': obj})
-            else:
-                report_name = 'Document'
-            filename = "%s.%s" % (report_name, "pdf")
             paperformat = report.get_paperformat()
             if (paperformat.format == 'custom' and paperformat.page_width != 210 and paperformat.page_height != 297) or paperformat.format != 'A4':
                 raise UserError(_("Please use an A4 Paper format."))
-            pdf_bin, unused_filetype = self.env['ir.actions.report'].with_context(snailmail_layout=not self.cover, lang='en_US')._render_qweb_pdf(report, self.res_id)
+            # The external_report_layout_id is changed just for the snailmail pdf generation if the layout is not supported
+            prev = self.company_id.external_report_layout_id
+            if prev in {
+                self.env.ref(f'web.external_layout_{layout}')
+                for layout in ('bubble', 'wave', 'folder', 'center', 'dual', 'lines')
+            }:
+                self.company_id.sudo().external_report_layout_id = self.env.ref('web.external_layout_standard')
+            filename, pdf_bin = self._generate_report_pdf(report)
+            self.company_id.sudo().external_report_layout_id = prev
+
             pdf_bin = self._overwrite_margins(pdf_bin)
             if self.cover:
                 pdf_bin = self._append_cover_page(pdf_bin)
             attachment = self.env['ir.attachment'].create({
                 'name': filename,
-                'datas': base64.b64encode(pdf_bin),
+                'raw': BinaryBytes(pdf_bin),
                 'res_model': 'snailmail.letter',
                 'res_id': self.id,
                 'type': 'binary',  # override default_type from context, possibly meant for another model!
@@ -175,7 +187,7 @@ class SnailmailLetter(models.Model):
             :param bin_pdf : binary content of the pdf file
         """
         pages = 0
-        for match in re.compile(b"/Count\s+(\d+)").finditer(bin_pdf):
+        for match in re.compile(rb"/Count\s+(\d+)").finditer(bin_pdf):
             pages = int(match.group(1))
         return pages
 
@@ -217,11 +229,10 @@ class SnailmailLetter(models.Model):
             }
         }
         """
-        account_token = self.env['iap.account'].get('snailmail').account_token
-        dbuuid = self.env['ir.config_parameter'].sudo().get_param('database.uuid')
+        account_token = self.env['iap.account'].sudo().get('snailmail').account_token
+        dbuuid = self.env['ir.config_parameter'].sudo().get_str('database.uuid')
         documents = []
 
-        batch = len(self) > 1
         for letter in self:
             recipient_name = letter.partner_id.name or letter.partner_id.parent_id and letter.partner_id.parent_id.name
             if not recipient_name:
@@ -264,13 +275,13 @@ class SnailmailLetter(models.Model):
             else:
                 # adding the web logo from the company for future possible customization
                 document.update({
-                    'company_logo': letter.company_id.logo_web and letter.company_id.logo_web.decode('utf-8') or False,
+                    'company_logo': letter.company_id.logo_web.to_base64() or False,
                 })
                 attachment = letter._fetch_attachment()
                 if attachment:
                     document.update({
-                        'pdf_bin': route == 'print' and attachment.datas.decode('utf-8'),
-                        'pages': route == 'estimate' and self._count_pages_pdf(base64.b64decode(attachment.datas)),
+                        'pdf_bin': route == 'print' and attachment.raw.to_base64(),
+                        'pages': route == 'estimate' and self._count_pages_pdf(attachment.raw),
                     })
                 else:
                     letter.write({
@@ -304,7 +315,7 @@ class SnailmailLetter(models.Model):
             link = self.env['iap.account'].get_credits_url(service_name='snailmail')
             return _('You don\'t have enough credits to perform this operation.<br>Please go to your <a href=%s target="new">iap account</a>.', link)
         if error == 'TRIAL_ERROR':
-            link = self.env['iap.account'].get_credits_url(service_name='snailmail', trial=True)
+            link = self.env['iap.account'].get_credits_url(service_name='snailmail')
             return _('You don\'t have an IAP account registered for this service.<br>Please go to <a href=%s target="new">iap.odoo.com</a> to claim your free credits.', link)
         if error == 'NO_PRICE_AVAILABLE':
             return _('The country of the partner is not covered by Snailmail.')
@@ -312,6 +323,8 @@ class SnailmailLetter(models.Model):
             return _('One or more required fields are empty.')
         if error == 'FORMAT_ERROR':
             return _('The attachment of the letter could not be sent. Please check its content and contact the support if the problem persists.')
+        if error == 'TOO_MANY_PAGES':
+            return _('The document to be sent exceeds the maximum allowed limit of 8 pages.')
         else:
             return _('An unknown error happened. Please contact the support.')
         return error
@@ -368,8 +381,8 @@ class SnailmailLetter(models.Model):
             }
         }
         """
-        endpoint = self.env['ir.config_parameter'].sudo().get_param('snailmail.endpoint', DEFAULT_ENDPOINT)
-        timeout = int(self.env['ir.config_parameter'].sudo().get_param('snailmail.timeout', DEFAULT_TIMEOUT))
+        endpoint = self.env['ir.config_parameter'].sudo().get_str('snailmail.endpoint') or DEFAULT_ENDPOINT
+        timeout = self.env['ir.config_parameter'].sudo().get_int('snailmail.timeout') or DEFAULT_TIMEOUT
         params = self._snailmail_create('print')
         try:
             response = iap_tools.iap_jsonrpc(endpoint + PRINT_ENDPOINT, params=params, timeout=timeout)
@@ -381,9 +394,8 @@ class SnailmailLetter(models.Model):
             raise ae
         for doc in response['request']['documents']:
             if doc.get('sent') and response['request_code'] == 200:
-                self.env['iap.account']._send_iap_bus_notification(
-                    service_name='snailmail',
-                    title=_("Snail Mails are successfully sent"))
+                self.env['iap.account']._send_success_notification(
+                    message=_("Snail Mails are successfully sent"))
                 note = _('The document was correctly sent by post.<br>The tracking id is %s', doc['send_id'])
                 letter_data = {'info_msg': note, 'state': 'sent', 'error_code': False}
                 notification_data = {
@@ -395,10 +407,9 @@ class SnailmailLetter(models.Model):
                 error = doc['error'] if response['request_code'] == 200 else response['reason']
 
                 if error == 'CREDIT_ERROR':
-                    self.env['iap.account']._send_iap_bus_notification(
+                    self.env['iap.account']._send_no_credit_notification(
                         service_name='snailmail',
-                        title=_("Not enough credits for Snail Mail"),
-                        error_type="credit")
+                        title=_("Not enough credits for Snail Mail"))
                 note = _('An error occurred when sending the document by post.<br>Error: %s', self._get_error_message(error))
                 letter_data = {
                     'info_msg': note,
@@ -457,8 +468,18 @@ class SnailmailLetter(models.Model):
         required_keys = ['street', 'city', 'zip', 'country_id']
         return all(record[key] for key in required_keys)
 
-    def _append_cover_page(self, invoice_bin: bytes):
+    def _get_cover_address_split(self):
         address_split = self.partner_id.with_context(show_address=True, lang='en_US').display_name.split('\n')
+        if self.country_id.code == 'DE':
+            # Germany requires specific address formatting for Pingen
+            if self.street2:
+                address_split[1] = f'{self.street} // {self.street2}'
+            address_split[2] = f'{self.zip} {self.city}'
+        return address_split
+
+    def _append_cover_page(self, invoice_bin: bytes):
+        out_writer = PdfFileWriter()
+        address_split = self._get_cover_address_split()
         address_split[0] = self.partner_id.name or self.partner_id.parent_id and self.partner_id.parent_id.name or address_split[0]
         address = '<br/>'.join(address_split)
         address_x = 118 * mm
@@ -480,13 +501,16 @@ class SnailmailLetter(models.Model):
         invoice = PdfFileReader(io.BytesIO(invoice_bin))
         cover_bin = io.BytesIO(cover_buf.getvalue())
         cover_file = PdfFileReader(cover_bin)
-        merger = PdfFileMerger()
+        out_writer.append_pages_from_reader(cover_file)
 
-        merger.append(cover_file, import_bookmarks=False)
-        merger.append(invoice, import_bookmarks=False)
+        # Add a blank buffer page to avoid printing behind the cover page
+        if self.duplex:
+            out_writer.add_blank_page()
+
+        out_writer.append_pages_from_reader(invoice)
 
         out_buff = io.BytesIO()
-        merger.write(out_buff)
+        out_writer.write(out_buff)
         return out_buff.getvalue()
 
     def _overwrite_margins(self, invoice_bin: bytes):
@@ -527,8 +551,8 @@ class SnailmailLetter(models.Model):
         curr_pdf = PdfFileReader(io.BytesIO(invoice_bin))
         out = PdfFileWriter()
         for page in curr_pdf.pages:
-            page.mergePage(new_pdf.getPage(0))
-            out.addPage(page)
+            page.merge_page(new_pdf.pages[0])
+            out.add_page(page)
         out_stream = io.BytesIO()
         out.write(out_stream)
         out_bin = out_stream.getvalue()

@@ -11,12 +11,13 @@
             <value>mailing.contact</value>
             <value eval="[
                 'name',
-                'company_name',
-                'title_id',
+                'first_name',
+                'last_name',
                 'email',
                 'list_ids',
                 'country_id',
                 'tag_ids',
+                'properties',
             ]"/>
         </function>
     </data>

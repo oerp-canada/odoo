@@ -1,70 +1,73 @@
-# -*- coding: utf-8 -*-
 # Part of Odoo. See LICENSE file for full copyright and licensing details.
 import base64
+import contextlib
 import hashlib
 import io
 import os
+import tracemalloc
+from unittest.mock import patch
 
 from PIL import Image
 
-import odoo
-from odoo.exceptions import AccessError
-from odoo.tests.common import TransactionCase
-from odoo.tools import image_to_base64
+from odoo.api import SUPERUSER_ID
+from odoo.exceptions import AccessError, ValidationError
+from odoo.tests import tagged
+from odoo.tools import BinaryBytes, file_open, file_path, mute_logger
+from odoo.tools.image import image_apply_opt
+
+from odoo.addons.base.models.ir_attachment import IrAttachment
+from odoo.addons.base.tests.common import TransactionCaseWithUserDemo
 
 HASH_SPLIT = 2      # FIXME: testing implementations detail is not a good idea
 
 
-class TestIrAttachment(TransactionCase):
+@tagged('at_install', '-post_install')
+class TestIrAttachment(TransactionCaseWithUserDemo):
     def setUp(self):
-        super(TestIrAttachment, self).setUp()
+        super().setUp()
         self.Attachment = self.env['ir.attachment']
         self.filestore = self.Attachment._filestore()
 
         # Blob1
         self.blob1 = b'blob1'
-        self.blob1_b64 = base64.b64encode(self.blob1)
+        self.blob1_v = BinaryBytes(self.blob1)
         self.blob1_hash = hashlib.sha1(self.blob1).hexdigest()
         self.blob1_fname = self.blob1_hash[:HASH_SPLIT] + '/' + self.blob1_hash
 
         # Blob2
         self.blob2 = b'blob2'
+        self.blob2_v = BinaryBytes(self.blob2)
         self.blob2_b64 = base64.b64encode(self.blob2)
 
     def assertApproximately(self, value, expectedSize, delta=1):
-        # we don't used bin_size in context, because on write, the cached value is the data and not
-        # the size, so we need on each write to invalidate cache if we really want to get the size.
-        try:
-            value = base64.b64decode(value.decode())
-        except UnicodeDecodeError:
-            pass
-        size = len(value) / 1024 # kb
+        value = value.content
+        size = len(value) / 1024  # KB
 
         self.assertAlmostEqual(size, expectedSize, delta=delta)
 
     def test_01_store_in_db(self):
         # force storing in database
-        self.env['ir.config_parameter'].set_param('ir_attachment.location', 'db')
+        self.env['ir.config_parameter'].set_str('ir_attachment.location', 'db')
 
         # 'ir_attachment.location' is undefined test database storage
-        a1 = self.Attachment.create({'name': 'a1', 'raw': self.blob1})
-        self.assertEqual(a1.datas, self.blob1_b64)
+        a1 = self.Attachment.create({'name': 'a1', 'raw': self.blob1_v})
+        self.assertEqual(a1.raw.content, self.blob1)
 
-        self.assertEqual(a1.db_datas, self.blob1)
+        self.assertEqual(a1.db_datas.content, self.blob1)
 
     def test_02_store_on_disk(self):
-        a2 = self.Attachment.create({'name': 'a2', 'raw': self.blob1})
+        a2 = self.Attachment.create({'name': 'a2', 'raw': self.blob1_v})
         self.assertEqual(a2.store_fname, self.blob1_fname)
         self.assertTrue(os.path.isfile(os.path.join(self.filestore, a2.store_fname)))
 
     def test_03_no_duplication(self):
-        a2 = self.Attachment.create({'name': 'a2', 'raw': self.blob1})
-        a3 = self.Attachment.create({'name': 'a3', 'raw': self.blob1})
+        a2 = self.Attachment.create({'name': 'a2', 'raw': self.blob1_v})
+        a3 = self.Attachment.create({'name': 'a3', 'raw': self.blob1_v})
         self.assertEqual(a3.store_fname, a2.store_fname)
 
     def test_04_keep_file(self):
-        a2 = self.Attachment.create({'name': 'a2', 'raw': self.blob1})
-        a3 = self.Attachment.create({'name': 'a3', 'raw': self.blob1})
+        a2 = self.Attachment.create({'name': 'a2', 'raw': self.blob1_v})
+        a3 = self.Attachment.create({'name': 'a3', 'raw': self.blob1_v})
 
         a2_fn = os.path.join(self.filestore, a2.store_fname)
 
@@ -72,7 +75,7 @@ class TestIrAttachment(TransactionCase):
         self.assertTrue(os.path.isfile(a2_fn))
 
     def test_05_change_data_change_file(self):
-        a2 = self.Attachment.create({'name': 'a2', 'raw': self.blob1})
+        a2 = self.Attachment.create({'name': 'a2', 'raw': self.blob1_v})
         a2_store_fname1 = a2.store_fname
         a2_fn = os.path.join(self.filestore, a2_store_fname1)
 
@@ -91,33 +94,35 @@ class TestIrAttachment(TransactionCase):
         Tests the consistency of documents' mimetypes
         """
 
-        Attachment = self.Attachment.with_user(self.env.ref('base.user_demo').id)
-        a2 = Attachment.create({'name': 'a2', 'datas': self.blob1_b64, 'mimetype': 'image/png'})
+        Attachment = self.Attachment.with_user(self.user_demo.id)
+        a2 = Attachment.create({'name': 'a2', 'raw': self.blob1, 'mimetype': 'image/png'})
         self.assertEqual(a2.mimetype, 'image/png', "the new mimetype should be the one given on write")
-        a3 = Attachment.create({'name': 'a3', 'datas': self.blob1_b64, 'mimetype': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'})
+        a3 = Attachment.create({'name': 'a3', 'raw': self.blob1, 'mimetype': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'})
         self.assertEqual(a3.mimetype, 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', "should preserve office mime type")
+        a4 = Attachment.create({'name': 'a4', 'raw': self.blob1, 'mimetype': 'Application/VND.OpenXMLformats-officedocument.wordprocessingml.document'})
+        self.assertEqual(a4.mimetype, 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', "should preserve office mime type (lowercase)")
 
     def test_08_neuter_xml_mimetype(self):
         """
         Tests that potentially harmful mimetypes (XML mimetypes that can lead to XSS attacks) are converted to text
         """
-        Attachment = self.Attachment.with_user(self.env.ref('base.user_demo').id)
-        document = Attachment.create({'name': 'document', 'datas': self.blob1_b64})
-        document.write({'datas': self.blob1_b64, 'mimetype': 'text/xml'})
+        Attachment = self.Attachment.with_user(self.user_demo.id)
+        document = Attachment.create({'name': 'document', 'raw': self.blob1})
+        document.write({'raw': self.blob1, 'mimetype': 'text/xml'})
         self.assertEqual(document.mimetype, 'text/plain', "XML mimetype should be forced to text")
-        document.write({'datas': self.blob1_b64, 'mimetype': 'image/svg+xml'})
+        document.write({'raw': self.blob1, 'mimetype': 'image/svg+xml'})
         self.assertEqual(document.mimetype, 'text/plain', "SVG mimetype should be forced to text")
-        document.write({'datas': self.blob1_b64, 'mimetype': 'text/html'})
+        document.write({'raw': self.blob1, 'mimetype': 'text/html'})
         self.assertEqual(document.mimetype, 'text/plain', "HTML mimetype should be forced to text")
-        document.write({'datas': self.blob1_b64, 'mimetype': 'application/xhtml+xml'})
+        document.write({'raw': self.blob1, 'mimetype': 'application/xhtml+xml'})
         self.assertEqual(document.mimetype, 'text/plain', "XHTML mimetype should be forced to text")
 
     def test_09_dont_neuter_xml_mimetype_for_admin(self):
         """
         Admin user does not have a mime type filter
         """
-        document = self.Attachment.create({'name': 'document', 'datas': self.blob1_b64})
-        document.write({'datas': self.blob1_b64, 'mimetype': 'text/xml'})
+        document = self.Attachment.create({'name': 'document', 'raw': self.blob1})
+        document.write({'raw': self.blob1, 'mimetype': 'text/xml'})
         self.assertEqual(document.mimetype, 'text/xml', "XML mimetype should not be forced to text, for admin user")
 
     def test_10_image_autoresize(self):
@@ -129,45 +134,9 @@ class TestIrAttachment(TransactionCase):
             img.paste(logo)
             img.save(img_bin, 'JPEG')
 
-        img_encoded = image_to_base64(img, 'JPEG')
-        img_bin = img_bin.getvalue()
+        img_bin = image_apply_opt(img, 'JPEG')
 
         fullsize = 124.99
-
-        ####################################
-        ### test create/write on 'datas'
-        ####################################
-        attach = Attachment.with_context(image_no_postprocess=True).create({
-            'name': 'image',
-            'datas': img_encoded,
-        })
-        self.assertApproximately(attach.datas, fullsize)  # no resize, no compression
-
-        attach = attach.with_context(image_no_postprocess=False)
-        attach.datas = img_encoded
-        self.assertApproximately(attach.datas, 12.06)  # default resize + default compression
-
-        # resize + default quality (80)
-        self.env['ir.config_parameter'].set_param('base.image_autoresize_max_px', '1024x768')
-        attach.datas = img_encoded
-        self.assertApproximately(attach.datas, 3.71)
-
-        # resize + quality 50
-        self.env['ir.config_parameter'].set_param('base.image_autoresize_quality', '50')
-        attach.datas = img_encoded
-        self.assertApproximately(attach.datas, 3.57)
-
-        # no resize + no quality implicit
-        self.env['ir.config_parameter'].set_param('base.image_autoresize_max_px', '0')
-        attach.datas = img_encoded
-        self.assertApproximately(attach.datas, fullsize)
-
-        # Check that we only compress quality when we resize. We avoid to compress again during a new write.
-        # no resize + quality -> should have no effect
-        self.env['ir.config_parameter'].set_param('base.image_autoresize_max_px', '10000x10000')
-        self.env['ir.config_parameter'].set_param('base.image_autoresize_quality', '50')
-        attach.datas = img_encoded
-        self.assertApproximately(attach.datas, fullsize)
 
         ####################################
         ### test create/write on 'raw'
@@ -187,48 +156,47 @@ class TestIrAttachment(TransactionCase):
         self.assertApproximately(attach.raw, 12.06)  # default resize + default compression
 
         # resize + default quality (80)
-        self.env['ir.config_parameter'].set_param('base.image_autoresize_max_px', '1024x768')
+        self.env['ir.config_parameter'].set_str('base.image_autoresize_max_px', '1024x768')
         attach.raw = img_bin
         self.assertApproximately(attach.raw, 3.71)
 
         # resize + no quality
-        self.env['ir.config_parameter'].set_param('base.image_autoresize_quality', '0')
+        self.env['ir.config_parameter'].set_int('base.image_autoresize_quality', 0)
         attach.raw = img_bin
         self.assertApproximately(attach.raw, 4.09)
 
         # resize + quality 50
-        self.env['ir.config_parameter'].set_param('base.image_autoresize_quality', '50')
+        self.env['ir.config_parameter'].set_int('base.image_autoresize_quality', 50)
         attach.raw = img_bin
         self.assertApproximately(attach.raw, 3.57)
 
         # no resize + no quality implicit
-        self.env['ir.config_parameter'].set_param('base.image_autoresize_max_px', '0')
+        self.env['ir.config_parameter'].set_str('base.image_autoresize_max_px', '0')
         attach.raw = img_bin
         self.assertApproximately(attach.raw, fullsize)
 
         # no resize of gif
-        self.env['ir.config_parameter'].set_param('base.image_autoresize_max_px', '0x0')
+        self.env['ir.config_parameter'].set_str('base.image_autoresize_max_px', '0x0')
         gif_bin = b'GIF89a\x01\x00\x01\x00\x00\xff\x00,\x00\x00\x00\x00\x01\x00\x01\x00\x00\x02\x00;'
         attach.raw = gif_bin
-        self.assertEqual(attach.raw, gif_bin)
+        self.assertEqual(attach.raw.content, gif_bin)
 
     def test_11_copy(self):
         """
         Copying an attachment preserves the data
         """
-        document = self.Attachment.create({'name': 'document', 'datas': self.blob2_b64})
+        document = self.Attachment.create({'name': 'document', 'raw': self.blob2})
         document2 = document.copy({'name': "document (copy)"})
         self.assertEqual(document2.name, "document (copy)")
-        self.assertEqual(document2.datas, document.datas)
-        self.assertEqual(document2.db_datas, document.db_datas)
+        self.assertEqual(document2.raw.content, document.raw.content)
+        self.assertEqual(document2.db_datas.content, document.db_datas.content)
         self.assertEqual(document2.store_fname, document.store_fname)
         self.assertEqual(document2.checksum, document.checksum)
 
-        document3 = document.copy({'datas': self.blob1_b64})
-        self.assertEqual(document3.datas, self.blob1_b64)
-        self.assertEqual(document3.raw, self.blob1)
+        document3 = document.copy({'raw': self.blob1})
+        self.assertEqual(document3.raw.content, self.blob1)
         self.assertTrue(self.filestore)  # no data in db but has a store_fname
-        self.assertEqual(document3.db_datas, False)
+        self.assertEqual(document3.db_datas.content, b'')
         self.assertEqual(document3.store_fname, self.blob1_fname)
         self.assertEqual(document3.checksum, self.blob1_hash)
 
@@ -244,28 +212,80 @@ class TestIrAttachment(TransactionCase):
         self.assertFalse(os.path.isfile(store_path), 'file removed')
 
     def test_13_rollback(self):
-        self.registry.enter_test_mode(self.cr)
-        self.addCleanup(self.registry.leave_test_mode)
-        self.cr = self.registry.cursor()
-        self.addCleanup(self.cr.close)
-        self.env = odoo.api.Environment(self.cr, odoo.SUPERUSER_ID, {})
-
         # the data needs to be unique so that no other attachment link
         # the file so that the gc removes it
         unique_blob = os.urandom(16)
-        a1 = self.Attachment.create({'name': 'a1', 'raw': unique_blob})
-        store_path = os.path.join(self.filestore, a1.store_fname)
-        self.assertTrue(os.path.isfile(store_path), 'file exists')
-        self.env.cr.rollback()
-        self.Attachment._gc_file_store_unsafe()
+        with contextlib.closing(self.cr.savepoint()):
+            a1 = self.env['ir.attachment'].create({'name': 'a1', 'raw': unique_blob})
+            store_path = os.path.join(self.filestore, a1.store_fname)
+            self.assertTrue(os.path.isfile(store_path), 'file exists')
+        self.env['ir.attachment']._gc_file_store_unsafe()
         self.assertFalse(os.path.isfile(store_path), 'file removed')
 
+    def test_14_invalid_mimetype_with_correct_file_extension_no_post_processing(self):
+        # test with fake svg with png mimetype
+        unique_blob = b'<svg xmlns="http://www.w3.org/2000/svg"></svg>'
+        a1 = self.Attachment.create({'name': 'a1', 'raw': unique_blob, 'mimetype': 'image/png'})
+        self.assertEqual(a1.raw.content, unique_blob)
+        self.assertEqual(a1.mimetype, 'image/png')
 
-class TestPermissions(TransactionCase):
+    def test_15_read_binary_bin_size_is_lazy(self):
+        self.env.invalidate_all()
+        IrAttachment = self.registry['ir.attachment']
+        main_partner = self.env.ref('base.main_partner')
+        with patch.object(
+            IrAttachment,
+            '_file_read',
+            side_effect=IrAttachment._file_read,
+            autospec=True,
+        ) as patch_file_read:
+            self.env['res.partner'].with_context(bin_size=True).search_read(
+                [('id', 'in', main_partner.ids)], ['image_128']
+            )
+            self.assertEqual(patch_file_read.call_count, 0)
+
+    def test_16_from_file_takes_little_memory(self):
+        # The biggest file we reliably have is "i18n/base.pot" which is
+        # only 1.3MiB. We use tracemalloc to make sure _upload_file uses
+        # little memory when compared to create({'raw': file.read()}).
+
+        # warmup outside of tracemalloc
+        self.env['ir.attachment'].create({'name': 'empty', 'raw': b''})
+
+        tracemalloc.start()
+        try:
+            with file_open('base/i18n/base.pot', 'rb') as file:
+                attach1 = self.env['ir.attachment'].create({
+                    'name': 'base.pot',
+                    'raw': file.read(),
+                })
+            _, file_read_peak_memory_usage = tracemalloc.get_traced_memory()
+            tracemalloc.reset_peak()
+
+            with file_open('base/i18n/base.pot', 'rb') as file:
+                attach2 = self.env['ir.attachment']._upload_file(file, {
+                    'name': 'base.pot',
+                })
+            _, from_file_peak_memory_usage = tracemalloc.get_traced_memory()
+        finally:
+            tracemalloc.stop()
+
+        base_pot = self.file_read('base/i18n/base.pot').content
+        actual_size = os.stat(file_path('base/i18n/base.pot')).st_size
+        self.assertTrue(attach1.file_size == attach2.file_size == actual_size,
+                       (attach1.file_size, attach2.file_size, actual_size))
+        self.assertEqual(attach1.checksum, attach2.checksum)
+        self.assertTrue(attach1.raw.content == attach2.raw.content == base_pot)
+        self.assertLess(from_file_peak_memory_usage, file_read_peak_memory_usage // 2,
+            "_from_path(file.name) must be much more memory efficient than create({'raw': file.read()})")
+
+
+@tagged('at_install', '-post_install')  # LEGACY at_install
+class TestPermissions(TransactionCaseWithUserDemo):
     def setUp(self):
         super().setUp()
         # replace self.env(uid=1) with an actual user environment so rules apply
-        self.env = self.env(user=self.env.ref('base.user_demo'))
+        self.env = self.env(user=self.user_demo)
         self.Attachments = self.env['ir.attachment']
 
         # create a record with an attachment and a rule allowing Read access
@@ -290,37 +310,93 @@ class TestPermissions(TransactionCase):
         If the attachment has no res_model/res_id, it can be read by its author and admins only
         """
         # check that the information can be read out of the box
-        self.attachment.datas
+        self.attachment.raw
         # prevent read access on record
         self.rule.perm_read = True
         self.attachment.invalidate_recordset()
         with self.assertRaises(AccessError):
-            self.attachment.datas
+            self.attachment.raw
 
         # Make the attachment public
         self.attachment.sudo().public = True
         # Check the information can be read again
-        self.attachment.datas
+        self.attachment.raw
         # Remove the public access
         self.attachment.sudo().public = False
         # Check the record can no longer be accessed
         with self.assertRaises(AccessError):
-            self.attachment.datas
+            self.attachment.raw
 
         # Create an attachment as user without res_model/res_id
         attachment_user = self.Attachments.create({'name': 'foo'})
         # Check the user can access his own attachment
-        attachment_user.datas
+        attachment_user.raw
         # Create an attachment as superuser without res_model/res_id
-        attachment_admin = self.Attachments.with_user(odoo.SUPERUSER_ID).create({'name': 'foo'})
+        attachment_admin = self.Attachments.with_user(SUPERUSER_ID).create({'name': 'foo'})
         # Check the record cannot be accessed by a regular user
         with self.assertRaises(AccessError):
-            attachment_admin.with_user(self.env.user).datas
+            attachment_admin.with_user(self.env.user).raw
         # Check the record can be accessed by an admin (other than superuser)
         admin_user = self.env.ref('base.user_admin')
         # Safety assert that base.user_admin is not the superuser, otherwise the test is useless
-        self.assertNotEqual(odoo.SUPERUSER_ID, admin_user.id)
-        attachment_admin.with_user(admin_user).datas
+        self.assertNotEqual(SUPERUSER_ID, admin_user.id)
+        attachment_admin.with_user(admin_user).raw
+
+    @mute_logger("odoo.addons.base.models.ir_rule", "odoo.models")
+    def test_field_read_permission(self):
+        """If the record field can't be read,
+        e.g. `groups="base.group_system"` on the field,
+        the attachment can't be read either.
+        """
+        # check that the information can be read out of the box
+        main_partner = self.env.ref('base.main_partner')
+        self.assertTrue(main_partner.image_128)
+        attachment = self.env['ir.attachment'].search([
+            ('res_model', '=', 'res.partner'),
+            ('res_id', '=', main_partner.id),
+            ('res_field', '=', 'image_128')
+        ])
+        self.assertTrue(attachment.raw)
+        with self.assertQueries([
+            # security SQL contains public check or accessible field with
+            # res_id IN accessible corecords for a given res_model
+            """
+            SELECT "ir_attachment"."id"
+            FROM "ir_attachment"
+            WHERE ("ir_attachment"."res_field" IN %s AND "ir_attachment"."res_id" IN %s AND "ir_attachment"."res_model" IN %s) AND (
+                "ir_attachment"."public" IS TRUE
+                OR (
+                    ("ir_attachment"."res_field" IN %s OR "ir_attachment"."res_field" IS NULL)
+                    AND "ir_attachment"."res_id" IN (
+                        SELECT "res_partner"."id"
+                        FROM "res_partner"
+                        WHERE "res_partner"."id" IN %s AND (
+                            ("res_partner"."company_id" IN %s OR "res_partner"."company_id" IS NULL)
+                            OR "res_partner"."partner_share" IS NOT TRUE
+                        )
+                    )
+                    AND "ir_attachment"."res_model" IN %s
+                )
+            )
+            ORDER BY "ir_attachment"."id" DESC
+            """
+        ]):
+            self.env['ir.attachment'].search([
+                ('res_model', '=', 'res.partner'),
+                ('res_id', '=', main_partner.id),
+                ('res_field', '=', 'image_128')
+            ])
+
+        # Patch the field `res.partner.image_128` to make it unreadable by the demo user
+        self.patch(self.env.registry['res.partner']._fields['image_128'], 'groups', 'base.group_system')
+        self.env.transaction.reset()
+
+        # Assert the field can't be read
+        with self.assertRaises(AccessError):
+            main_partner.image_128
+        # Assert the attachment related to the field can't be read
+        with self.assertRaises(AccessError):
+            attachment.raw
 
     def test_with_write_permissions(self):
         """With write permissions to the linked record, attachment can be
@@ -372,3 +448,27 @@ class TestPermissions(TransactionCase):
         # even from a record with write permissions
         with self.assertRaises(AccessError):
             copied.copy({'res_model': unwritable._name, 'res_id': unwritable.id})
+
+    def test_write_error(self):
+        # try to write a file in a place where we have no access
+        # /proc is not writeable, check if we have an error raised
+        self.patch(IrAttachment, '_get_path', lambda self, binary, _checksum: ('dummy_test', '/proc/dummy_test'))
+        with self.assertRaises(OSError):
+            self.env['ir.attachment']._file_write(b'test', 'test')
+
+    def test_write_create_url_binary_attachment(self):
+        with self.assertRaisesRegex(ValidationError, r"Sorry, you are not allowed to write on this document"):
+            self.Attachments.create({'name': 'Py', 'url': '/blabla.js', 'raw': b'Something'})
+        with self.assertRaisesRegex(ValidationError, r"Sorry, you are not allowed to write on this document"):
+            self.Attachments.create({'name': 'Py', 'url': '/blabla.js', 'raw': b'Something'})
+        with self.assertRaisesRegex(ValidationError, r"Sorry, you are not allowed to write on this document"):
+            self.Attachments.with_context(default_url='/blabla.js').create({'name': 'Py', 'raw': b'Something'})
+
+        existing_attachment = self.Attachments.create({'name': 'aaa'})
+        with self.assertRaisesRegex(ValidationError, r"Sorry, you are not allowed to write on this document"):
+            existing_attachment.url = '/blabla.js'
+        existing_attachment.type = 'url'
+        existing_attachment.url = '/blabla.js'
+
+        with self.assertRaisesRegex(ValidationError, r"Sorry, you are not allowed to write on this document"):
+            existing_attachment.type = 'binary'

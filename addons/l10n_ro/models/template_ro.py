@@ -9,12 +9,7 @@ class AccountChartTemplate(models.AbstractModel):
     @template('ro')
     def _get_ro_template_data(self):
         return {
-            'property_account_receivable_id': 'ro_pcg_recv',
-            'property_account_payable_id': 'pcg_4011',
-            'property_account_expense_categ_id': 'ro_pcg_expense',
-            'property_account_income_categ_id': 'ro_pcg_sale',
             'code_digits': '6',
-            'use_storno_accounting': True,
         }
 
     @template('ro', 'res.company')
@@ -22,8 +17,8 @@ class AccountChartTemplate(models.AbstractModel):
         return {
             self.env.company.id: {
                 'account_fiscal_country_id': 'base.ro',
-                'bank_account_code_prefix': '512',
-                'cash_account_code_prefix': '531',
+                'bank_account_code_prefix': '5121',
+                'cash_account_code_prefix': '5311',
                 'transfer_account_code_prefix': '581',
                 'account_default_pos_receivable_account_id': 'ro_pcg_recv',
                 'income_currency_exchange_account_id': 'pcg_7651',
@@ -31,6 +26,13 @@ class AccountChartTemplate(models.AbstractModel):
                 'account_journal_suspense_account_id': 'pcg_5125',
                 'account_journal_early_pay_discount_loss_account_id': 'pcg_6092',
                 'account_journal_early_pay_discount_gain_account_id': 'pcg_709',
+                'account_sale_tax_id': 'tvac_21',
+                'account_purchase_tax_id': 'tvad_21',
+                'expense_account_id': 'ro_pcg_expense',
+                'income_account_id': 'ro_pcg_sale',
+                'receivable_account_id': 'ro_pcg_recv',
+                'payable_account_id': 'pcg_4011',
+                'account_stock_valuation_id': 'pcg_301',
             },
         }
 
@@ -113,5 +115,14 @@ class AccountChartTemplate(models.AbstractModel):
                         'label': 'Operations being clarified',
                     }),
                 ],
+            },
+        }
+
+    @template('ro', 'account.account')
+    def _get_ro_account_account(self):
+        return {
+            'pcg_301': {
+                'account_stock_expense_id': 'pcg_601',
+                'account_stock_variation_id': 'pcg_603',
             },
         }

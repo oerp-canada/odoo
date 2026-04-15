@@ -10,15 +10,6 @@ class AccountChartTemplate(models.AbstractModel):
     def _get_jp_template_data(self):
         return {
             'code_digits': '6',
-            'property_account_receivable_id': 'l10n_jp_126000',
-            'property_account_payable_id': 'l10n_jp_220000',
-            'property_account_expense_id': 'l10n_jp_510000',
-            'property_account_income_id': 'l10n_jp_410000',
-            'property_account_expense_categ_id': 'l10n_jp_510000',
-            'property_account_income_categ_id': 'l10n_jp_410000',
-            'property_stock_valuation_account_id': 'l10n_jp_121100',
-            'property_stock_account_input_categ_id': 'l10n_jp_121200',
-            'property_stock_account_output_categ_id': 'l10n_jp_121300',
         }
 
     @template('jp', 'res.company')
@@ -34,11 +25,16 @@ class AccountChartTemplate(models.AbstractModel):
                 'income_currency_exchange_account_id': 'l10n_jp_425700',
                 'expense_currency_exchange_account_id': 'l10n_jp_513500',
                 'account_journal_suspense_account_id': 'l10n_jp_123900',
-                'account_journal_payment_credit_account_id': 'l10n_jp_123700',
-                'account_journal_payment_debit_account_id': 'l10n_jp_123800',
                 'default_cash_difference_expense_account_id': 'l10n_jp_510100',
                 'default_cash_difference_income_account_id': 'l10n_jp_999002',
                 'account_journal_early_pay_discount_loss_account_id': 'l10n_jp_510200',
                 'account_journal_early_pay_discount_gain_account_id': 'l10n_jp_425000',
+                'account_sale_tax_id': 'l10n_jp_tax_sale_exc_10',
+                'account_purchase_tax_id': 'l10n_jp_tax_purchase_exc_10',
+                'expense_account_id': 'l10n_jp_510000',
+                'income_account_id': 'l10n_jp_410000',
+                'receivable_account_id': 'l10n_jp_126000',
+                'payable_account_id': 'l10n_jp_220000',
+                'account_stock_valuation_id': 'l10n_jp_121100',
             },
         }

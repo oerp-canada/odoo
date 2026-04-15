@@ -90,8 +90,6 @@ class TestTaskState(TestProjectCommon):
         (self.task_1 + self.task_2).write({
             'stage_id': stage_won.id,
         })
-        self.task_1._onchange_stage_id()
-        self.task_2._onchange_stage_id()
         self.assertEqual(self.task_1.state, '01_in_progress', "task_1 state should automatically switch back to in_progress when its stage changes")
         self.assertEqual(self.task_2.state, '1_canceled', "task_2 state should stay in its closed state")
 
@@ -106,7 +104,6 @@ class TestTaskState(TestProjectCommon):
             'project_id': project_pigs.id
         })
         self.task_1._onchange_project_id()
-        self.task_2._onchange_project_id()
         self.assertEqual(self.task_1.state, '01_in_progress', "task_1 state should automatically switch back to in_progress when its project changes")
         self.assertEqual(self.task_2.state, '01_in_progress', "task_2 state should automatically switch back to in_progress when its project changes")
 
@@ -137,3 +134,126 @@ class TestTaskState(TestProjectCommon):
 
         self.assertEqual(self.task_1.state, '01_in_progress', "The task_1 should have both tasks as dependencies and so should stay go to 'done' when both dependencies are completed")
         self.assertEqual(self.task_1_copy.state, '01_in_progress', "The task_1_copy should have both tasks as dependencies and so should stay go to 'done' when both dependencies are completed")
+
+    def test_duplicate_task_state_retention_with_closed_dependencies(self):
+        self.project_pigs.allow_task_dependencies = True
+        self.task_1.depend_on_ids = self.task_2
+        self.task_2.write({'state': '1_done'})
+        self.task_1.write({'state': '03_approved'})
+
+        task_1_copy = self.task_1.copy()
+
+        self.assertEqual(self.task_1.state, '03_approved', "The task_1 should retain its state after being copied.")
+        self.assertEqual(task_1_copy.state, '01_in_progress', "The task_1_copy should have a state of 'in progress'.")
+
+    def test_duplicate_task_state_retention_with_open_dependencies(self):
+        self.project_pigs.allow_task_dependencies = True
+        self.task_1.depend_on_ids = self.task_2
+        self.task_2.write({'state': '01_in_progress'})
+
+        task_1_copy = self.task_1.copy()
+
+        self.assertEqual(self.task_1.state, '04_waiting_normal')
+        self.assertEqual(task_1_copy.state, '04_waiting_normal')
+
+    def test_task_created_in_waiting_stage_gets_in_progress_state(self):
+        """
+            Test that when a new task is created in the "Waiting" state (by grouping by state in Kanban view), it gets the state "In Progress" by default.
+        """
+        project_pigs = self.env['project.project'].search([('name', '=', 'Pigs')])
+        task = self.env['project.task'].with_context({
+            'default_state': '04_waiting_normal',
+        }).create({
+            'name': 'Task initially waiting state',
+            'project_id': project_pigs.id,
+        })
+
+        self.assertEqual(task.state, '01_in_progress', "The task should be in progress")
+
+    def test_changing_parent_do_not_reset_task_state(self):
+        self.task_2.state = '04_waiting_normal'
+        self.task_2.parent_id = self.task_1
+        self.assertEqual(
+            self.task_2.state,
+            '04_waiting_normal',
+            "Changing the task's parent should not reset the task's state.",
+        )
+
+    def test_state_dont_reset_when_enabling_task_dependencies(self):
+        self.project_goats.allow_task_dependencies = False
+        self.env.user.group_ids -= self.env.ref('project.group_project_task_dependencies')
+        self.task_1.state = "03_approved"
+        self.task_2.state = "02_changes_requested"
+        self.project_goats.allow_task_dependencies = True
+        self.env.user.group_ids += self.env.ref('project.group_project_task_dependencies')
+        self.assertEqual(self.task_1.state, "03_approved")
+        self.assertEqual(self.task_2.state, "02_changes_requested")
+
+    def test_recompute_state_when_task_dependencies_feature_changes(self):
+        """ Test task state is correctly computed when the task dependencies feature changes
+
+            Test Case:
+            ---------
+            1. Enable the task dependencies feature globally.
+            2. Add Task 2 in the dependencies of task 1.
+            3. Check task 1 as the right state ("Waiting" state expected).
+            4. Disable the task dependencies feature on the project linked to the both tasks.
+            5. Check the state of task 1 is correctly reset.
+            6. Enable again the task dependencies feature on the project.
+            7. Check task 1 state is `Waiting` state as before.
+            8. Mark as done task 2
+            9. Task 1 state should now be reset since all the tasks in dependencies are done
+               (in that case only task 2 is in the dependencies).
+            10. Change the state of task 1 to set it to `Approved` state.
+            11. Disable the task dependencies feature on the project
+            12. Check the state of task 1 did not change
+            13. Enable again the task dependencies on the project.
+            14. Check the state of task 1 did not change.
+        """
+        self.assertTrue(self.project_goats.allow_task_dependencies)
+        self.assertTrue(self.env.user.has_group('project.group_project_task_dependencies'))
+        self.task_1.depend_on_ids = self.task_2
+        self.assertEqual(self.task_1.state, '04_waiting_normal')
+        self.project_goats.allow_task_dependencies = False
+        self.assertEqual(self.task_1.state, '01_in_progress')
+        self.project_goats.allow_task_dependencies = True
+        self.assertEqual(self.task_1.state, '04_waiting_normal')
+        self.task_2.state = '1_done'
+        self.assertEqual(self.task_1.state, '01_in_progress')
+        self.task_1.state = '03_approved'
+        self.project_goats.allow_task_dependencies = False
+        self.assertEqual(self.task_1.state, '03_approved')
+        self.project_goats.allow_task_dependencies = True
+        self.assertEqual(self.task_1.state, '03_approved')
+
+    def test_project_move_state_preservation(self):
+        """ Test that state is preserved when moving to a project sharing the stage """
+        project_goats_copy = self.project_goats.copy()
+        self.task_1.write({
+            'state': '03_approved',
+        })
+        # Test state preservation when moving to shared stage
+        original_stage = self.task_1.stage_id
+        self.task_1.write({
+            'project_id': project_goats_copy.id,
+        })
+        self.assertEqual(self.task_1.stage_id, original_stage, "Stage should remain the same")
+        self.assertEqual(
+            self.task_1.state,
+            '03_approved',
+            "State should be preserved when moving to project with shared stages"
+        )
+        # Test state reset when moving to non-shared stage
+        self.task_1.write({
+            'project_id': self.project_pigs.id,
+        })
+        self.assertNotEqual(
+            self.task_1.stage_id,
+            original_stage,
+            "Stage should change when moving to a project with different stages"
+        )
+        self.assertEqual(
+            self.task_1.state,
+            '01_in_progress',
+            "Task state should change when moving to a project with non-shared stage."
+        )

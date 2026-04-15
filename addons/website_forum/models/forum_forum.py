@@ -2,13 +2,18 @@
 # Part of Odoo. See LICENSE file for full copyright and licensing details.
 
 import textwrap
+from collections import defaultdict
+from operator import itemgetter
+
+from markupsafe import Markup
 
 from odoo import _, api, fields, models
 from odoo.tools.translate import html_translate
-from odoo.addons.http_routing.models.ir_http import slug
+
+MOST_USED_TAGS_COUNT = 5  # Number of tags to track as "most used" to display on frontend
 
 
-class Forum(models.Model):
+class ForumForum(models.Model):
     _name = 'forum.forum'
     _description = 'Forum'
     _inherit = [
@@ -16,30 +21,33 @@ class Forum(models.Model):
         'image.mixin',
         'website.seo.metadata',
         'website.multi.mixin',
+        'website.located.mixin',
         'website.searchable.mixin',
     ]
-    _order = "sequence"
+    _order = "sequence, id"
 
+    @api.model
     def _get_default_welcome_message(self):
-        return """
-<section>
-    <div class="container py-5">
-        <div class="row">
-            <div class="col-lg-12">
-                <h1 class="text-center">Welcome!</h1>
-                <p class="text-400 text-center">%(message_intro)s<br/>%(message_post)s</p>
-            </div>
-            <div class="col text-center mt-3">
-                <a href="#" class="js_close_intro btn btn-outline-light mr-2">%(hide_text)s</a>
-                <a class="btn btn-light forum_register_url" href="/web/login">%(register_text)s</a>
-            </div>
-        </div>
-    </div>
-</section>""" % {
-    'message_intro': _("This community is for professionals and enthusiasts of our products and services."),
-    'message_post': _("Share and discuss the best content and new marketing ideas, build your professional profile and become a better marketer together."),
-    'hide_text': _('Hide Intro'),
-    'register_text': _('Register')}
+        return Markup("""
+                <h2 class="display-3-fs" style="text-align: center;clear-both;font-weight: bold;">%(message_intro)s</h2>
+                <div class="text-white">
+                    <p class="lead" style="text-align: center;">%(message_post)s</p>
+                    <p style="text-align: center;">
+                        <a class="btn btn-primary forum_register_url o_translate_inline" href="/web/login">%(register_text)s</a>
+                        <button type="button" class="btn btn-light js_close_intro" aria-label="Dismiss message">
+                            %(hide_text)s
+                        </button>
+                    </p>
+                </div>
+            """) % {
+            'message_intro': _("Welcome!"),
+            'message_post': _(
+                "Share and discuss the best content and new marketing ideas, build your professional profile and become"
+                " a better marketer together."
+            ),
+            'hide_text': _('Dismiss'),
+            'register_text': _('Sign up'),
+        }
 
     # description and use
     name = fields.Char('Forum Name', required=True, translate=True)
@@ -56,30 +64,24 @@ class Forum(models.Model):
         help="Public: Forum is public\nSigned In: Forum is visible for signed in users\nSome users: Forum and their content are hidden for non members of selected group",
         default='public')
     authorized_group_id = fields.Many2one('res.groups', 'Authorized Group')
-    menu_id = fields.Many2one('website.menu', 'Menu', copy=False)
     active = fields.Boolean(default=True)
     faq = fields.Html(
         'Guidelines', translate=html_translate,
         sanitize=True, sanitize_overridable=True)
     description = fields.Text('Description', translate=True)
-    teaser = fields.Text('Teaser', compute='_compute_teaser', store=True)
     welcome_message = fields.Html(
         'Welcome Message', translate=html_translate,
         default=_get_default_welcome_message,
         sanitize_attributes=False, sanitize_form=False)
     default_order = fields.Selection([
         ('create_date desc', 'Newest'),
-        ('write_date desc', 'Last Updated'),
+        ('last_activity_date desc', 'Last Updated'),
         ('vote_count desc', 'Most Voted'),
         ('relevancy desc', 'Relevance'),
         ('child_count desc', 'Answered')],
-        string='Default', required=True, default='write_date desc')
+        string='Default', required=True, default='last_activity_date desc')
     relevancy_post_vote = fields.Float('First Relevance Parameter', default=0.8, help="This formula is used in order to sort by relevance. The variable 'votes' represents number of votes for a post, and 'days' is number of days since the post creation")
     relevancy_time_decay = fields.Float('Second Relevance Parameter', default=1.8)
-    allow_bump = fields.Boolean('Allow Bump', default=True,
-                                help='Check this box to display a popup for posts older than 10 days '
-                                     'without any given answer. The popup will offer to share it on social '
-                                     'networks. When shared, a question is bumped at the top of the forum.')
     allow_share = fields.Boolean('Sharing Options', default=True,
                                  help='After posting the user will be proposed to share its question '
                                       'or answer on social networks, enabling social network propagation '
@@ -119,10 +121,10 @@ class Forum(models.Model):
     karma_answer_accept_all = fields.Integer(string='Accept an answer to all questions', default=500)
     karma_comment_own = fields.Integer(string='Comment own posts', default=1)
     karma_comment_all = fields.Integer(string='Comment all posts', default=1)
-    karma_comment_convert_own = fields.Integer(string='Convert own answers to comments and vice versa', default=50)
-    karma_comment_convert_all = fields.Integer(string='Convert all answers to comments and vice versa', default=500)
-    karma_comment_unlink_own = fields.Integer(string='Unlink own comments', default=50)
-    karma_comment_unlink_all = fields.Integer(string='Unlink all comments', default=500)
+    karma_comment_convert_own = fields.Integer(string='Convert own comments to answers', default=50)
+    karma_comment_convert_all = fields.Integer(string='Convert all comments to answers', default=500)
+    karma_comment_unlink_own = fields.Integer(string='Delete own comments', default=50)
+    karma_comment_unlink_all = fields.Integer(string='Delete all comments', default=500)
     karma_flag = fields.Integer(string='Flag a post as offensive', default=500)
     karma_dofollow = fields.Integer(string='Nofollow links', help='If the author has not enough karma, a nofollow attribute is added to links', default=500)
     karma_editor = fields.Integer(string='Editor Features: image and links',
@@ -131,6 +133,18 @@ class Forum(models.Model):
     karma_post = fields.Integer(string='Ask questions without validation', default=100)
     karma_moderate = fields.Integer(string='Moderate posts', default=1000)
     has_pending_post = fields.Boolean(string='Has pending post', compute='_compute_has_pending_post')
+    can_moderate = fields.Boolean(string="Is a moderator", compute="_compute_can_moderate")
+
+    # tags
+    tag_ids = fields.One2many('forum.tag', 'forum_id', string='Tags')
+    tag_most_used_ids = fields.One2many('forum.tag', string="Most used tags", compute='_compute_tag_ids_usage')
+    tag_unused_ids = fields.One2many('forum.tag', string="Unused tags", compute='_compute_tag_ids_usage')
+
+    def _compute_website_url(self):
+        super()._compute_website_url()
+        for record in self:
+            if record.id:
+                record.website_url = '/forum/%s' % self.env['ir.http']._slug(record)
 
     @api.depends_context('uid')
     def _compute_has_pending_post(self):
@@ -146,18 +160,50 @@ class Forum(models.Model):
         pending_forums.has_pending_post = True
         (self - pending_forums).has_pending_post = False
 
-    @api.depends('description')
-    def _compute_teaser(self):
+    @api.depends_context('uid')
+    @api.depends('karma_moderate')
+    def _compute_can_moderate(self):
         for forum in self:
-            forum.teaser = textwrap.shorten(forum.description, width=180, placeholder='...') if forum.description else ""
+            forum.can_moderate = self.env.user.karma >= forum.karma_moderate
+
+    @api.depends('post_ids', 'post_ids.tag_ids', 'post_ids.tag_ids.posts_count', 'tag_ids')
+    def _compute_tag_ids_usage(self):
+        forums_without_tags = self.filtered(lambda f: not f.tag_ids)
+        forums_without_tags.tag_most_used_ids = forums_without_tags.tag_unused_ids = False
+        forums_with_tags = self - forums_without_tags
+        if not forums_with_tags:
+            return
+
+        tags_data = self.env['forum.tag'].search_read(
+            [('forum_id', 'in', forums_with_tags.ids)],
+            fields=['id', 'forum_id', 'posts_count'],
+            order='forum_id, posts_count DESC, name, id',
+        )
+        current_forum_id = tags_data[0]['forum_id'][0]
+        forum_tags = defaultdict(lambda: {'most_used_ids': [], 'unused_ids': []})
+
+        for tag_data in tags_data:
+            tag_id, tag_forum_id, posts_count = itemgetter('id', 'forum_id', 'posts_count')(tag_data)
+            if tag_forum_id[0] != current_forum_id:
+                current_forum_id = tag_forum_id[0]
+            if not posts_count:  # Could be 0 or None
+                forum_tags[current_forum_id]['unused_ids'].append(tag_id)
+            elif len(forum_tags[current_forum_id]['most_used_ids']) < MOST_USED_TAGS_COUNT:
+                forum_tags[current_forum_id]['most_used_ids'].append(tag_id)
+
+        for forum in forums_with_tags:
+            forum.tag_most_used_ids = self.env['forum.tag'].browse(forum_tags[forum.id]['most_used_ids'])
+            forum.tag_unused_ids = self.env['forum.tag'].browse(forum_tags[forum.id]['unused_ids'])
 
     @api.depends('post_ids')
     def _compute_last_post_id(self):
+        last_forums_posts = self.env['forum.post']._read_group(
+            [('forum_id', 'in', self.ids), ('parent_id', '=', False), ('state', '=', 'active')],
+            groupby=['forum_id'], aggregates=['id:max'],
+        )
+        forum_to_last_post_id = {forum.id: last_post_id for forum, last_post_id in last_forums_posts}
         for forum in self:
-            forum.last_post_id = forum.post_ids.search(
-                [('forum_id', '=', forum.id), ('parent_id', '=', False), ('state', '=', 'active')],
-                order='create_date desc', limit=1,
-            )
+            forum.last_post_id = forum_to_last_post_id.get(forum.id, False)
 
     @api.depends('post_ids.state', 'post_ids.views', 'post_ids.child_count', 'post_ids.favourite_count')
     def _compute_forum_statistics(self):
@@ -192,13 +238,6 @@ class Forum(models.Model):
             domain = [('forum_id', '=', forum.id), ('state', '=', 'flagged')]
             forum.count_flagged_posts = self.env['forum.post'].search_count(domain)
 
-    # EXTENDS WEBSITE.MULTI.MIXIN
-
-    def _compute_website_url(self):
-        if not self.id:
-            return False
-        return f'/forum/{slug(self)}'
-
     # ----------------------------------------------------------------------
     # CRUD
     # ----------------------------------------------------------------------
@@ -206,7 +245,7 @@ class Forum(models.Model):
     @api.model_create_multi
     def create(self, vals_list):
         forums = super(
-            Forum,
+            ForumForum,
             self.with_context(mail_create_nolog=True, mail_create_nosubscribe=True)
         ).create(vals_list)
         self.env['website'].sudo()._update_forum_count()
@@ -219,13 +258,7 @@ class Forum(models.Model):
 
     def write(self, vals):
         if 'privacy' in vals:
-            if not vals['privacy']:
-                # The forum is neither public, neither private, remove menu to avoid conflict
-                self.menu_id.unlink()
-            elif vals['privacy'] == 'public':
-                # The forum is public, the menu must be also public
-                vals['authorized_group_id'] = False
-            elif vals['privacy'] == 'connected':
+            if vals['privacy'] in ('public', 'connected'):
                 vals['authorized_group_id'] = False
 
         res = super().write(vals)
@@ -266,10 +299,13 @@ class Forum(models.Model):
         post_tags.insert(0, [6, 0, existing_keep])
         return post_tags
 
-    def get_tags_first_char(self):
-        """ get set of first letter of forum tags """
-        tags = self.env['forum.tag'].search([('forum_id', '=', self.id), ('posts_count', '>', 0)])
-        return sorted(set([tag.name[0].upper() for tag in tags if len(tag.name)]))
+    def _get_tags_first_char(self, tags=None):
+        """Get set of first letter of forum tags.
+
+        :param tags: tags recordset to further filter forum's tags that are also in these tags.
+        """
+        tag_ids = self.tag_ids if tags is None else (self.tag_ids & tags)
+        return sorted({tag.name[0].upper() for tag in tag_ids if len(tag.name)})
 
     # ----------------------------------------------------------------------
     # WEBSITE
@@ -277,24 +313,22 @@ class Forum(models.Model):
 
     def go_to_website(self):
         self.ensure_one()
-        website_url = self._compute_website_url()
+        website_url = self.website_url
         if not website_url:
             return False
-        return self.env['website'].get_client_action(self._compute_website_url())
+        return self.env['website'].get_client_action(self.website_url)
 
     @api.model
     def _search_get_detail(self, website, order, options):
-        with_description = options['displayDescription']
-        search_fields = ['name']
-        fetch_fields = ['id', 'name']
+        search_fields = ['name', 'tag_ids.name', 'description']
+        fetch_fields = ['id', 'name', 'description']
         mapping = {
             'name': {'name': 'name', 'type': 'text', 'match': True},
             'website_url': {'name': 'website_url', 'type': 'text', 'truncate': False},
+            'image_url': {'name': 'image_url', 'type': 'html'},
+            'tags': {'name': 'tag_ids', 'type': 'tags', 'match': True},
+            'description': {'name': 'description', 'type': 'text', 'truncate': True, 'match': True},
         }
-        if with_description:
-            search_fields.append('description')
-            fetch_fields.append('description')
-            mapping['description'] = {'name': 'description', 'type': 'text', 'match': True}
         return {
             'model': 'forum.forum',
             'base_domain': [website.website_domain()],
@@ -303,10 +337,14 @@ class Forum(models.Model):
             'mapping': mapping,
             'icon': 'fa-comments-o',
             'order': 'name desc, id desc' if 'name desc' in order else 'name asc, id desc',
+            'group_name': self.env._("Forum"),
+            'sequence': 120,
         }
 
     def _search_render_results(self, fetch_fields, mapping, icon, limit):
         results_data = super()._search_render_results(fetch_fields, mapping, icon, limit)
         for forum, data in zip(self, results_data):
-            data['website_url'] = forum._compute_website_url()
+            data['website_url'] = forum.website_url
+            data['tag_ids'] = forum.tag_ids.read(['name'])
+            data['image_url'] = '/web/image/forum.forum/%s/image_128' % data['id']
         return results_data

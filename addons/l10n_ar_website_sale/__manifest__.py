@@ -1,24 +1,24 @@
-# Part of Odoo. See LICENSE file for full copyright and licensing details.
 {
     'name': 'Argentinean eCommerce',
-    'countries': ['ar'],
-    'version': '1.0',
     'category': 'Accounting/Localizations/Website',
-    'sequence': 14,
-    'author': 'Odoo S.A., ADHOC SA',
-    'description': """Be able to see Identification Type and AFIP Responsibility in ecommerce checkout form.""",
+    'countries': ['ar'],
+    'icon': '/base/static/img/country_flags/ar.png',
+    'description': """Bridge Website Sale for Argentina""",
     'depends': [
         'website_sale',
         'l10n_ar',
     ],
     'data': [
-        'data/ir_model_fields.xml',
+        'views/res_config_settings_views.xml',
         'views/templates.xml',
     ],
-    'demo': [
-        'demo/website_demo.xml',
-    ],
-    'installable': True,
+    'assets': {
+        'web.assets_frontend': [
+            'l10n_ar_website_sale/static/src/interactions/**/*',
+            'l10n_ar_website_sale/static/src/scss/*.scss',
+        ]
+    },
     'auto_install': True,
+    'author': 'Odoo S.A.',
     'license': 'LGPL-3',
 }

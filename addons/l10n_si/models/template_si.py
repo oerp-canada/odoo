@@ -9,14 +9,7 @@ class AccountChartTemplate(models.AbstractModel):
     @template('si')
     def _get_si_template_data(self):
         return {
-            'property_account_receivable_id': 'gd_acc_120000',
-            'property_account_payable_id': 'gd_acc_220000',
-            'property_account_expense_categ_id': 'gd_acc_702000',
-            'property_account_income_categ_id': 'gd_acc_762000',
-            'property_tax_payable_account_id': 'gd_acc_260800',
-            'property_tax_receivable_account_id': 'gd_acc_160800',
             'code_digits': '6',
-            'use_storno_accounting': True,
         }
 
     @template('si', 'res.company')
@@ -30,5 +23,11 @@ class AccountChartTemplate(models.AbstractModel):
                 'account_default_pos_receivable_account_id': 'gd_acc_125000',
                 'income_currency_exchange_account_id': 'gd_acc_777000',
                 'expense_currency_exchange_account_id': 'gd_acc_484000',
+                'account_sale_tax_id': 'gd_taxr_3',
+                'account_purchase_tax_id': 'gd_taxp_3',
+                'expense_account_id': 'gd_acc_702000',
+                'income_account_id': 'gd_acc_762000',
+                'receivable_account_id': 'gd_acc_120000',
+                'payable_account_id': 'gd_acc_220000',
             },
         }

@@ -2,24 +2,22 @@
 # Part of Odoo. See LICENSE file for full copyright and licensing details.
 
 import hashlib
+import re
 from collections import OrderedDict
 from werkzeug.urls import url_quote
 from markupsafe import Markup
 
 from odoo import api, models, fields
-from odoo.tools import pycompat
 from odoo.tools import html_escape as escape
 
 
-class Image(models.AbstractModel):
+class IrQwebFieldImage(models.AbstractModel):
     """
     Widget options:
 
     ``class``
         set as attribute on the generated <img> tag
     """
-    _name = 'ir.qweb.field.image'
-    _description = 'Qweb Field Image'
     _inherit = 'ir.qweb.field.image'
 
     def _get_src_urls(self, record, field_name, options):
@@ -39,7 +37,7 @@ class Image(models.AbstractModel):
         sha = hashlib.sha512(str(getattr(record, 'write_date', fields.Datetime.now())).encode('utf-8')).hexdigest()[:7]
         max_size = '' if max_size is None else '/%s' % max_size
 
-        if options.get('filename-field') and getattr(record, options['filename-field'], None):
+        if options.get('filename-field') and options['filename-field'] in record and record[options['filename-field']]:
             filename = record[options['filename-field']]
         elif options.get('filename'):
             filename = options['filename']
@@ -57,6 +55,49 @@ class Image(models.AbstractModel):
 
         return src, src_zoom
 
+    def _get_srcset(self, record, field_name, options):
+        srcset = []
+        size_list = ('128', '256', '512', '1024', '1920')
+
+        if not field_name.endswith(size_list):
+            return None
+
+        if not field_name.startswith('image'):
+            return None
+
+        # Delete the number (size) at the end of the field name
+        tmp_field_name = re.sub(r'_\d+$', '', field_name)
+
+        # get maximum size of the image
+        max_size = '1920'
+        selected_preview_image = options.get('preview_image')
+        if selected_preview_image is not None:
+            selected_preview_image = selected_preview_image.split('_')
+            max_size = selected_preview_image[-1]
+
+        if not max_size.isdigit():
+            max_size = '1920'
+
+        for size in size_list:
+            if int(size) > int(max_size):
+                break
+
+            tmp_preview_image = tmp_field_name + '_' + size
+
+            preview_options = dict(options, preview_image=tmp_preview_image)
+            if options.get('qweb_img_raw_data', False):
+                value = record[tmp_preview_image]
+                if not value:
+                    continue
+                src = self._get_src_data_b64(value, preview_options)
+            else:
+                src = self._get_src_urls(record, field_name, preview_options)[0]
+
+            srcset.append('%s %sw' % (src, size))
+
+        srcset = ', '.join(srcset)
+        return srcset
+
     @api.model
     def record_to_html(self, record, field_name, options):
         assert options['tagName'] != 'img',\
@@ -64,18 +105,22 @@ class Image(models.AbstractModel):
             "That is because the image goes into the tag, or it gets the " \
             "hose again."
 
+        src = src_zoom = None
         if options.get('qweb_img_raw_data', False):
-            return super(Image, self).record_to_html(record, field_name, options)
+            value = record[field_name]
+            if not value:
+                return False
+            src = self._get_src_data_b64(value, options)
+        else:
+            src, src_zoom = self._get_src_urls(record, field_name, options)
 
         aclasses = ['img', 'img-fluid'] if options.get('qweb_img_responsive', True) else ['img']
         aclasses += options.get('class', '').split()
         classes = ' '.join(map(escape, aclasses))
 
-        src, src_zoom = self._get_src_urls(record, field_name, options)
-
-        if options.get('alt-field') and getattr(record, options['alt-field'], None):
+        if options.get('alt-field') and options['alt-field'] in record and record[options['alt-field']]:
             alt = escape(record[options['alt-field']])
-        elif options.get('alt'):
+        elif options.get('alt') is not None:
             alt = options['alt']
         else:
             alt = escape(record.display_name)
@@ -84,8 +129,12 @@ class Image(models.AbstractModel):
         if options.get('itemprop'):
             itemprop = options['itemprop']
 
+        srcset = self._get_srcset(record, field_name, options)
         atts = OrderedDict()
         atts["src"] = src
+        if srcset:
+            atts["srcset"] = srcset
+
         atts["itemprop"] = itemprop
         atts["class"] = classes
         atts["style"] = options.get('style')
@@ -100,18 +149,18 @@ class Image(models.AbstractModel):
 
         img = ['<img']
         for name, value in atts.items():
-            if value:
+            if value is not None:
                 img.append(' ')
-                img.append(escape(pycompat.to_text(name)))
+                img.append(escape(name))
                 img.append('="')
-                img.append(escape(pycompat.to_text(value)))
+                img.append(escape(value))
                 img.append('"')
         img.append('/>')
 
         return Markup(''.join(img))
 
-class ImageUrlConverter(models.AbstractModel):
-    _description = 'Qweb Field Image'
+
+class IrQwebFieldImage_Url(models.AbstractModel):
     _inherit = 'ir.qweb.field.image_url'
 
     def _get_src_urls(self, record, field_name, options):

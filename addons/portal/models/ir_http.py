@@ -1,6 +1,6 @@
 # Part of Odoo. See LICENSE file for full copyright and licensing details.
 
-from odoo import models
+from odoo import models, api
 from odoo.http import request
 
 
@@ -9,16 +9,14 @@ class IrHttp(models.AbstractModel):
 
     @classmethod
     def _get_translation_frontend_modules_name(cls):
-        mods = super(IrHttp, cls)._get_translation_frontend_modules_name()
+        mods = super()._get_translation_frontend_modules_name()
         return mods + ['portal']
 
-    @classmethod
-    def _get_frontend_langs(cls):
-        # _get_frontend_langs() is used by @http_routing:IrHttp._match
-        # where is_frontend is not yet set and when no backend endpoint
-        # matched. We have to assume we are going to match a frontend
-        # route, hence the default True. Elsewhere, request.is_frontend
-        # is set.
-        if request and getattr(request, 'is_frontend', True):
-            return [lang[0] for lang in filter(lambda l: l[3], request.env['res.lang'].get_available())]
-        return super()._get_frontend_langs()
+    @api.model
+    def get_frontend_session_info(self):
+        result = super().get_frontend_session_info()
+        if request.session.uid:
+            result["tour_enabled"] = self.env.user.tour_enabled
+            if self.env.user.tour_enabled:
+                result["current_tour"] = self.env["web_tour.tour"].get_current_tour()
+        return result

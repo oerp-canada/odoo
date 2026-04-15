@@ -2,7 +2,7 @@
 # Part of Odoo. See LICENSE file for full copyright and licensing details.
 
 from odoo.addons.mail.tests.common import mail_new_test_user
-from odoo.tests.common import Form, TransactionCase
+from odoo.tests import tagged, Form, TransactionCase
 from odoo.exceptions import AccessError, UserError
 
 
@@ -18,19 +18,16 @@ class TestEditableQuant(TransactionCase):
         Location = cls.env['stock.location']
         cls.product = Product.create({
             'name': 'Product A',
-            'type': 'product',
-            'categ_id': cls.env.ref('product.product_category_all').id,
+            'is_storable': True,
         })
         cls.product2 = Product.create({
             'name': 'Product B',
-            'type': 'product',
-            'categ_id': cls.env.ref('product.product_category_all').id,
+            'is_storable': True,
         })
         cls.product_tracked_sn = Product.create({
             'name': 'Product tracked by SN',
-            'type': 'product',
+            'is_storable': True,
             'tracking': 'serial',
-            'categ_id': cls.env.ref('product.product_category_all').id,
         })
         cls.warehouse = Location.create({
             'name': 'Warehouse',
@@ -243,9 +240,8 @@ class TestEditableQuant(TransactionCase):
         self.assertEqual(self.product.qty_available, 75)
         smls = self.env['stock.move.line'].search([('product_id', '=', self.product.id)])
         self.assertRecordValues(smls, [
-            {'qty_done': 100},
-            {'qty_done': 25},
-            {'qty_done': 0},
+            {'quantity': 100},
+            {'quantity': 25},
         ])
 
     def test_edit_quant_5(self):
@@ -273,7 +269,6 @@ class TestEditableQuant(TransactionCase):
         sn1 = self.env['stock.lot'].create({
             'name': 'serial1',
             'product_id': self.product_tracked_sn.id,
-            'company_id': self.env.company.id,
         })
 
         self.Quant.create({
@@ -302,13 +297,13 @@ class TestEditableQuant(TransactionCase):
         quant = self.Quant.create({
             'product_id': self.product.id,
             'location_id': default_stock_location.id,
-            'inventory_quantity': 100,
+            'inventory_quantity': 0.4,
         })
         quant.action_apply_inventory()
         move_lines = self.env['stock.move.line'].search([('product_id', '=', self.product.id), ('is_inventory', '=', True)])
         self.assertEqual(len(move_lines), 1, "One inventory adjustment move lines should have been created")
-        self.assertEqual(self.product.qty_available, 100, "Before revert inventory adjustment qty is 100")
-        move_lines.action_revert_inventory()
+        self.assertEqual(self.product.qty_available, 0.4, "Before revert inventory adjustment qty is 0.4")
+        move_lines.action_revert()
         self.assertEqual(self.product.qty_available, 0, "After revert inventory adjustment qty is not zero")
 
     def test_multi_revert_inventory_adjustment(self):
@@ -326,5 +321,57 @@ class TestEditableQuant(TransactionCase):
         move_lines = self.env['stock.move.line'].search([('product_id', '=', self.product.id), ('is_inventory', '=', True)])
         self.assertEqual(self.product.qty_available, 150, "Before revert multi inventory adjustment qty is 150")
         self.assertEqual(len(move_lines), 2, "Two inventory adjustment move lines should have been created")
-        move_lines.action_revert_inventory()
+        move_lines.action_revert()
         self.assertEqual(self.product.qty_available, 0, "After revert multi inventory adjustment qty is not zero")
+
+    def test_revert_scrap_move(self):
+        """Try to revert a scrapped move"""
+        default_wh = self.env['stock.warehouse'].search([('company_id', '=', self.env.company.id)], limit=1)
+        default_stock_location = default_wh.lot_stock_id
+        scrap_location = default_wh.company_id.scrap_location_id
+        # Put 1 unit in stock
+        quant = self.Quant.create({
+            'product_id': self.product.id,
+            'location_id': default_stock_location.id,
+            'inventory_quantity': 1,
+        })
+        quant.action_apply_inventory()
+        self.assertEqual(self.product.qty_available, 1)
+        # Scrap the product
+        scrap = self.env['stock.move'].create({
+            'is_scrap': True,
+            'product_id': self.product.id,
+            'location_id': default_stock_location.id,
+            'location_dest_id': scrap_location.id,
+            'quantity': 1,
+            'company_id': self.env.company.id,
+        })
+        scrap._action_scrap()
+        self.assertEqual(self.product.qty_available, 0, "After scrapping, qty should be 0")
+        # Revert the scrap move
+        scrap_move_line = scrap.move_line_ids
+        self.assertEqual(len(scrap_move_line), 1)
+        scrap_move_line.action_revert()
+        self.assertEqual(self.product.qty_available, 1, "After reverting scrap, qty should be restored to 1")
+
+    def test_set_inventory_quant_to_zero(self):
+        """Try to set inventory quantity to zero and check that the quant is deleted after unlinking zero quants"""
+        default_wh = self.env['stock.warehouse'].search([('company_id', '=', self.env.company.id)], limit=1)
+        default_stock_location = default_wh.lot_stock_id
+        quant = self.Quant.create({
+            'product_id': self.product.id,
+            'location_id': default_stock_location.id,
+            'inventory_quantity': 100,
+        })
+        quant.action_apply_inventory()
+        self.assertEqual(quant.quantity, 100)
+        self.assertEqual(quant.user_id.id, False)
+        quant.with_context(inventory_report_mode=True).action_set_inventory_quantity_zero()
+        self.assertEqual(quant.inventory_quantity, 0)
+        self.assertEqual(quant.user_id.id, False)
+        self.assertEqual(quant.quantity, 0)
+        self.assertEqual(quant.reserved_quantity, 0)
+        # flush ORM state before raw SQL in _unlink_zero_quants
+        quant.flush_recordset()
+        quant._unlink_zero_quants()
+        self.assertFalse(quant.exists(), "After unlinking zero quants, the quant should be deleted")

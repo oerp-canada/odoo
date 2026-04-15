@@ -1,63 +1,100 @@
-# -*- coding: utf-8 -*-
 # Part of Odoo. See LICENSE file for full copyright and licensing details.
-
 
 """
 The PostgreSQL connector is a connectivity layer between the OpenERP code and
 the database, *not* a database abstraction toolkit. Database abstraction is what
 the ORM does, in fact.
 """
+from __future__ import annotations
 
+import functools
 import logging
 import os
 import re
 import threading
 import time
+import typing
 import uuid
-from contextlib import contextmanager
+import warnings
+from contextlib import contextmanager, nullcontext
 from datetime import datetime, timedelta
 from inspect import currentframe
 
 import psycopg2
+import psycopg2.errorcodes  # noqa: F401
+import psycopg2.errors
 import psycopg2.extensions
 import psycopg2.extras
 from psycopg2.extensions import ISOLATION_LEVEL_REPEATABLE_READ
 from psycopg2.pool import PoolError
-from psycopg2.sql import SQL, Identifier
+from psycopg2.sql import Composable
 from werkzeug import urls
 
 import odoo
+
 from . import tools
+from .release import MIN_PG_VERSION
+from .tools import SQL, config
 from .tools.func import frame_codeinfo, locked
+from .tools.misc import Callbacks, real_time
 
-psycopg2.extensions.register_type(psycopg2.extensions.UNICODE)
+if typing.TYPE_CHECKING:
+    from odoo.orm.environments import Transaction
 
-def undecimalize(value, cr):
+    # when type checking, the Cursor exposes methods of the psycopg cursor
+    _CursorProtocol = psycopg2.extensions.cursor
+else:
+    _CursorProtocol = object
+
+
+def undecimalize(value, cr) -> float | None:
     if value is None:
         return None
     return float(value)
 
-psycopg2.extensions.register_type(psycopg2.extensions.new_type((700, 701, 1700), 'float', undecimalize))
+
+DECIMAL_TO_FLOAT_TYPE = psycopg2.extensions.new_type((1700,), 'float', undecimalize)
+psycopg2.extensions.register_type(DECIMAL_TO_FLOAT_TYPE)
+psycopg2.extensions.register_type(psycopg2.extensions.new_array_type((1231,), 'float[]', DECIMAL_TO_FLOAT_TYPE))
 
 _logger = logging.getLogger(__name__)
 _logger_conn = _logger.getChild("connection")
 
-real_time = time.time.__call__  # ensure we have a non patched time for query times when using freezegun
+re_from = re.compile(r'\bfrom\s+"?([a-zA-Z_0-9]+)\b', re.IGNORECASE)
+re_into = re.compile(r'\binto\s+"?([a-zA-Z_0-9]+)\b', re.IGNORECASE)
 
-re_from = re.compile('.* from "?([a-zA-Z_0-9]+)"? .*$', re.MULTILINE | re.IGNORECASE)
-re_into = re.compile('.* into "?([a-zA-Z_0-9]+)"? .*$', re.MULTILINE | re.IGNORECASE)
+PG_CONCURRENCY_EXCEPTIONS_TO_RETRY = (
+    psycopg2.errors.LockNotAvailable,
+    psycopg2.errors.SerializationFailure,
+    psycopg2.errors.DeadlockDetected,
+)
 
-sql_counter = 0
+
+def categorize_query(decoded_query: str) -> tuple[typing.Literal['from', 'into'], str] | tuple[typing.Literal['other'], None]:
+    res_into = re_into.search(decoded_query)
+    # prioritize `insert` over `select` so `select` subqueries are not
+    # considered when inside a `insert`
+    if res_into:
+        return 'into', res_into.group(1)
+
+    res_from = re_from.search(decoded_query)
+    if res_from:
+        return 'from', res_from.group(1)
+
+    return 'other', None
+
+
+sql_counter: int = 0
 
 MAX_IDLE_TIMEOUT = 60 * 10
 
 
 class Savepoint:
-    """ Reifies an active breakpoint, allows :meth:`BaseCursor.savepoint` users
+    """ Reifies an active breakpoint, allows :meth:`Cursor.savepoint` users
     to internally rollback the savepoint (as many times as they want) without
     having to implement their own savepointing, or triggering exceptions.
 
-    Should normally be created using :meth:`BaseCursor.savepoint` rather than
+    Should normally be created using :meth:`Cursor.savepoint` rather than
     directly.
 
     The savepoint will be rolled back on unsuccessful context exits
@@ -68,14 +105,14 @@ class Savepoint:
     The savepoint can also safely be explicitly closed during context body. This
     will rollback by default.
 
-    :param BaseCursor cr: the cursor to execute the `SAVEPOINT` queries on
+    :param Cursor cr: the cursor to execute the `SAVEPOINT` queries on
     """
-    def __init__(self, cr):
+
+    def __init__(self, cr: _CursorProtocol):
         self.name = str(uuid.uuid1())
-        self._name = Identifier(self.name)
         self._cr = cr
-        self.closed = False
-        cr.execute(SQL('SAVEPOINT {}').format(self._name))
+        self.closed: bool = False
+        cr.execute('SAVEPOINT "%s"' % self.name)
 
     def __enter__(self):
         return self
@@ -83,104 +120,52 @@ class Savepoint:
     def __exit__(self, exc_type, exc_val, exc_tb):
         self.close(rollback=exc_type is not None)
 
-    def close(self, *, rollback=True):
+    def close(self, *, rollback: bool = True):
         if not self.closed:
             self._close(rollback)
 
     def rollback(self):
-        self._cr.execute(SQL('ROLLBACK TO SAVEPOINT {}').format(self._name))
+        self._cr.execute('ROLLBACK TO SAVEPOINT "%s"' % self.name)
 
-    def _close(self, rollback):
+    def _close(self, rollback: bool):
         if rollback:
             self.rollback()
-        self._cr.execute(SQL('RELEASE SAVEPOINT {}').format(self._name))
+        self._cr.execute('RELEASE SAVEPOINT "%s"' % self.name)
         self.closed = True
 
 
 class _FlushingSavepoint(Savepoint):
-    def __init__(self, cr):
+    def __init__(self, cr: Cursor):
         cr.flush()
+        if cr.transaction is not None:
+            cr.transaction.save_state()
         super().__init__(cr)
 
     def rollback(self):
-        self._cr.clear()
+        cr = self._cr
+        assert isinstance(cr, Cursor)
         super().rollback()
+        if cr.transaction is not None:
+            cr.transaction.restore_state()
 
-    def _close(self, rollback):
+    def _close(self, rollback: bool):
+        cr = self._cr
+        assert isinstance(cr, Cursor)
         try:
             if not rollback:
-                self._cr.flush()
+                cr.flush()
         except Exception:
             rollback = True
             raise
         finally:
             super()._close(rollback)
+            if cr.transaction is not None:
+                cr.transaction.merge_state()
 
 
-class BaseCursor:
-    """ Base class for cursors that manage pre/post commit hooks. """
-
-    def __init__(self):
-        self.precommit = tools.Callbacks()
-        self.postcommit = tools.Callbacks()
-        self.prerollback = tools.Callbacks()
-        self.postrollback = tools.Callbacks()
-        # By default a cursor has no transaction object.  A transaction object
-        # for managing environments is instantiated by registry.cursor().  It
-        # is not done here in order to avoid cyclic module dependencies.
-        self.transaction = None
-
-    def flush(self):
-        """ Flush the current transaction, and run precommit hooks. """
-        if self.transaction is not None:
-            self.transaction.flush()
-        self.precommit.run()
-
-    def clear(self):
-        """ Clear the current transaction, and clear precommit hooks. """
-        if self.transaction is not None:
-            self.transaction.clear()
-        self.precommit.clear()
-
-    def reset(self):
-        """ Reset the current transaction (this invalidates more that clear()).
-            This method should be called only right after commit() or rollback().
-        """
-        if self.transaction is not None:
-            self.transaction.reset()
-
-    def savepoint(self, flush=True) -> Savepoint:
-        """context manager entering in a new savepoint
-
-        With ``flush`` (the default), will automatically run (or clear) the
-        relevant hooks.
-        """
-        if flush:
-            return _FlushingSavepoint(self)
-        else:
-            return Savepoint(self)
-
-    def __enter__(self):
-        """ Using the cursor as a contextmanager automatically commits and
-            closes it::
-
-                with cr:
-                    cr.execute(...)
-
-                # cr is committed if no failure occurred
-                # cr is closed in any case
-        """
-        return self
-
-    def __exit__(self, exc_type, exc_value, traceback):
-        try:
-            if exc_type is None:
-                self.commit()
-        finally:
-            self.close()
-
-
-class Cursor(BaseCursor):
+# _CursorProtocol declares the available methods and type information,
+# at runtime, it is just an `object`
+class Cursor(_CursorProtocol):
     """Represents an open transaction to the PostgreSQL DB backend,
        acting as a lightweight wrapper around psycopg2's
        ``cursor`` objects.
@@ -246,51 +231,118 @@ class Cursor(BaseCursor):
     """
     IN_MAX = 1000   # decent limit on size of IN queries - guideline = Oracle limit
 
-    def __init__(self, pool, dbname, dsn):
+    def __init__(self, cnx: PsycoConnection, dbname: str):
         super().__init__()
-        self.sql_from_log = {}
-        self.sql_into_log = {}
+        self.precommit = Callbacks()
+        self.postcommit = Callbacks()
+        self.prerollback = Callbacks()
+        self.postrollback = Callbacks()
+        self._now: datetime | None = None
+        self.cache: dict[typing.Any, typing.Any] = {}
+
+        # By default a cursor has no transaction object.  A transaction object
+        # for managing environments is instantiated by registry.cursor().  It
+        # is not done here in order to avoid cyclic module dependencies.
+        self.transaction: Transaction | None = None
+
+        self.sql_from_log: dict[str, tuple[int, float]] = {}
+        self.sql_into_log: dict[str, tuple[int, float]] = {}
 
         # default log level determined at cursor creation, could be
         # overridden later for debugging purposes
-        self.sql_log_count = 0
-        self._sql_table_tracking = False
+        self.sql_log_count: int = 0
 
         # avoid the call of close() (by __del__) if an exception
         # is raised by any of the following initializations
-        self._closed = True
+        self._closed: bool = True
 
-        self.__pool = pool
         self.dbname = dbname
-
-        self._cnx = pool.borrow(dsn)
-        self._obj = self._cnx.cursor()
+        self._cnx = cnx
+        self._obj: psycopg2.extensions.cursor = cnx.cursor()
         if _logger.isEnabledFor(logging.DEBUG):
-            self.__caller = frame_codeinfo(currentframe(), 2)
+            self.__caller: tuple[str, str | int] | None = frame_codeinfo(currentframe(), 2)
         else:
-            self.__caller = False
+            self.__caller = None
         self._closed = False   # real initialization value
-        # See the docstring of this class.
-        self.connection.set_isolation_level(ISOLATION_LEVEL_REPEATABLE_READ)
 
-        self.cache = {}
-        self._now = None
+        if os.getenv('ODOO_FAKETIME_TEST_MODE') and self.dbname in tools.config['db_name']:
+            self._obj.execute("SET SESSION search_path = public, pg_catalog;")
+            self._cnx.commit()  # ensure that the search_path remains after a rollback
 
-    def __build_dict(self, row):
-        return {d.name: row[i] for i, d in enumerate(self._obj.description)}
+    def flush(self) -> None:
+        """ Flush the current transaction, and run precommit hooks. """
+        # In case some pre-commit added another pre-commit or triggered changes
+        # in the ORM, we must flush and run it again.
+        for _ in range(10):  # limit number of iterations
+            if self.transaction is not None:
+                self.transaction.flush()
+            if not self.precommit:
+                break
+            self.precommit.run()
+        else:
+            _logger.warning("Too many iterations for flushing the cursor!")
 
-    def dictfetchone(self):
+    def savepoint(self, flush: bool = True) -> Savepoint:
+        """context manager entering in a new savepoint
+
+        With ``flush`` (the default), will automatically run (or clear) the
+        relevant hooks.
+        """
+        if flush:
+            return _FlushingSavepoint(self)
+        else:
+            return Savepoint(self)
+
+    def __enter__(self):
+        """ Using the cursor as a contextmanager automatically commits and
+            closes it::
+
+                with cr:
+                    cr.execute(...)
+
+                # cr is committed if no failure occurred
+                # cr is closed in any case
+        """
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        try:
+            if exc_type is None:
+                self.commit()
+        finally:
+            self.close()
+
+    def now(self) -> datetime:
+        """ Return the transaction's timestamp ``NOW() AT TIME ZONE 'UTC'``. """
+        if self._now is None:
+            self.execute("SELECT (now() AT TIME ZONE 'UTC')")
+            row = self.fetchone()
+            assert row
+            self._now = row[0]
+        return self._now
+
+    def dictfetchone(self) -> dict[str, typing.Any] | None:
+        """ Return the first row as a dict (column_name -> value) or None if no rows are available. """
+        description = self._obj.description
+        assert description, "Query does not have results"
         row = self._obj.fetchone()
-        return row and self.__build_dict(row)
+        return {column.name: value for column, value in zip(description, row)} if row else None
 
-    def dictfetchmany(self, size):
-        return [self.__build_dict(row) for row in self._obj.fetchmany(size)]
+    def dictfetchmany(self, size) -> list[dict[str, typing.Any]]:
+        description = self._obj.description
+        assert description, "Query does not have results"
+        names = [column.name for column in description]
+        return [dict(zip(names, row)) for row in self._obj.fetchmany(size)]
 
-    def dictfetchall(self):
-        return [self.__build_dict(row) for row in self._obj.fetchall()]
+    def dictfetchall(self) -> list[dict[str, typing.Any]]:
+        """ Return all rows as dicts (column_name -> value). """
+        description = self._obj.description
+        assert description, "Query does not have results"
+        names = [column.name for column in description]
+        return [dict(zip(names, row)) for row in self._obj.fetchall()]
 
     def __del__(self):
-        if not self._closed and not self._cnx.closed:
+        if not self._closed:
             # Oops. 'self' has not been closed explicitly.
             # The cursor will be deleted by the garbage collector,
             # but the database connection is not put back into the connection
@@ -301,26 +353,38 @@ class Cursor(BaseCursor):
                 msg += "Cursor was created at %s:%s" % self.__caller
             else:
                 msg += "Please enable sql debugging to trace the caller."
-            _logger.warning(msg)
-            self._close(True)
+            _logger.log(logging.DEBUG if self._cnx.closed else logging.WARNING, msg)
+            # Just close the raw connection as other all environments are
+            # (being) collected at this time.
+            self._cnx.give_back(keep_in_pool=False)
 
-    def _format(self, query, params=None):
+    def _format(self, query, params=None) -> str:
         encoding = psycopg2.extensions.encodings[self.connection.encoding]
-        return self._obj.mogrify(query, params).decode(encoding, 'replace')
+        return self.mogrify(query, params).decode(encoding, 'replace')
 
-    def execute(self, query, params=None, log_exceptions=True):
+    def mogrify(self, query, params=None) -> bytes:
+        if isinstance(query, SQL):
+            assert params is None, "Unexpected parameters for SQL query object"
+            query, params, _fields = query._sql_tuple
+        return self._obj.mogrify(query, params)
+
+    def execute(self, query, params=None, log_exceptions: bool = True) -> None:
+        """ Execute a query inside the current transaction. """
         global sql_counter
-        if params and not isinstance(params, (tuple, list, dict)):
+
+        if isinstance(query, SQL):
+            assert params is None, "Unexpected parameters for SQL query object"
+            query, params, _fields = query._sql_tuple
+        elif params and not isinstance(params, (tuple, list, dict)):
             # psycopg2's TypeError is not clear if you mess up the params
-            raise ValueError("SQL query parameters should be a tuple, list or dict; got %r" % (params,))
+            raise ValueError(f"SQL query parameters should be a tuple, list or dict; got {params!r}")
 
         start = real_time()
         try:
-            params = params or None
-            res = self._obj.execute(query, params)
+            self._obj.execute(query, params)
         except Exception as e:
             if log_exceptions:
-                _logger.error("bad query: %s\nERROR: %s", tools.ustr(self._obj.query or query), e)
+                _logger.error("bad query: %s\nERROR: %s", self._obj.query or query, e)
             raise
         finally:
             delay = real_time() - start
@@ -334,6 +398,7 @@ class Cursor(BaseCursor):
         current_thread = threading.current_thread()
         if hasattr(current_thread, 'query_count'):
             current_thread.query_count += 1
+        if hasattr(current_thread, 'query_time'):
             current_thread.query_time += delay
 
         # optional hooks for performance and tracing analysis
@@ -341,52 +406,50 @@ class Cursor(BaseCursor):
             hook(self, query, params, start, delay)
 
         # advanced stats
-        if _logger.isEnabledFor(logging.DEBUG) or self._sql_table_tracking:
-            delay *= 1E6
+        if _logger.isEnabledFor(logging.DEBUG):
+            if obj_query := self._obj.query:
+                query = obj_query.decode()
+            query_type, table = categorize_query(query)
+            log_target = None
+            if query_type == 'into':
+                log_target = self.sql_into_log
+            elif query_type == 'from':
+                log_target = self.sql_from_log
+            if log_target:
+                stat_count, stat_time = log_target.get(table or '', (0, 0))
+                log_target[table or ''] = (stat_count + 1, stat_time + delay * 1E6)
+        return None
 
-            decoded_query = self._obj.query.decode()
-            res_into = re_into.search(decoded_query)
-            # prioritize `insert` over `select` so `select` subqueries are not
-            # considered when inside a `insert`
-            if res_into:
-                self.sql_into_log.setdefault(res_into.group(1), [0, 0])
-                self.sql_into_log[res_into.group(1)][0] += 1
-                self.sql_into_log[res_into.group(1)][1] += delay
-            else:
-                res_from = re_from.search(decoded_query)
-                if res_from:
-                    self.sql_from_log.setdefault(res_from.group(1), [0, 0])
-                    self.sql_from_log[res_from.group(1)][0] += 1
-                    self.sql_from_log[res_from.group(1)][1] += delay
-        return res
+    def execute_values(self, query, argslist, template=None, page_size=100, fetch=False):
+        """
+        A proxy for psycopg2.extras.execute_values which can log all queries like execute.
+        But this method cannot set log_exceptions=False like execute
+        """
+        # Odoo Cursor only proxies all methods of psycopg2 Cursor. This is a patch for problems caused by passing
+        # self instead of self._obj to the first parameter of psycopg2.extras.execute_values.
+        if isinstance(query, Composable):
+            query = query.as_string(self._obj)
+        return psycopg2.extras.execute_values(self, query, argslist, template=template, page_size=page_size, fetch=fetch)
 
-    def split_for_in_conditions(self, ids, size=None):
-        """Split a list of identifiers into one or more smaller tuples
-           safe for IN conditions, after uniquifying them."""
-        return tools.misc.split_every(size or self.IN_MAX, ids)
-
-    def print_log(self):
+    def print_log(self) -> None:
         global sql_counter
 
-        if not _logger.isEnabledFor(logging.DEBUG):
-            return
-        def process(type):
+        def process(log_type: str):
             sqllogs = {'from': self.sql_from_log, 'into': self.sql_into_log}
-            sum = 0
-            if sqllogs[type]:
-                sqllogitems = sqllogs[type].items()
-                _logger.debug("SQL LOG %s:", type)
-                for r in sorted(sqllogitems, key=lambda k: k[1]):
-                    delay = timedelta(microseconds=r[1][1])
-                    _logger.debug("table: %s: %s/%s", r[0], delay, r[1][0])
-                    sum += r[1][1]
-                sqllogs[type].clear()
-            sum = timedelta(microseconds=sum)
-            _logger.debug("SUM %s:%s/%d [%d]", type, sum, self.sql_log_count, sql_counter)
-            sqllogs[type].clear()
+            sqllog = sqllogs[log_type]
+            total = 0.0
+            if sqllog:
+                _logger.debug("SQL LOG %s:", log_type)
+                for table, (stat_count, stat_time) in sorted(sqllog.items(), key=lambda k: k[1]):
+                    delay = timedelta(microseconds=stat_time)
+                    _logger.debug("table: %s: %s/%s", table, delay, stat_count)
+                    total += stat_time
+                sqllog.clear()
+            total_delay = timedelta(microseconds=total)
+            _logger.debug("SUM %s:%s/%d [%d]", log_type, total_delay, self.sql_log_count, sql_counter)
+
         process('from')
         process('into')
-        self.sql_log_count = 0
 
     @contextmanager
     def _enable_logging(self):
@@ -401,69 +464,72 @@ class Cursor(BaseCursor):
         finally:
             _logger.setLevel(level)
 
-    @contextmanager
-    def _enable_table_tracking(self):
-        try:
-            old = self._sql_table_tracking
-            self._sql_table_tracking = True
-            yield
-        finally:
-            self._sql_table_tracking = old
-
-    def close(self):
-        if not self.closed:
-            return self._close(False)
-
-    def _close(self, leak=False):
-        if not self._obj:
+    def close(self) -> None:
+        if self._closed:
             return
 
-        del self.cache
+        # Clean the underlying connection, and run rollback hooks and business
+        # logic.
+        try:
+            self.rollback()
+            if self.transaction is not None:
+                self.transaction.default_env = None  # break the cyclic reference
+                self.transaction.reset()
 
-        # advanced stats only at logging.DEBUG level
-        self.print_log()
+            self.cache.clear()
 
-        self._obj.close()
+        except psycopg2.InterfaceError:
+            # mask 'connection already closed' error
+            if not self._cnx.closed:
+                raise
 
-        # This force the cursor to be freed, and thus, available again. It is
-        # important because otherwise we can overload the server very easily
-        # because of a cursor shortage (because cursors are not garbage
-        # collected as fast as they should). The problem is probably due in
-        # part because browse records keep a reference to the cursor.
-        del self._obj
+        finally:
+            # The connection may have been closed, so give it back in finally block.
+            self._closed = True
 
-        # Clean the underlying connection, and run rollback hooks.
-        self.rollback()
+            # Advanced stats only at logging.DEBUG level
+            if _logger.isEnabledFor(logging.DEBUG):
+                self.print_log()
 
-        self._closed = True
+            # This force the cursor to be freed, and thus, available again. It is
+            # important because otherwise we can overload the server very easily
+            # because of a cursor shortage (because cursors are not garbage
+            # collected as fast as they should). The problem is probably due in
+            # part because browse records keep a reference to the cursor.
+            self._obj.close()
+            del self._obj
 
-        if leak:
-            self._cnx.leaked = True
-        else:
-            chosen_template = tools.config['db_template']
-            keep_in_pool = self.dbname not in ('template0', 'template1', 'postgres', chosen_template)
-            self.__pool.give_back(self._cnx, keep_in_pool=keep_in_pool)
+            # Put the connection back to the pool
+            # Forget already closed connections and system-related databases
+            keep_in_pool = not self._cnx.closed and self.dbname not in (
+                'template0', 'template1',
+                # keep open if one of preloaded databases
+                config['db_system'] if config['db_system'] not in config['db_name'] else '',
+                config['db_template'],
+            )
+            self._cnx.give_back(keep_in_pool=keep_in_pool)
 
-    def commit(self):
-        """ Perform an SQL `COMMIT` """
+    def commit(self) -> None:
+        """ Commit the current transaction. """
         self.flush()
-        result = self._cnx.commit()
-        self.clear()
-        self._now = None
+        committing = self.transaction.committing() if self.transaction is not None else nullcontext()
+        with committing:
+            self._cnx.commit()
+            self._now = None
         self.prerollback.clear()
         self.postrollback.clear()
         self.postcommit.run()
-        return result
 
-    def rollback(self):
-        """ Perform an SQL `ROLLBACK` """
-        self.clear()
+    def rollback(self) -> None:
+        """ Rollback the current transaction. """
+        self.precommit.clear()
         self.postcommit.clear()
         self.prerollback.run()
-        result = self._cnx.rollback()
-        self._now = None
+        rollbacking = self.transaction.rollbacking() if self.transaction is not None else nullcontext()
+        with rollbacking:
+            self._cnx.rollback()
+            self._now = None
         self.postrollback.run()
-        return result
 
     def __getattr__(self, name):
         if self._closed and name == '_obj':
@@ -471,102 +537,20 @@ class Cursor(BaseCursor):
         return getattr(self._obj, name)
 
     @property
-    def closed(self):
-        return self._closed or self._cnx.closed
+    def closed(self) -> bool:
+        return self._closed or bool(self._cnx.closed)
 
-    def now(self):
-        """ Return the transaction's timestamp ``NOW() AT TIME ZONE 'UTC'``. """
-        if self._now is None:
-            self.execute("SELECT (now() AT TIME ZONE 'UTC')")
-            self._now = self.fetchone()[0]
-        return self._now
+    @property
+    def readonly(self) -> bool:
+        return bool(self._cnx.readonly)
 
 
-class TestCursor(BaseCursor):
-    """ A pseudo-cursor to be used for tests, on top of a real cursor. It keeps
-        the transaction open across requests, and simulates committing, rolling
-        back, and closing:
-
-        +------------------------+---------------------------------------------------+
-        |  test cursor           | queries on actual cursor                          |
-        +========================+===================================================+
-        |``cr = TestCursor(...)``| SAVEPOINT test_cursor_N                           |
-        +------------------------+---------------------------------------------------+
-        | ``cr.execute(query)``  | query                                             |
-        +------------------------+---------------------------------------------------+
-        |  ``cr.commit()``       | RELEASE SAVEPOINT test_cursor_N                   |
-        |                        | SAVEPOINT test_cursor_N (lazy)                    |
-        +------------------------+---------------------------------------------------+
-        |  ``cr.rollback()``     | ROLLBACK TO SAVEPOINT test_cursor_N (if savepoint)|
-        +------------------------+---------------------------------------------------+
-        |  ``cr.close()``        | ROLLBACK TO SAVEPOINT test_cursor_N (if savepoint)|
-        |                        | RELEASE SAVEPOINT test_cursor_N (if savepoint)    |
-        +------------------------+---------------------------------------------------+
-    """
-    _cursors_stack = []
-    def __init__(self, cursor, lock):
-        super().__init__()
-        self._now = None
-        self._closed = False
-        self._cursor = cursor
-        # we use a lock to serialize concurrent requests
-        self._lock = lock
-        self._lock.acquire()
-        self._cursors_stack.append(self)
-        # in order to simulate commit and rollback, the cursor maintains a
-        # savepoint at its last commit, the savepoint is created lazily
-        self._savepoint = self._cursor.savepoint(flush=False)
-
-    def execute(self, *args, **kwargs):
-        if not self._savepoint:
-            self._savepoint = self._cursor.savepoint(flush=False)
-
-        return self._cursor.execute(*args, **kwargs)
-
-    def close(self):
-        if not self._closed:
-            self.rollback()
-            self._closed = True
-            if self._savepoint:
-                self._savepoint.close(rollback=False)
-
-            tos = self._cursors_stack.pop()
-            if tos is not self:
-                _logger.warning("Found different un-closed cursor when trying to close %s: %s", self, tos)
-
-            self._lock.release()
-
-    def commit(self):
-        """ Perform an SQL `COMMIT` """
-        self.flush()
-        if self._savepoint:
-            self._savepoint.close(rollback=False)
-            self._savepoint = None
-        self.clear()
-        self.prerollback.clear()
-        self.postrollback.clear()
-        self.postcommit.clear()         # TestCursor ignores post-commit hooks
-
-    def rollback(self):
-        """ Perform an SQL `ROLLBACK` """
-        self.clear()
-        self.postcommit.clear()
-        self.prerollback.run()
-        if self._savepoint:
-            self._savepoint.rollback()
-        self.postrollback.run()
-
-    def __getattr__(self, name):
-        return getattr(self._cursor, name)
-
-    def now(self):
-        """ Return the transaction's timestamp ``datetime.now()``. """
-        if self._now is None:
-            self._now = datetime.now()
-        return self._now
+BaseCursor = Cursor  # backward-compatibility
 
 
 class PsycoConnection(psycopg2.extensions.connection):
+    _pool_last_used: float = 0
+
     def lobject(*args, **kwargs):
         pass
 
@@ -579,8 +563,11 @@ class PsycoConnection(psycopg2.extensions.connection):
                     pass
             return PsycoConnectionInfo(self)
 
+    def give_back(self, keep_in_pool=True):
+        raise RuntimeError('not bound to a pool')
 
-class ConnectionPool(object):
+
+class ConnectionPool:
     """ The pool of connections to database(s)
 
         Keep a set of connections to pg databases open, and reuse them
@@ -589,113 +576,129 @@ class ConnectionPool(object):
         The connections are *not* automatically closed. Only a close_db()
         can trigger that.
     """
-    def __init__(self, maxconn=64):
-        self._connections = []
+
+    def __init__(self, maxconn: int = 64, readonly: bool = False):
+        # most recently used connections are at the end of the queue
+        self._free_connections: list[PsycoConnection] = []
+        self._used_connections = tools.OrderedSet[PsycoConnection]()
+        self._check_free_at: float = 0.0
         self._maxconn = max(maxconn, 1)
+        self._readonly = readonly
         self._lock = threading.Lock()
 
     def __repr__(self):
-        used = len([1 for c, u, _ in self._connections[:] if u])
-        count = len(self._connections)
-        return "ConnectionPool(used=%d/count=%d/max=%d)" % (used, count, self._maxconn)
+        used = len(self._used_connections)
+        count = used + len(self._free_connections)
+        mode = 'read-only' if self._readonly else 'read/write'
+        return f"ConnectionPool({mode};used={used}/count={count}/max={self._maxconn})"
 
-    def _debug(self, msg, *args):
+    @property
+    def readonly(self) -> bool:
+        return self._readonly
+
+    def _debug(self, msg: str, *args):
         _logger_conn.debug(('%r ' + msg), self, *args)
 
     @locked
-    def borrow(self, connection_info):
+    def borrow(self, connection_info: dict) -> PsycoConnection:
         """
         Borrow a PsycoConnection from the pool. If no connection is available, create a new one
         as long as there are still slots available. Perform some garbage-collection in the pool:
-        idle, dead and leaked connections are removed.
+        idle and dead connections are removed.
 
         :param dict connection_info: dict of psql connection keywords
         :rtype: PsycoConnection
         """
-        # free idle, dead and leaked connections
-        for i, (cnx, used, last_used) in tools.reverse_enumerate(self._connections):
-            if not used and not cnx.closed and time.time() - last_used > MAX_IDLE_TIMEOUT:
+        # find a connection, free idle and dead connections
+        now = time.time()
+        check_all = self._check_free_at < now
+        self._check_free_at = now + MAX_IDLE_TIMEOUT / 10
+        close_used_before = now - MAX_IDLE_TIMEOUT
+        selected_cnx = None
+        for i, cnx in tools.reverse_enumerate(self._free_connections):
+            if not cnx.closed and cnx._pool_last_used < close_used_before:
                 self._debug('Close connection at index %d: %r', i, cnx.dsn)
                 cnx.close()
             if cnx.closed:
-                self._connections.pop(i)
+                self._free_connections.pop(i)
                 self._debug('Removing closed connection at index %d: %r', i, cnx.dsn)
-                continue
-            if getattr(cnx, 'leaked', False):
-                delattr(cnx, 'leaked')
-                self._connections[i][1] = False
-                _logger.info('%r: Free leaked connection to %r', self, cnx.dsn)
-
-        for i, (cnx, used, _) in enumerate(self._connections):
-            if not used and self._dsn_equals(cnx.dsn, connection_info):
-                try:
-                    cnx.reset()
-                except psycopg2.OperationalError:
-                    self._debug('Cannot reset connection at index %d: %r', i, cnx.dsn)
-                    # psycopg2 2.4.4 and earlier do not allow closing a closed connection
-                    if not cnx.closed:
-                        cnx.close()
-                    continue
-                self._connections[i][1] = True
+            elif selected_cnx is None and self._dsn_equals(cnx.dsn, connection_info):
                 self._debug('Borrow existing connection to %r at index %d', cnx.dsn, i)
+                self._free_connections.pop(i)
+                self._used_connections.add(cnx)
+                if not check_all:
+                    return cnx
+                selected_cnx = cnx
+        if selected_cnx is not None:
+            return selected_cnx
 
-                return cnx
-
-        if len(self._connections) >= self._maxconn:
-            # try to remove the oldest connection not used
-            for i, (cnx, used, _) in enumerate(self._connections):
-                if not used:
-                    self._connections.pop(i)
-                    if not cnx.closed:
-                        cnx.close()
-                    self._debug('Removing old connection at index %d: %r', i, cnx.dsn)
-                    break
+        if len(self._free_connections) + len(self._used_connections) >= self._maxconn:
+            # pool is full, try to close the oldest connection
+            if self._free_connections:
+                cnx = self._free_connections.pop(0)
+                cnx.close()
+                self._debug('Removing old connection at index %d: %r', 0, cnx.dsn)
             else:
-                # note: this code is called only if the for loop has completed (no break)
                 raise PoolError('The Connection Pool Is Full')
 
         try:
             result = psycopg2.connect(
                 connection_factory=PsycoConnection,
                 **connection_info)
+            result.give_back = functools.partial(self.give_back, result)
         except psycopg2.Error:
             _logger.info('Connection to the database failed')
             raise
-        self._connections.append([result, True, 0])
+        if result.server_version < MIN_PG_VERSION * 10000:
+            warnings.warn(f"Postgres version is {result.server_version}, lower than minimum required {MIN_PG_VERSION * 10000}")
+        self._used_connections.add(result)
         self._debug('Create new connection backend PID %d', result.get_backend_pid())
+
         return result
 
     @locked
-    def give_back(self, connection, keep_in_pool=True):
+    def give_back(self, connection: PsycoConnection, keep_in_pool: bool = True):
         self._debug('Give back connection to %r', connection.dsn)
-        for i, (cnx, _, _) in enumerate(self._connections):
-            if cnx is connection:
-                if keep_in_pool:
-                    # Release the connection and record the last time used
-                    self._connections[i][1] = False
-                    self._connections[i][2] = time.time()
-                    self._debug('Put connection to %r in pool', cnx.dsn)
-                else:
-                    self._connections.pop(i)
-                    self._debug('Forgot connection to %r', cnx.dsn)
-                    cnx.close()
-                break
-        else:
+        try:
+            self._used_connections.remove(connection)
+        except KeyError:
+            if connection in self._free_connections:
+                raise PoolError("Closing a free connection")
             raise PoolError('This connection does not belong to the pool')
 
+        if keep_in_pool and not connection.closed:
+            # Release the connection and record the last time used
+            self._debug('Put connection to %r in pool', connection.dsn)
+            try:
+                connection.reset()
+            except psycopg2.OperationalError as e:
+                self._debug('Cannot reset connection: %r (%s)', connection.dsn, e)
+            else:
+                connection._pool_last_used = time.time()
+                self._free_connections.append(connection)
+                return
+        self._debug('Forget connection to %r', connection.dsn)
+        connection.close()
+
     @locked
-    def close_all(self, dsn=None):
+    def close_all(self, dsn: dict | str | None = None):
         count = 0
         last = None
-        for i, (cnx, _, _) in tools.reverse_enumerate(self._connections):
+        for i, cnx in tools.reverse_enumerate(self._free_connections):
             if dsn is None or self._dsn_equals(cnx.dsn, dsn):
                 cnx.close()
-                last = self._connections.pop(i)[0]
+                last = self._free_connections.pop(i)
                 count += 1
-        _logger.info('%r: Closed %d connections %s', self, count,
-                    (dsn and last and 'to %r' % last.dsn) or '')
+        for cnx in self._used_connections:
+            if dsn is None or self._dsn_equals(cnx.dsn, dsn):
+                cnx.close()
+                last = cnx
+                count += 1
+        if count:
+            _logger.info('%r: Closed %d connections %s', self, count,
+                        (dsn and last and 'to %r' % last.dsn) or '')
 
-    def _dsn_equals(self, dsn1, dsn2):
+    def _dsn_equals(self, dsn1: dict | str, dsn2: dict | str) -> bool:
         alias_keys = {'dbname': 'database'}
         ignore_keys = ['password']
         dsn1, dsn2 = ({
@@ -706,33 +709,40 @@ class ConnectionPool(object):
         return dsn1 == dsn2
 
 
-class Connection(object):
+class Connection:
     """ A lightweight instance of a connection to postgres
     """
-    def __init__(self, pool, dbname, dsn):
+    def __init__(self, pool: ConnectionPool, dbname: str, dsn: dict):
         self.__dbname = dbname
         self.__dsn = dsn
         self.__pool = pool
 
     @property
-    def dsn(self):
+    def dsn(self) -> dict:
         dsn = dict(self.__dsn)
         dsn.pop('password', None)
         return dsn
 
     @property
-    def dbname(self):
+    def dbname(self) -> str:
         return self.__dbname
 
-    def cursor(self):
+    def cursor(self) -> Cursor:
         _logger.debug('create cursor to %r', self.dsn)
-        return Cursor(self.__pool, self.__dbname, self.__dsn)
+        cnx = self.__pool.borrow(self.__dsn)
+        cnx.set_session(
+            # See the docstring of this class.
+            isolation_level=ISOLATION_LEVEL_REPEATABLE_READ,
+            readonly=self.__pool.readonly,
+            autocommit=False,
+        )
+        return Cursor(cnx, self.__dbname)
 
     def __bool__(self):
         raise NotImplementedError()
-    __nonzero__ = __bool__
 
-def connection_info_for(db_or_uri):
+
+def connection_info_for(db_or_uri: str, readonly=False) -> tuple[str, dict]:
     """ parse the given `db_or_uri` and return a 2-tuple (dbname, connection_params)
 
     Connection params are either a dictionary with a single key ``dsn``
@@ -741,16 +751,16 @@ def connection_info_for(db_or_uri):
     (dsn) from
 
     :param str db_or_uri: database name or postgres dsn
+    :param bool readonly: used to load
+        the default configuration from ``db_`` or ``db_replica_``.
     :rtype: (str, dict)
     """
-    if 'ODOO_PGAPPNAME' in os.environ:
-        # Using manual string interpolation for security reason and trimming at default NAMEDATALEN=63
-        app_name = os.environ['ODOO_PGAPPNAME'].replace('{pid}', str(os.getpid()))[0:63]
-    else:
-        app_name = "odoo-%d" % os.getpid()
+    app_name = config['db_app_name']
+    # Using manual string interpolation for security reason and trimming at default NAMEDATALEN=63
+    app_name = app_name.replace('{pid}', str(os.getpid()))[:63]
     if db_or_uri.startswith(('postgresql://', 'postgres://')):
         # extract db from uri
-        us = urls.url_parse(db_or_uri)
+        us = urls.url_parse(db_or_uri)  # type: ignore
         if len(us.path) > 1:
             db_name = us.path[1:]
         elif us.username:
@@ -762,33 +772,47 @@ def connection_info_for(db_or_uri):
     connection_info = {'database': db_or_uri, 'application_name': app_name}
     for p in ('host', 'port', 'user', 'password', 'sslmode'):
         cfg = tools.config['db_' + p]
+        if readonly:
+            cfg = tools.config.get('db_replica_' + p) or cfg
         if cfg:
             connection_info[p] = cfg
 
     return db_or_uri, connection_info
 
-_Pool = None
 
-def db_connect(to, allow_uri=False):
-    global _Pool
-    if _Pool is None:
-        _Pool = ConnectionPool(int(
-            odoo.evented and tools.config['db_maxconn_gevent']
-            or tools.config['db_maxconn']
-        ))
+_Pool: ConnectionPool | None = None
+_Pool_readonly: ConnectionPool | None = None
 
-    db, info = connection_info_for(to)
+
+def db_connect(to: str, allow_uri=False, readonly=False) -> Connection:
+    global _Pool, _Pool_readonly  # noqa: PLW0603 (global-statement)
+
+    maxconn = (tools.config['db_maxconn_gevent'] if hasattr(odoo, 'evented') and odoo.evented else 0) or tools.config['db_maxconn']
+    if readonly:
+        if _Pool_readonly is None:
+            _Pool_readonly = ConnectionPool(int(maxconn), readonly=True)
+        pool = _Pool_readonly
+    else:
+        if _Pool is None:
+            _Pool = ConnectionPool(int(maxconn), readonly=False)
+        pool = _Pool
+
+    db, info = connection_info_for(to, readonly)
     if not allow_uri and db != to:
         raise ValueError('URI connections not allowed')
-    return Connection(_Pool, db, info)
+    return Connection(pool, db, info)
 
-def close_db(db_name):
+
+def close_db(db_name: str) -> None:
     """ You might want to call odoo.modules.registry.Registry.delete(db_name) along this function."""
-    global _Pool
     if _Pool:
         _Pool.close_all(connection_info_for(db_name)[1])
+    if _Pool_readonly:
+        _Pool_readonly.close_all(connection_info_for(db_name)[1])
 
-def close_all():
-    global _Pool
+
+def close_all() -> None:
     if _Pool:
         _Pool.close_all()
+    if _Pool_readonly:
+        _Pool_readonly.close_all()

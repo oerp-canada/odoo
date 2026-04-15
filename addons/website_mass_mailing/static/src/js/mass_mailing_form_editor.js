@@ -1,25 +1,23 @@
-/** @odoo-module **/
+import { _t } from "@web/core/l10n/translation";
+import { registry } from '@web/core/registry';
 
-import core from "web.core";
-import FormEditorRegistry from "website.form_editor_registry";
-
-const _t = core._t;
-
-FormEditorRegistry.add('create_mailing_contact', {
+registry.category("website.form_editor_actions").add('create_mailing_contact', {
     formFields: [{
         name: 'name',
         required: true,
+        fillWith: "name",
         string: _t('Your Name'),
         type: 'char',
     }, {
         name: 'email',
-        required: true,
+        modelRequired: true,
+        fillWith: "email",
         string: _t('Your Email'),
         type: 'email',
     }, {
         name: 'list_ids',
         relation: 'mailing.list',
-        required: true,
+        modelRequired: true,
         string: _t('Subscribe to'),
         type: 'many2many',
     }],

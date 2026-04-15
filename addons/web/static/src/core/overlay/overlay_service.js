@@ -1,6 +1,5 @@
-/** @odoo-module **/
-
-import { reactive } from "@odoo/owl";
+import { reactive } from "@web/owl2/utils";
+import { markRaw } from "@odoo/owl";
 import { registry } from "../registry";
 import { OverlayContainer } from "./overlay_container";
 
@@ -9,8 +8,10 @@ const services = registry.category("services");
 
 /**
  * @typedef {{
+ *  env?: object;
  *  onRemove?: () => void;
  *  sequence?: number;
+ *  rootId?: string;
  * }} OverlayServiceAddOptions
  */
 
@@ -24,9 +25,9 @@ export const overlayService = {
             props: { overlays },
         });
 
-        const remove = (id, onRemove = () => {}) => {
+        const remove = async (id, onRemove = () => {}, removeParams) => {
             if (id in overlays) {
-                onRemove();
+                await onRemove(removeParams);
                 delete overlays[id];
             }
         };
@@ -39,13 +40,16 @@ export const overlayService = {
          */
         const add = (component, props, options = {}) => {
             const id = ++nextId;
-            const removeCurrentOverlay = () => remove(id, options.onRemove);
+            const removeCurrentOverlay = (removeParams) =>
+                remove(id, options.onRemove, removeParams);
             overlays[id] = {
                 id,
                 component,
+                env: options.env && markRaw(options.env),
                 props,
                 remove: removeCurrentOverlay,
                 sequence: options.sequence ?? 50,
+                rootId: options.rootId,
             };
             return removeCurrentOverlay;
         };

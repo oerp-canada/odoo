@@ -1,14 +1,20 @@
-/** @odoo-module **/
-
+import { useLayoutEffect, useRef, useState, useSubEnv } from "@web/owl2/utils";
+import { _t } from "@web/core/l10n/translation";
 import { useAutofocus } from "@web/core/utils/hooks";
 import { pick } from "@web/core/utils/objects";
 import { formView } from "@web/views/form/form_view";
 import { SettingsConfirmationDialog } from "./settings_confirmation_dialog";
 import { SettingsFormRenderer } from "./settings_form_renderer";
-
-import { useSubEnv, useState, useRef, useEffect } from "@odoo/owl";
+import { normalize } from "@web/core/l10n/utils";
+import { useDebounced } from "@web/core/utils/timing";
 
 export class SettingsFormController extends formView.Controller {
+    static template = "web.SettingsFormView";
+    static components = {
+        ...formView.Controller.components,
+        Renderer: SettingsFormRenderer,
+    };
+
     setup() {
         super.setup();
         useAutofocus();
@@ -17,28 +23,47 @@ export class SettingsFormController extends formView.Controller {
         this.rootRef = useRef("root");
         this.canCreate = false;
         useSubEnv({ searchState: this.searchState });
-        useEffect(
+        useLayoutEffect(
             () => {
-                if (
-                    this.rootRef.el.querySelector(".o_settings_container:not(.d-none)") ||
-                    this.rootRef.el.querySelector(
-                        ".settings .o_settings_container:not(.d-none) .o_setting_box.o_searchable_setting"
-                    )
-                ) {
-                    this.state.displayNoContent = false;
+                if (this.searchState.value) {
+                    if (
+                        this.rootRef.el.querySelector(".o_settings_container:not(.d-none)") ||
+                        this.rootRef.el.querySelector(
+                            ".settings .o_settings_container:not(.d-none) .o_setting_box.o_searchable_setting"
+                        )
+                    ) {
+                        this.state.displayNoContent = false;
+                    } else {
+                        this.state.displayNoContent = true;
+                    }
                 } else {
-                    this.state.displayNoContent = true;
+                    this.state.displayNoContent = false;
                 }
             },
             () => [this.searchState.value]
         );
-        useEffect(() => {
+        useLayoutEffect(() => {
             if (this.env.__getLocalState__) {
                 this.env.__getLocalState__.remove(this);
             }
         });
 
         this.initialApp = "module" in this.props.context ? this.props.context.module : "";
+        this.debounceSearch = useDebounced(
+            (value) => (this.searchState.value = normalize(value)),
+            500
+        );
+    }
+
+    get modelParams() {
+        const headerFields = Object.values(this.archInfo.fieldNodes)
+            .filter((fieldNode) => fieldNode.options.isHeaderField)
+            .map((fieldNode) => fieldNode.name);
+        return {
+            ...super.modelParams,
+            headerFields,
+            onChangeHeaderFields: () => this._confirmSave(),
+        };
     }
 
     /**
@@ -49,22 +74,23 @@ export class SettingsFormController extends formView.Controller {
             return true;
         }
         if (
-            this.model.root.isDirty &&
+            (await this.model.root.isDirty()) &&
             !["execute"].includes(clickParams.name) &&
             !clickParams.noSaveDialog
         ) {
             return this._confirmSave();
         } else {
-            return this.model.root.save({ stayInEdition: true });
+            return this.model.root.save();
         }
     }
 
     displayName() {
-        return this.env._t("Settings");
+        return _t("Settings");
     }
 
-    beforeLeave() {
-        if (this.model.root.isDirty) {
+    async beforeLeave() {
+        const dirty = await this.model.root.isDirty();
+        if (dirty) {
             return this._confirmSave();
         }
     }
@@ -72,15 +98,11 @@ export class SettingsFormController extends formView.Controller {
     //This is needed to avoid the auto save when unload
     beforeUnload() {}
 
-    //This is needed to avoid writing the id on the url
-    updateURL() {}
+    //This is needed to avoid the auto save when visibility change
+    beforeVisibilityChange() {}
 
-    async saveButtonClicked() {
-        await this._save();
-    }
-
-    async _save() {
-        this.env.onClickViewButton({
+    async save() {
+        await this.env.onClickViewButton({
             clickParams: {
                 name: "execute",
                 type: "object",
@@ -106,9 +128,9 @@ export class SettingsFormController extends formView.Controller {
         let _continue = true;
         await new Promise((resolve) => {
             this.dialogService.add(SettingsConfirmationDialog, {
-                body: this.env._t("Would you like to save your changes?"),
+                body: _t("Would you like to save your changes?"),
                 confirm: async () => {
-                    await this._save();
+                    await this.save();
                     // It doesn't make sense to do the action of the button
                     // as the res.config.settings `execute` method will trigger a reload.
                     _continue = false;
@@ -116,7 +138,7 @@ export class SettingsFormController extends formView.Controller {
                 },
                 cancel: async () => {
                     await this.model.root.discard();
-                    await this.model.root.save({ stayInEdition: true });
+                    await this.model.root.save();
                     _continue = true;
                     resolve();
                 },
@@ -129,9 +151,3 @@ export class SettingsFormController extends formView.Controller {
         return _continue;
     }
 }
-
-SettingsFormController.components = {
-    ...formView.Controller.components,
-    Renderer: SettingsFormRenderer,
-};
-SettingsFormController.template = "web.SettingsFormView";

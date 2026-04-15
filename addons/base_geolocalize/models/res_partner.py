@@ -1,25 +1,13 @@
-# -*- coding: utf-8 -*-
 # Part of Odoo. See LICENSE file for full copyright and licensing details.
 
-from odoo import api, fields, models, _
+from odoo import api, fields, models, modules, _
 from odoo.tools import config
 
 
 class ResPartner(models.Model):
     _inherit = "res.partner"
 
-    date_localization = fields.Date(string='Geolocation Date')
-
-    def write(self, vals):
-        # Reset latitude/longitude in case we modify the address without
-        # updating the related geolocation fields
-        if any(field in vals for field in ['street', 'zip', 'city', 'state_id', 'country_id']) \
-                and not all('partner_%s' % field in vals for field in ['latitude', 'longitude']):
-            vals.update({
-                'partner_latitude': 0.0,
-                'partner_longitude': 0.0,
-            })
-        return super().write(vals)
+    date_localization = fields.Date(string='Geolocation Updated On')
 
     @api.model
     def _geo_localize(self, street='', zip='', city='', state='', country=''):
@@ -33,9 +21,12 @@ class ResPartner(models.Model):
 
     def geo_localize(self):
         # We need country names in English below
-        if not self._context.get('force_geo_localize') \
-                and (self._context.get('import_file') \
-                     or any(config[key] for key in ['test_enable', 'test_file', 'init', 'update'])):
+        if not self.env.context.get('force_geo_localize') and (
+            self.env.context.get('import_file')
+            or modules.module.current_test
+            or not self.env.registry.ready
+            or self.env.context.get('install_demo')
+        ):
             return False
         partners_not_geo_localized = self.env['res.partner']
         for partner in self.with_context(lang='en_US'):
@@ -54,9 +45,10 @@ class ResPartner(models.Model):
             else:
                 partners_not_geo_localized |= partner
         if partners_not_geo_localized:
-            self.env['bus.bus']._sendone(self.env.user.partner_id, 'simple_notification', {
+            self.env.user._bus_send("simple_notification", {
                 'type': 'danger',
                 'title': _("Warning"),
-                'message': _('No match found for %(partner_names)s address(es).', partner_names=', '.join(partners_not_geo_localized.mapped('name')))
+                'message': _('No match found for %(partner_names)s address(es).',
+                             partner_names=', '.join(partners_not_geo_localized.mapped('display_name')))
             })
         return True

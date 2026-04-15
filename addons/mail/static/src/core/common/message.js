@@ -1,249 +1,352 @@
-/* @odoo-module */
-
+import { useChildSubEnv, useLayoutEffect, useRef, useState, useSubEnv } from "@web/owl2/utils";
 import { AttachmentList } from "@mail/core/common/attachment_list";
 import { Composer } from "@mail/core/common/composer";
-import { useEmojiPicker } from "@web/core/emoji_picker/emoji_picker";
 import { ImStatus } from "@mail/core/common/im_status";
-import { LinkPreviewList } from "@mail/core/common/link_preview_list";
-import { MessageConfirmDialog } from "@mail/core/common/message_confirm_dialog";
 import { MessageInReply } from "@mail/core/common/message_in_reply";
+import { MessageLinkPreviewList } from "@mail/core/common/message_link_preview_list";
 import { MessageNotificationPopover } from "@mail/core/common/message_notification_popover";
 import { MessageReactionMenu } from "@mail/core/common/message_reaction_menu";
 import { MessageReactions } from "@mail/core/common/message_reactions";
-import { MessageSeenIndicator } from "@mail/core/common/message_seen_indicator";
-import { useMessaging, useStore } from "@mail/core/common/messaging_hook";
+import { Poll } from "@mail/core/common/poll";
+import { PollResult } from "@mail/core/common/poll_result";
 import { RelativeTime } from "@mail/core/common/relative_time";
-import { convertBrToLineBreak, htmlToTextContentInline } from "@mail/utils/common/format";
+import { htmlToTextContentInline } from "@mail/utils/common/format";
 import { isEventHandled, markEventHandled } from "@web/core/utils/misc";
+import { renderToElement } from "@web/core/utils/render";
+import { nbsp } from "@web/core/utils/strings";
 
-import {
-    Component,
-    onMounted,
-    onPatched,
-    onWillUnmount,
-    useChildSubEnv,
-    useEffect,
-    useRef,
-    useState,
-} from "@odoo/owl";
+import { Component, onMounted, toRaw } from "@odoo/owl";
 
 import { ActionSwiper } from "@web/core/action_swiper/action_swiper";
-import { hasTouch } from "@web/core/browser/feature_detection";
+import { isMobileOS } from "@web/core/browser/feature_detection";
 import { Dropdown } from "@web/core/dropdown/dropdown";
-import { DropdownItem } from "@web/core/dropdown/dropdown_item";
+import { useDropdownState } from "@web/core/dropdown/dropdown_hooks";
 import { _t } from "@web/core/l10n/translation";
 import { usePopover } from "@web/core/popover/popover_hook";
-import { useService } from "@web/core/utils/hooks";
-import { url } from "@web/core/utils/urls";
+import { useChildRef, useService } from "@web/core/utils/hooks";
+import { createElementWithContent } from "@web/core/utils/html";
+import { getOrigin, url } from "@web/core/utils/urls";
+import { useMessageActions } from "./message_actions";
+import { discussComponentRegistry } from "./discuss_component_registry";
+import { NotificationMessage } from "./notification_message";
+import { useForwardRefsToParent, useLongPress } from "@mail/utils/common/hooks";
+import { ActionList } from "@mail/core/common/action_list";
+import { loadCssFromBundle } from "@mail/utils/common/misc";
+import { MessageContextMenu } from "@mail/core/common/message_context_menu";
+import { Priority } from "@mail/core/common/priority";
 
 /**
  * @typedef {Object} Props
  * @property {boolean} [hasActions=true]
  * @property {boolean} [highlighted]
  * @property {function} [onParentMessageClick]
- * @property {import("@mail/core/common/message_model").Message} message
- * @property {import("@mail/utils/common/hooks").MessageToReplyTo} [messageToReplyTo]
+ * @property {import("models").Message} message
  * @property {boolean} [squashed]
- * @property {import("@mail/core/common/thread_model").Thread} [thread]
+ * @property {import("models").Thread} [thread]
+ * @property {ReturnType<import('@mail/utils/common/hooks').useMessageSelection>} [messageSelection]
+ * @property {ReturnType<import('@mail/core/common/message_search_hook').useMessageSearch>} [messageSearch]
+ * @property {String} [className]
  * @extends {Component<Props, Env>}
  */
 export class Message extends Component {
+    // This is the darken version of #71639e
+    static SHADOW_LINK_COLOR = "#66598f";
+    static SHADOW_HIGHLIGHT_COLOR = "#e99d00bf";
+    static SHADOW_LINK_HOVER_COLOR = "#564b79";
     static components = {
+        ActionList,
         ActionSwiper,
         AttachmentList,
         Composer,
         Dropdown,
-        DropdownItem,
-        LinkPreviewList,
-        MessageInReply,
-        MessageReactions,
-        MessageSeenIndicator,
         ImStatus,
+        MessageContextMenu,
+        MessageInReply,
+        MessageLinkPreviewList,
+        MessageReactions,
         Popover: MessageNotificationPopover,
+        Poll,
+        PollResult,
         RelativeTime,
+        NotificationMessage,
+        Priority,
     };
     static defaultProps = {
         hasActions: true,
-        isInChatWindow: false,
+        showDates: true,
     };
     static props = [
+        "asCard?",
         "hasActions?",
-        "isInChatWindow?",
-        "highlighted?",
         "onParentMessageClick?",
         "message",
-        "messageEdition?",
-        "messageToReplyTo?",
+        "messageSelection?",
+        "messageRefs?",
+        "previousMessage?",
         "squashed?",
         "thread?",
+        "messageSearch?",
+        "className?",
+        "showDates?",
+        "isFirstMessage?",
+        "isReadOnly?",
     ];
     static template = "mail.Message";
 
     setup() {
+        super.setup();
+        this.nbsp = nbsp;
+        this.store = useService("mail.store");
         this.popover = usePopover(this.constructor.components.Popover, { position: "top" });
         this.state = useState({
-            isEditing: false,
             isHovered: false,
             isClicked: false,
             expandOptions: false,
-            lastReadMoreIndex: 0,
-            isReadMoreByIndex: new Map(),
+            emailHeaderOpen: false,
         });
+        this.rightClickDropdownState = useDropdownState({
+            onClose: () => this.props.messageSelection?.clearSelected(),
+        });
+        this.rightClickAnchor = useChildRef("rightClickAnchor");
+        /** @type {ShadowRoot} */
+        this.shadowRoot;
         this.root = useRef("root");
-        this.hasTouch = hasTouch;
-        this.messageBody = useRef("body");
-        this.messaging = useMessaging();
-        this.store = useStore();
-        this.rpc = useService("rpc");
-        /** @type {import("@mail/core/common/thread_service").ThreadService} */
-        this.threadService = useState(useService("mail.thread"));
-        /** @type {import("@mail/core/common/message_service").MessageService} */
-        this.messageService = useState(useService("mail.message"));
-        /** @type {import("@mail/core/common/attachment_service").AttachmentService} */
-        this.attachmentService = useService("mail.attachment");
-        this.user = useService("user");
-        this.dialog = useService("dialog");
-        this.ui = useState(useService("ui"));
-        this.openReactionMenu = this.openReactionMenu.bind(this);
-        useChildSubEnv({
-            alignedRight: this.isAlignedRight,
-        });
-        useEffect(
-            (editingMessage) => {
-                if (editingMessage === this.props.message) {
-                    this.enterEditMode();
-                }
-            },
-            () => [this.props.messageEdition?.editingMessage]
-        );
-        onPatched(() => {
-            if (this.props.highlighted && this.root.el) {
-                this.root.el.scrollIntoView({ behavior: "smooth", block: "center" });
-            }
-        });
-        this.emojiPickerRef = useRef("emoji-picker");
-        if (this.props.hasActions && this.canAddReaction) {
-            this.emojiPicker = useEmojiPicker(this.emojiPickerRef, {
-                onSelect: (emoji) => {
-                    const reaction = this.message.reactions.find(
-                        ({ content, personas }) =>
-                            content === emoji &&
-                            personas.find((persona) => persona === this.store.self)
-                    );
-                    if (!reaction) {
-                        this.messageService.react(this.message, emoji);
-                    }
-                },
+        if (isMobileOS()) {
+            useLongPress("root", {
+                action: () => this.openMobileActions(),
+                predicate: () => !this.isEditing,
             });
         }
+        useForwardRefsToParent("messageRefs", (props) => props.message.id, this.root);
+        this.messageBody = useRef("body");
+        this.messageActions = useMessageActions(this.messageActionsParams);
+        this.shadowBody = useRef("shadowBody");
+        this.dialog = useService("dialog");
+        this.ui = useService("ui");
+        this.openReactionMenu = this.openReactionMenu.bind(this);
+        this.optionsDropdown = useDropdownState();
+        useSubEnv({ inMessage: true });
+        useChildSubEnv({
+            message: this.props.message,
+            alignedRight: this.isAlignedRight,
+        });
         onMounted(() => {
-            if (this.messageBody.el) {
-                $(this.messageBody.el).find(".o-mail-read-more-less").remove();
-                this.insertReadMoreLess($(this.messageBody.el));
+            if (this.shadowBody.el) {
+                this.shadowRoot = this.shadowBody.el.attachShadow({ mode: "open" });
+                const color = this.store.isOdooWhiteTheme ? "dark" : "white";
+                loadCssFromBundle(this.shadowRoot, "mail.assets_message_email");
+                const shadowStyle = document.createElement("style");
+                shadowStyle.textContent = `
+                    * {
+                        background-color: transparent !important;
+                        color: ${color} !important;
+                    }
+                    a, a * {
+                        color: ${this.constructor.SHADOW_LINK_COLOR} !important;
+                    }
+                    a:hover, a *:hover {
+                        color: ${this.constructor.SHADOW_LINK_HOVER_COLOR} !important;
+                    }
+                    .o-mail-Message-searchHighlight {
+                        background: ${this.constructor.SHADOW_HIGHLIGHT_COLOR} !important;
+                    }
+                `;
+                if (!this.store.isOdooWhiteTheme) {
+                    this.shadowRoot.appendChild(shadowStyle);
+                }
+                const ellipsisStyle = document.createElement("style");
+                ellipsisStyle.textContent = `
+                    .o-mail-ellipsis {
+                        min-width: 2.7ch;
+                        background-color: ButtonFace;
+                        border-radius: 50rem;
+                        border: 0;
+                        display: block
+                        font: -moz-button;
+                        font-size: .75rem;
+                        font-weight: 500;
+                        line-height: 1.1;
+                        cursor: pointer;
+                        padding: 0 4px;
+                        vertical-align: top;
+                        color #ffffff;
+                        text-decoration: none;
+                        text-align: center;
+                        &:hover {
+                            background-color: -moz-buttonhoverface;
+                        }
+                    }
+                `;
+                this.shadowRoot.appendChild(ellipsisStyle);
             }
         });
-        onWillUnmount(() => {
-            if (this.messageBody.el) {
-                $(this.messageBody.el).find(".o-mail-read-more-less").remove();
-            }
-        });
+        useLayoutEffect(
+            () => {
+                if (this.shadowBody.el) {
+                    const bodyEl = createElementWithContent(
+                        "span",
+                        this.message.showTranslation
+                            ? this.message.richTranslationValue
+                            : this.props.messageSearch?.highlight(this.message.richBody) ??
+                                  this.message.richBody
+                    );
+                    this.prepareMessageBody(bodyEl);
+                    this.shadowRoot.appendChild(bodyEl);
+                    return () => {
+                        this.shadowRoot.removeChild(bodyEl);
+                    };
+                }
+            },
+            () => [
+                this.message.showTranslation,
+                this.message.richTranslationValue,
+                this.props.messageSearch?.searchTerm,
+                this.message.richBody,
+                this.isEditing,
+            ]
+        );
+        useLayoutEffect(
+            () => {
+                if (!this.isEditing) {
+                    this.prepareMessageBody(this.messageBody.el);
+                }
+            },
+            () => [this.isEditing, this.message.richBody]
+        );
+    }
+
+    get messageActionsParams() {
+        return {
+            message: () => this.message,
+            thread: () => this.props.thread,
+        };
+    }
+
+    computeActions() {
+        const allActions = this.messageActions.actions;
+        const quickActions = allActions.slice(
+            0,
+            allActions.length > this.quickActionCount
+                ? this.quickActionCount - 1
+                : this.quickActionCount
+        );
+        const moreActions =
+            allActions.length > this.quickActionCount
+                ? allActions.slice(this.quickActionCount - 1)
+                : false;
+        const moreAction = moreActions?.length
+            ? this.messageActions.more(this.messageActionsParams, {
+                  actions: moreActions,
+                  dropdownMenuClass: "o-mail-Message-moreMenu",
+                  dropdownPosition: this.isAlignedRight
+                      ? this.message.threadAsNewest
+                          ? "left-end"
+                          : "left-start"
+                      : this.message.threadAsNewest
+                      ? "right-end"
+                      : "right-start",
+                  name: this.expandText,
+              })
+            : undefined;
+        const actions = moreAction ? [...quickActions, moreAction] : quickActions;
+        if (this.isAlignedRight) {
+            actions.reverse();
+        }
+        this.state.moreAction = moreAction;
+        this.quickActions = quickActions;
+        this.actions = actions;
     }
 
     get attClass() {
         return {
-            "o-highlighted bg-view shadow-lg": this.props.highlighted,
-            "o-selfAuthored": this.message.isSelfAuthored,
-            "o-selected": this.props.messageToReplyTo?.isSelected(
-                this.props.thread,
-                this.props.message
-            ),
-            "o-squashed pb-1": this.props.squashed,
-            "py-1": !this.props.squashed,
-            "mt-2": !this.props.squashed && this.props.thread,
-            "px-3": !this.props.isInChatWindow,
-            "px-2": this.props.isInChatWindow,
-            "opacity-50": this.props.messageToReplyTo?.isNotSelected(
-                this.props.thread,
-                this.props.message
-            ),
+            "user-select-none o-isMobileOS": isMobileOS(),
+            [this.props.className]: true,
+            "o-card p-2 ps-1 mx-1 mt-1 mb-1 border border-dark rounded-2": this.props.asCard,
+            "pt-1": !this.props.asCard && !this.props.squashed,
+            "o-pt-0_5": !this.props.asCard && this.props.squashed,
+            "o-selfAuthored": this.message.isSelfAuthored && !this.env.messageCard,
+            "o-selected":
+                this.props.message.composerAsReplyToMessage?.thread.eq(this.props.thread) ||
+                this.props.messageSelection?.isSelected(this.props.message),
+            "o-squashed": this.props.squashed,
+            "mt-1":
+                !this.props.squashed &&
+                this.props.thread &&
+                !this.env.messageCard &&
+                !this.props.asCard,
+            "px-1": this.env.inChatWindow,
+            "o-actionMenuMobileOpen": this.ui.isSmall && this.optionsDropdown.isOpen,
+            "o-editing": this.isEditing,
+        };
+    }
+
+    get authorAvatarAttClass() {
+        return {
+            "object-fit-contain": this.props.message.author_id?.is_company,
+            "object-fit-cover": !this.props.message.author_id?.is_company,
         };
     }
 
     get authorAvatarUrl() {
         if (
-            this.message.type === "email" &&
-            !["partner", "guest"].includes(this.message.author?.type)
+            this.message.message_type &&
+            this.message.message_type.includes("email") &&
+            !this.message.author_id &&
+            !this.message.author_guest_id
         ) {
             return url("/mail/static/src/img/email_icon.png");
         }
-        return this.threadService.avatarUrl(this.message.author, this.props.message.originThread);
+        if (this.message.author) {
+            return this.message.author.avatarUrl;
+        }
+        return this.store.DEFAULT_AVATAR;
     }
 
     get expandText() {
         return _t("Expand");
     }
 
+    get isEditing() {
+        return !this.props.isReadOnly && this.props.message.composer;
+    }
+
     get message() {
         return this.props.message;
     }
 
+    /** Max amount of quick actions, including "..." */
+    get quickActionCount() {
+        if (isMobileOS()) {
+            return 1;
+        }
+        return this.env.inChatWindow || this.env.inMeetingChat ? 2 : 4;
+    }
+
     get showSubtypeDescription() {
         return (
-            this.message.subtypeDescription &&
-            this.message.subtypeDescription.toLowerCase() !==
+            this.message.subtype_id?.description &&
+            this.message.subtype_id.description.toLowerCase() !==
                 htmlToTextContentInline(this.message.body || "").toLowerCase()
         );
     }
 
     get messageTypeText() {
-        if (this.props.message.type === "notification") {
+        if (this.props.message.message_type === "notification") {
             return _t("System notification");
         }
-        if (this.props.message.type === "auto_comment") {
+        if (this.props.message.message_type === "auto_comment") {
             return _t("Automated message");
         }
-        if (!this.props.message.isDiscussion && this.props.message.type !== "user_notification") {
+        if (this.props.message.message_type === "out_of_office") {
+            return _t("Out-of-office message");
+        }
+        if (
+            !this.props.message.isDiscussion &&
+            this.props.message.message_type !== "user_notification"
+        ) {
             return _t("Note");
         }
         return _t("Message");
-    }
-
-    /**
-     * @returns {boolean}
-     */
-    get canAddReaction() {
-        return (
-            this.message.originThread?.allowReactions &&
-            Boolean(!this.message.isTransient && this.message.resId)
-        );
-    }
-
-    get deletable() {
-        return this.editable;
-    }
-
-    get editable() {
-        if (!this.props.hasActions) {
-            return false;
-        }
-        return this.message.editable;
-    }
-
-    get canReplyTo() {
-        return this.message.originThread?.allowReplies && this.props.messageToReplyTo;
-    }
-
-    /**
-     * @returns {boolean}
-     */
-    get canToggleStar() {
-        return Boolean(!this.message.isTransient && this.message.resId);
-    }
-
-    get showUnfollow() {
-        return Boolean(
-            this.message.originThread?.followerOfSelf && this.props.thread?.model === "mail.box"
-        );
     }
 
     get isActive() {
@@ -251,26 +354,56 @@ export class Message extends Component {
             this.state.isHovered ||
             this.state.isClicked ||
             this.emojiPicker?.isOpen ||
-            this.state.expandOptions
+            Boolean(this.state.moreAction?.isActive)
         );
     }
 
     get isAlignedRight() {
-        return Boolean(this.env.inChatWindow && this.props.message.isSelfAuthored);
+        return Boolean(
+            this.env.inChatWindow && this.props.message.isSelfAuthored && !this.env.messageCard
+        );
     }
 
-    get isOriginThread() {
-        if (!this.props.thread) {
-            return false;
-        }
-        return this.message.originThread === this.props.thread;
+    get isMobileOS() {
+        return isMobileOS();
     }
 
-    get isInInbox() {
-        if (!this.props.thread) {
-            return false;
+    get isPersistentMessageFromAnotherThread() {
+        return (
+            !this.message.is_transient &&
+            !this.message.isPending &&
+            this.message.thread &&
+            this.message.thread.notEq(this.props.thread)
+        );
+    }
+
+    get onRightSwipe() {
+        if (this.props.thread?.eq(this.store.inbox)) {
+            return {
+                action: () => this.message.setDone(),
+                bgColor: "bg-success",
+                icon: "fa-check-circle",
+            };
         }
-        return this.props.thread.id === "inbox";
+        if (
+            this.props.thread?.eq(this.store.history) &&
+            this.message.canMarkAsUnread(this.props.thread)
+        ) {
+            return {
+                action: () => this.message.markAsUnread(this.props.thread),
+                bgColor: "bg-secondary",
+                icon: "fa-eye-slash",
+            };
+        }
+        return undefined;
+    }
+
+    get translatedFromText() {
+        return _t("(Translated from: %(language)s)", { language: this.message.translationSource });
+    }
+
+    get translationFailureText() {
+        return _t("(Translation Failure: %(error)s)", { error: this.message.translationErrors });
     }
 
     onMouseenter() {
@@ -286,78 +419,27 @@ export class Message extends Component {
      * @returns {boolean}
      */
     get shouldDisplayAuthorName() {
-        if (!this.env.inChatWindow) {
+        if (!this.env.inChatWindow || this.env.messageCard) {
             return true;
         }
         if (this.message.isSelfAuthored) {
             return false;
         }
-        if (this.props.thread.type === "chat") {
+        if (this.props.thread.channel?.channel_type === "chat") {
             return false;
         }
         return true;
     }
 
-    onClickDelete() {
-        this.env.services.dialog.add(MessageConfirmDialog, {
-            message: this.message,
-            messageComponent: Message,
-            prompt: _t("Are you sure you want to delete this message?"),
-            onConfirm: () => this.messageService.delete(this.message),
-        });
-    }
-
-    onClickReplyTo(ev) {
-        this.props.messageToReplyTo.toggle(this.props.thread, this.props.message);
-    }
-
     async onClickAttachmentUnlink(attachment) {
-        await this.attachmentService.delete(attachment);
-    }
-
-    onClickMarkAsUnread() {
-        const previousMessageId =
-            this.message.originThread.getPreviousMessage(this.message)?.id ?? false;
-        if (this.props.thread.seen_message_id === previousMessageId) {
-            return;
-        }
-        return this.rpc("/discuss/channel/set_last_seen_message", {
-            channel_id: this.message.originThread.id,
-            last_message_id: previousMessageId,
-            allow_older: true,
-        });
+        await toRaw(attachment).remove();
     }
 
     /**
      * @param {MouseEvent} ev
      */
-    onClick(ev) {
-        const model = ev.target.dataset.oeModel;
-        const id = Number(ev.target.dataset.oeId);
-        if (ev.target.closest(".o_channel_redirect")) {
-            ev.preventDefault();
-            const thread = this.threadService.insert({ model, id });
-            this.threadService.open(thread);
-            return;
-        }
-        if (ev.target.closest(".o_mail_redirect")) {
-            ev.preventDefault();
-            const partnerId = Number(ev.target.dataset.oeId);
-            if (this.user.partnerId !== partnerId) {
-                this.threadService.openChat({ partnerId });
-            }
-            return;
-        }
-        if (ev.target.tagName === "A") {
-            if (model && id) {
-                ev.preventDefault();
-                this.env.services.action.doAction({
-                    type: "ir.actions.act_window",
-                    res_model: model,
-                    views: [[false, "form"]],
-                    res_id: id,
-                });
-            }
+    async onClick(ev) {
+        if (this.store.handleClickOnLink(ev, this.props.thread)) {
             return;
         }
         if (
@@ -379,136 +461,97 @@ export class Message extends Component {
         }
     }
 
-    onClickEdit() {
-        this.enterEditMode();
+    onContextMenu(ev) {
+        if (!document.getSelection()?.isCollapsed || isMobileOS()) {
+            // text selection by-passes message actions on right-click.
+            // Mobile OS long press is handled with useLongPress()
+            return;
+        }
+        if (ev.target.closest("a") || !this.props.hasActions || this.isEditing) {
+            return;
+        }
+        this.showRightClickMessageActions(ev);
     }
 
-    enterEditMode() {
-        const messageContent = convertBrToLineBreak(this.props.message.body);
-        this.threadService.insertComposer({
-            mentions: this.props.message.recipients,
-            message: this.props.message,
-            textInputContent: messageContent,
-            selection: {
-                start: messageContent.length,
-                end: messageContent.length,
-                direction: "none",
-            },
-        });
-        this.state.isEditing = true;
+    showRightClickMessageActions(ev) {
+        const el = this.rightClickAnchor.el;
+        el.style.left = ev.clientX + "px";
+        el.style.top = ev.clientY + "px";
+        this.rightClickDropdownState.open();
+        this.props.messageSelection?.setSelected(this.props.message);
+        ev.preventDefault();
+    }
+
+    /** @param {HTMLElement} bodyEl */
+    prepareMessageBody(bodyEl) {
+        if (!bodyEl) {
+            return;
+        }
+        const editedEl = bodyEl.querySelector(".o-mail-Message-edited");
+        editedEl?.replaceChildren(
+            renderToElement("mail.Message.edited", { message: this.message })
+        );
+        const channelLinks = bodyEl.querySelectorAll("a.o_channel_redirect");
+        this.store.handleValidChannelMention(Array.from(channelLinks));
+        for (const el of bodyEl.querySelectorAll(".o_message_redirect")) {
+            // only transform links targetting the same database
+            if (el.getAttribute("href")?.startsWith(getOrigin())) {
+                const message = this.store["mail.message"].get(el.dataset.oeId);
+                if (message?.thread?.displayName) {
+                    el.classList.add("o_message_redirect_transformed");
+                    el.replaceChildren(renderToElement("mail.Message.messageLink", { message }));
+                }
+            }
+        }
+    }
+
+    getAuthorAttClass() {
+        return { "opacity-50": this.message.isPending };
+    }
+
+    getAvatarContainerAttClass() {
+        return {
+            "opacity-50": this.message.isPending,
+            "o-inChatWindow": this.env.inChatWindow,
+        };
     }
 
     exitEditMode() {
-        this.props.messageEdition?.exitEditMode();
-        this.message.composer = null;
-        this.state.isEditing = false;
+        this.message.exitEditMode(this.props.thread);
     }
 
     onClickNotification(ev) {
-        if (this.message.failureNotifications.length > 0) {
-            this.onClickFailure(ev);
-        } else {
-            this.popover.open(ev.target, { message: this.message });
+        const message = toRaw(this.message);
+        if (message.failureNotifications.length > 0) {
+            markEventHandled(ev, "Message.ClickFailure");
         }
+        this.popover.open(ev.target, { message });
     }
 
-    onClickFailure(ev) {
-        markEventHandled(ev, "Message.ClickFailure");
-        this.env.services.action.doAction("mail.mail_resend_message_action", {
-            additionalContext: {
-                mail_message_to_resend: this.message.id,
-            },
-        });
+    /** @param {MouseEvent} [ev] */
+    openMobileActions(ev) {
+        if (!isMobileOS()) {
+            return;
+        }
+        ev?.stopPropagation();
+        this.optionsDropdown.open();
     }
 
-    /**
-     * Modifies the message to add the 'read more/read less' functionality
-     * All element nodes with 'data-o-mail-quote' attribute are concerned.
-     * All text nodes after a ``#stopSpelling`` element are concerned.
-     * Those text nodes need to be wrapped in a span (toggle functionality).
-     * All consecutive elements are joined in one 'read more/read less'.
-     *
-     * FIXME This method should be rewritten (task-2308951)
-     *
-     * @param {jQuery} $element
-     */
-    insertReadMoreLess($element) {
-        const groups = [];
-        let readMoreNodes;
-
-        // nodeType 1: element_node
-        // nodeType 3: text_node
-        const $children = $element
-            .contents()
-            .filter(
-                (index, content) =>
-                    content.nodeType === 1 || (content.nodeType === 3 && content.nodeValue.trim())
-            );
-
-        for (const child of $children) {
-            let $child = $(child);
-
-            // Hide Text nodes if "stopSpelling"
-            if (child.nodeType === 3 && $child.prevAll('[id*="stopSpelling"]').length > 0) {
-                // Convert Text nodes to Element nodes
-                $child = $("<span>", {
-                    text: child.textContent,
-                    "data-o-mail-quote": "1",
-                });
-                child.parentNode.replaceChild($child[0], child);
-            }
-
-            // Create array for each 'read more' with nodes to toggle
-            if (
-                $child.attr("data-o-mail-quote") ||
-                ($child.get(0).nodeName === "BR" &&
-                    $child.prev('[data-o-mail-quote="1"]').length > 0)
-            ) {
-                if (!readMoreNodes) {
-                    readMoreNodes = [];
-                    groups.push(readMoreNodes);
-                }
-                $child.hide();
-                readMoreNodes.push($child);
-            } else {
-                readMoreNodes = undefined;
-                this.insertReadMoreLess($child);
-            }
-        }
-
-        for (const group of groups) {
-            const index = this.state.lastReadMoreIndex++;
-            // Insert link just before the first node
-            const $readMoreLess = $("<a>", {
-                class: "o-mail-read-more-less d-block",
-                href: "#",
-                text: "Read More",
-            }).insertBefore(group[0]);
-
-            // Toggle All next nodes
-            if (!this.state.isReadMoreByIndex.has(index)) {
-                this.state.isReadMoreByIndex.set(index, true);
-            }
-            const updateFromState = () => {
-                const isReadMore = this.state.isReadMoreByIndex.get(index);
-                for (const $child of group) {
-                    $child.hide();
-                    $child.toggle(!isReadMore);
-                }
-                $readMoreLess.text(isReadMore ? "Read More" : "Read Less");
-            };
-            $readMoreLess.click((e) => {
-                e.preventDefault();
-                this.state.isReadMoreByIndex.set(index, !this.state.isReadMoreByIndex.get(index));
-                updateFromState();
-            });
-            updateFromState();
-        }
+    openReactionMenu(reaction) {
+        this.dialog.add(
+            MessageReactionMenu,
+            { message: this.props.message, initialReaction: reaction },
+            { context: this }
+        );
     }
 
-    openReactionMenu() {
-        this.dialog.add(MessageReactionMenu, {
-            message: this.props.message,
-        });
+    get showSubject() {
+        return (
+            this.message.subject &&
+            !this.message.isSubjectSimilarToThreadName &&
+            !this.message.isSubjectDefault
+        );
     }
 }
+
+discussComponentRegistry.add("Message", Message);

@@ -1,103 +1,11 @@
 # Part of Odoo. See LICENSE file for full copyright and licensing details.
-import contextlib
 import re
+
 import werkzeug.urls
 from lxml import etree
-from unittest.mock import Mock, MagicMock, patch
 
-from werkzeug.exceptions import NotFound
-from werkzeug.test import EnvironBuilder
+from odoo.tools.misc import hmac
 
-import odoo
-from odoo.tests.common import HttpCase, HOST
-from odoo.tools.misc import DotDict, frozendict
-
-
-@contextlib.contextmanager
-def MockRequest(
-        env, *, path='/mockrequest', routing=True, multilang=True,
-        context=frozendict(), cookies=frozendict(), country_code=None,
-        website=None, remote_addr=HOST, environ_base=None,
-        # website_sale
-        sale_order_id=None, website_sale_current_pl=None,
-):
-
-    lang_code = context.get('lang', env.context.get('lang', 'en_US'))
-    env = env(context=dict(context, lang=lang_code))
-    request = Mock(
-        # request
-        httprequest=Mock(
-            host='localhost',
-            path=path,
-            app=odoo.http.root,
-            environ=dict(
-                EnvironBuilder(
-                    path=path,
-                    base_url=HttpCase.base_url(),
-                    environ_base=environ_base,
-                ).get_environ(),
-                REMOTE_ADDR=remote_addr,
-            ),
-            cookies=cookies,
-            referrer='',
-            remote_addr=remote_addr,
-        ),
-        type='http',
-        future_response=odoo.http.FutureResponse(),
-        params={},
-        redirect=env['ir.http']._redirect,
-        session=DotDict(
-            odoo.http.get_default_session(),
-            geoip={'country_code': country_code},
-            sale_order_id=sale_order_id,
-            website_sale_current_pl=website_sale_current_pl,
-        ),
-        geoip=odoo.http.GeoIP('127.0.0.1'),
-        db=env.registry.db_name,
-        env=env,
-        registry=env.registry,
-        cr=env.cr,
-        uid=env.uid,
-        context=env.context,
-        lang=env['res.lang']._lang_get(lang_code),
-        website=website,
-        render=lambda *a, **kw: '<MockResponse>',
-    )
-    if website:
-        request.website_routing = website.id
-
-    # The following code mocks match() to return a fake rule with a fake
-    # 'routing' attribute (routing=True) or to raise a NotFound
-    # exception (routing=False).
-    #
-    #   router = odoo.http.root.get_db_router()
-    #   rule, args = router.bind(...).match(path)
-    #   # arg routing is True => rule.endpoint.routing == {...}
-    #   # arg routing is False => NotFound exception
-    router = MagicMock()
-    match = router.return_value.bind.return_value.match
-    if routing:
-        match.return_value[0].routing = {
-            'type': 'http',
-            'website': True,
-            'multilang': multilang
-        }
-    else:
-        match.side_effect = NotFound
-
-    def update_context(**overrides):
-        request.context = dict(request.context, **overrides)
-
-    request.update_context = update_context
-
-    with contextlib.ExitStack() as s:
-        odoo.http._request_stack.push(request)
-        s.callback(odoo.http._request_stack.pop)
-        s.enter_context(patch('odoo.http.root.get_db_router', router))
-
-        yield request
-
-# Fuzzy matching tools
 
 def distance(s1="", s2="", limit=4):
     """
@@ -136,6 +44,7 @@ def distance(s1="", s2="", limit=4):
         p, d = d, p
     return p[l1] if p[l1] <= limit else -1
 
+
 def similarity_score(s1, s2):
     """
     Computes a score that describes how much two strings are matching.
@@ -155,6 +64,7 @@ def similarity_score(s1, s2):
     score -= len(set1.symmetric_difference(s2)) / (len(s1) + len(s2))
     return score
 
+
 def text_from_html(html_fragment, collapse_whitespace=False):
     """
     Returns the plain non-tag text from an html
@@ -165,10 +75,23 @@ def text_from_html(html_fragment, collapse_whitespace=False):
     """
     # lxml requires one single root element
     tree = etree.fromstring('<p>%s</p>' % html_fragment, etree.XMLParser(recover=True))
+
+    # Remove scripts or other technical elements that should not be converted
+    # into text.
+    xpath_filters = [
+        '//script',
+        '//style',
+        '//svg',
+        '//*[@class="css_non_editable_mode_hidden"]',
+    ]
+    for xpath_filter in xpath_filters:
+        for element in tree.xpath(xpath_filter): element.getparent().remove(element)
+
     content = ' '.join(tree.itertext())
     if collapse_whitespace:
-        content = re.sub('\\s+', ' ', content).strip()
+        content = re.sub(r'\s+', ' ', content).strip()
     return content
+
 
 def get_base_domain(url, strip_www=False):
     """
@@ -187,3 +110,55 @@ def get_base_domain(url, strip_www=False):
     if strip_www and url.startswith('www.'):
         url = url[4:]
     return url
+
+
+def add_form_signature(html_fragment, env_sudo):
+    for form in html_fragment.iter('form'):
+        if '/website/form/' not in form.attrib.get('action', ''):
+            continue
+
+        existing_hash_node = form.find('.//input[@type="hidden"][@name="website_form_signature"]')
+        if existing_hash_node is not None:
+            existing_hash_node.getparent().remove(existing_hash_node)
+        input_nodes = form.xpath('.//input[contains(@name, "email_")]')
+        form_values = {input_node.attrib['name']: input_node for input_node in input_nodes}
+        # if this form does not send an email, ignore. But at this stage,
+        # the value of email_to can still be None in case of default value
+        if 'email_to' not in form_values:
+            continue
+
+        email_to_value = form_values['email_to'].attrib.get('value')
+        if (not email_to_value
+            or (email_to_value == 'info@yourcompany.example.com'
+                and html_fragment.xpath('//span[@data-for="contactus_form"]')
+                and html_fragment.xpath('//form[@id="contactus_form"]'))):
+            # This means that the mail will be sent to the value of the dataFor
+            # which is the company email.
+            email_to_value = env_sudo.company.email or ''
+
+        has_cc = {'email_cc', 'email_bcc'} & form_values.keys()
+        value = email_to_value + (':email_cc' if has_cc else '')
+        hash_value = hmac(env_sudo, 'website_form_signature', value)
+        if has_cc:
+            hash_value += ':email_cc'
+        hash_node = etree.Element('input', attrib={'type': "hidden", 'value': hash_value, 'class': "form-control s_website_form_input s_website_form_custom", 'name': "website_form_signature"})
+        form_values['email_to'].addnext(hash_node)
+
+
+def create_image_attachment(env, image_path, image_name):
+    """
+    Creates an image attachment.
+
+    :param env: self.env
+    :param image_path: the path to the image (e.g. '/web/image/website.s_banner_default_image')
+    :param image_name: the name to give to the image (e.g. 's_banner_default_image.jpg')
+    :return: the image attachment
+    """
+    Attachments = env['ir.attachment']
+    img = Attachments.create({
+        'public': True,
+        'name': image_name,
+        'type': 'url',
+        'url': Attachments.get_base_url() + image_path,
+    })
+    return img

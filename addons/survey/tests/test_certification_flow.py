@@ -1,17 +1,21 @@
 # -*- coding: utf-8 -*-
 # Part of Odoo. See LICENSE file for full copyright and licensing details.
 
+from freezegun import freeze_time
 from unittest.mock import patch
 
-from odoo.addons.base.models.ir_mail_server import IrMailServer
+from odoo import Command
+from odoo.addons.base.models.ir_mail_server import IrMail_Server
+from odoo.addons.mail.tests.common import MockEmail
 from odoo.addons.survey.tests import common
 from odoo.tests import tagged
 from odoo.tests.common import HttpCase
 
 
-@tagged('-at_install', 'post_install', 'functional')
-class TestCertificationFlow(common.TestSurveyCommon, HttpCase):
+@tagged('-at_install', 'post_install', 'functional', 'is_query_count')
+class TestCertificationFlow(common.TestSurveyCommon, MockEmail, HttpCase):
 
+    @freeze_time("2020-02-15 18:00")
     def test_flow_certification(self):
         # Step: survey user creates the certification
         # --------------------------------------------------
@@ -78,6 +82,11 @@ class TestCertificationFlow(common.TestSurveyCommon, HttpCase):
                     {'value': 'a_future_and_yet_unknown_model', 'is_correct': True, 'answer_score': 1.0},
                     {'value': 'none', 'answer_score': -1.0}
                 ])
+            q06 = self._add_question(
+                None, 'Are you sure of all your answers (not rated)', 'simple_choice',
+                sequence=6,
+                constr_mandatory=False, survey_id=certification.id,
+                labels=[{'value': 'Yes'}, {'value': 'No'}])
 
         # Step: employee takes the certification
         # --------------------------------------------------
@@ -85,7 +94,7 @@ class TestCertificationFlow(common.TestSurveyCommon, HttpCase):
 
         # Employee opens start page
         response = self._access_start(certification)
-        self.assertResponse(response, 200, [certification.title, 'Time limit for this certification', '10 minutes'])
+        self.assertResponse(response, 200, [certification.title, '10 minutes'])
 
         # -> this should have generated a new user_input with a token
         user_inputs = self.env['survey.user_input'].search([('survey_id', '=', certification.id)])
@@ -101,14 +110,21 @@ class TestCertificationFlow(common.TestSurveyCommon, HttpCase):
         r = self._access_begin(certification, answer_token)
         self.assertResponse(r, 200)
 
-        with patch.object(IrMailServer, 'connect'):
+        with self.mock_mail_gateway():
             self._answer_question(q01, q01.suggested_answer_ids.ids[3], answer_token, csrf_token)
-            self._answer_question(q02, q02.suggested_answer_ids.ids[1], answer_token, csrf_token)
+            self._answer_question(q02, q02.suggested_answer_ids.ids[0], answer_token, csrf_token)  # incorrect => no points
+            self._answer_question(q03, "", answer_token, csrf_token, button_submit='previous')
+            self._answer_question(q02, q02.suggested_answer_ids.ids[1], answer_token, csrf_token)  # correct answer
             self._answer_question(q03, "I think they're great!", answer_token, csrf_token)
             self._answer_question(q04, q04.suggested_answer_ids.ids[0], answer_token, csrf_token, button_submit='previous')
             self._answer_question(q03, "Just kidding, I don't like it...", answer_token, csrf_token)
-            self._answer_question(q04, q04.suggested_answer_ids.ids[0], answer_token, csrf_token)
-            self._answer_question(q05, [q05.suggested_answer_ids.ids[0], q05.suggested_answer_ids.ids[1], q05.suggested_answer_ids.ids[3]], answer_token, csrf_token)
+            self._answer_question(q04, q04.suggested_answer_ids.ids[0], answer_token, csrf_token,
+                                  submit_query_count=43, access_page_query_count=25)
+            q05_answers = q05.suggested_answer_ids.ids[0:2] + [q05.suggested_answer_ids.ids[3]]
+            self._answer_question(q05, q05_answers, answer_token, csrf_token,
+                                  submit_query_count=29, access_page_query_count=25)
+            self._answer_question(q06, q06.suggested_answer_ids.ids[0], answer_token, csrf_token,
+                                  submit_query_count=108, access_page_query_count=25)
 
         user_inputs.invalidate_recordset()
         # Check that certification is successfully passed
@@ -142,13 +158,52 @@ class TestCertificationFlow(common.TestSurveyCommon, HttpCase):
         self.assertNotIn("I think they're great!", user_inputs.mapped('user_input_line_ids.value_text_box'))
         self.assertIn("Just kidding, I don't like it...", user_inputs.mapped('user_input_line_ids.value_text_box'))
 
-        certification_email = self.env['mail.mail'].sudo().search([], limit=1, order="create_date desc")
         # Check certification email correctly sent and contains document
-        self.assertIn("User Certification for SO lines", certification_email.subject)
-        self.assertIn("employee@example.com", certification_email.email_to)
-        self.assertEqual(len(certification_email.attachment_ids), 1)
-        self.assertEqual(certification_email.attachment_ids[0].name, f'Certification - {certification.title}.html',
-                         'Default certification report print_report_name is "Certification - %s" % (object.survey_id.display_name)')
+        self.assertMailMail(
+            self.user_emp.partner_id,
+            'outgoing',
+            fields_values={
+                'attachments_info': [
+                    {'name': f'Certification - {certification.title}.html'},
+                ],
+                'subject': f'Certification: {certification.title}',
+            },
+        )
+
+        # Check that the certification can be printed without access to the participant's company
+        with self.with_user('admin'):
+            new_company = self.env['res.company'].create({
+                'name': 'newB',
+            })
+            user_new_company = self.env['res.users'].create({
+                'name': 'No access right user',
+                'login': 'user_new_company',
+                'password': 'user_new_company',
+                'group_ids': [
+                    Command.set(self.env.ref('base.group_user').ids),
+                    Command.link(self.env.ref('survey.group_survey_user').id),
+                ],
+                'company_id': new_company.id,
+                'company_ids': [new_company.id],
+            })
+            new_company.invalidate_model()  # cache pollution
+        self.env['ir.actions.report'].with_user(user_new_company).with_company(new_company)\
+            ._render_qweb_pdf('survey.certification_report_view', res_ids=user_inputs.ids)
+
+        # Check the rendering of all layout in html
+        for layout_value, _ in self.env['survey.survey']._fields['certification_report_layout'].selection:
+            with self.subTest(layout_value=layout_value):
+                user_inputs.survey_id.certification_report_layout = layout_value
+                layout, color = layout_value.split('_')
+                html = str(self.env['ir.actions.report'].with_user(user_new_company).with_company(
+                    new_company)._render_qweb_html('survey.certification_report_view', user_inputs.ids)[0])
+                self.assertIn(f'o_layout_{layout}', html)
+                self.assertIn(f'o_color_{color}_{self.survey_user.company_id.id}', html)
+                self.assertIn('Eglantine Employee', html)
+                self.assertIn(self.survey_user.company_id.name, html)
+                self.assertIn(str(user_inputs.id), html)
+                self.assertIn('02/15/2020', html)
+                self.assertNotIn('Certification failed', html)
 
     def test_randomized_certification(self):
         # Step: survey user creates the randomized certification
@@ -208,7 +263,7 @@ class TestCertificationFlow(common.TestSurveyCommon, HttpCase):
         r = self._access_begin(certification, answer_token)
         self.assertResponse(r, 200)
 
-        with patch.object(IrMailServer, 'connect'):
+        with patch.object(IrMail_Server, '_connect__'):
             question_ids = user_inputs.predefined_question_ids
             self.assertEqual(len(question_ids), 1, 'Only one question should have been selected by the randomization')
             # Whatever which question was selected, the correct answer is the first one

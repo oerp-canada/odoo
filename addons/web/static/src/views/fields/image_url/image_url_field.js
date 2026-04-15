@@ -1,11 +1,11 @@
-/** @odoo-module **/
-
+import { useState } from "@web/owl2/utils";
+import { _t } from "@web/core/l10n/translation";
 import { registry } from "@web/core/registry";
 import { useService } from "@web/core/utils/hooks";
-import { _lt } from "@web/core/l10n/translation";
 import { standardFieldProps } from "../standard_field_props";
 
-import { Component, onWillUpdateProps, useState } from "@odoo/owl";
+import { Component } from "@odoo/owl";
+import { useRecordObserver } from "@web/model/relational_model/utils";
 
 export class ImageUrlField extends Component {
     static template = "web.ImageUrlField";
@@ -23,10 +23,8 @@ export class ImageUrlField extends Component {
             src: this.props.record.data[this.props.name],
         });
 
-        onWillUpdateProps((nextProps) => {
-            if (this.props.record.data[this.props.name] !== nextProps.record.data[nextProps.name]) {
-                this.state.value = nextProps.record.data[nextProps.name];
-            }
+        useRecordObserver((record) => {
+            this.state.src = record.data[this.props.name];
         });
     }
 
@@ -43,24 +41,21 @@ export class ImageUrlField extends Component {
 
     onLoadFailed() {
         this.state.src = this.constructor.fallbackSrc;
-        this.notification.add(this.env._t("Could not display the specified image url."), {
-            type: "info",
-        });
     }
 }
 
 export const imageUrlField = {
     component: ImageUrlField,
-    displayName: _lt("Image"),
+    displayName: _t("Image"),
     supportedOptions: [
         {
-            label: _lt("Size"),
+            label: _t("Size"),
             name: "size",
             type: "selection",
             choices: [
-                { label: _lt("Small"), value: "[0,90]" },
-                { label: _lt("Medium"), value: "[0,180]" },
-                { label: _lt("Large"), value: "[0,270]" },
+                { label: _t("Small"), value: "[0,90]" },
+                { label: _t("Medium"), value: "[0,180]" },
+                { label: _t("Large"), value: "[0,270]" },
             ],
         },
     ],

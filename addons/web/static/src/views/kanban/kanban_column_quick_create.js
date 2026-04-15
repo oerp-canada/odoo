@@ -1,20 +1,27 @@
-/** @odoo-module */
-
+import { useExternalListener, useRef, useState } from "@web/owl2/utils";
 import { useHotkey } from "@web/core/hotkeys/hotkey_hook";
 import { useAutofocus, useService } from "@web/core/utils/hooks";
-import { KanbanColumnExamplesDialog } from "./kanban_column_examples_dialog";
 
-import { Component, useExternalListener, useState, useRef } from "@odoo/owl";
+import { Component, onPatched } from "@odoo/owl";
 
 export class KanbanColumnQuickCreate extends Component {
+    static template = "web.KanbanColumnQuickCreate";
+    static props = {
+        onFoldChange: Function,
+        onValidate: Function,
+        folded: Boolean,
+        groupByField: Object,
+    };
+
     setup() {
         this.dialog = useService("dialog");
         this.root = useRef("root");
         this.state = useState({
-            columnTitle: "",
+            hasInputFocused: false,
         });
 
         useAutofocus();
+        this.inputRef = useRef("autofocus");
 
         // Close on outside click
         useExternalListener(window, "mousedown", (/** @type {MouseEvent} */ ev) => {
@@ -37,18 +44,12 @@ export class KanbanColumnQuickCreate extends Component {
         );
 
         // Key Navigation
-        const inputRef = useRef("autofocus");
-        useHotkey("enter", () => this.validate(), {
-            area: () => inputRef.el,
-            bypassEditableProtection: true,
-        });
         useHotkey("escape", () => this.fold());
-    }
-
-    get canShowExamples() {
-        const { allowedGroupBys = [], examples = [] } = this.props.exampleData || {};
-        const hasExamples = Boolean(examples.length);
-        return hasExamples && allowedGroupBys.includes(this.props.groupByField.name);
+        onPatched(() => {
+            if (this.state.hasInputFocused && !this.props.folded) {
+                this.root.el.scrollIntoView({ behavior: "smooth" });
+            }
+        });
     }
 
     get relatedFieldName() {
@@ -64,35 +65,18 @@ export class KanbanColumnQuickCreate extends Component {
     }
 
     validate() {
-        if (this.state.columnTitle.length) {
-            this.props.onValidate(this.state.columnTitle);
-            this.state.columnTitle = "";
+        const title = this.inputRef.el.value.trim();
+        if (title.length) {
+            this.props.onValidate(title);
+            this.inputRef.el.value = "";
+            this.inputRef.el.focus();
+            this.state.hasInputFocused = true;
         }
     }
 
-    showExamples() {
-        this.dialog.add(KanbanColumnExamplesDialog, {
-            examples: this.props.exampleData.examples,
-            applyExamplesText:
-                this.props.exampleData.applyExamplesText || this.env._t("Use This For My Kanban"),
-            applyExamples: (index) => {
-                const { examples, foldField } = this.props.exampleData;
-                const { columns, foldedColumns = [] } = examples[index];
-                for (const groupName of columns) {
-                    this.props.onValidate(groupName);
-                }
-                for (const groupName of foldedColumns) {
-                    this.props.onValidate(groupName, { [foldField]: true }, true);
-                }
-            },
-        });
+    onInputKeydown(ev) {
+        if (ev.key === "Enter") {
+            this.validate();
+        }
     }
 }
-KanbanColumnQuickCreate.props = {
-    exampleData: [Object, { value: null }],
-    onFoldChange: Function,
-    onValidate: Function,
-    folded: Boolean,
-    groupByField: Object,
-};
-KanbanColumnQuickCreate.template = "web.KanbanColumnQuickCreate";

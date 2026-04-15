@@ -1,21 +1,20 @@
-# -*- coding: utf-8 -*-
 # Part of Odoo. See LICENSE file for full copyright and licensing details.
 import ast
 import itertools
 import logging
 from datetime import date, timedelta
 
-from dateutil.relativedelta import relativedelta, MO
+from dateutil.relativedelta import MO, relativedelta
 from markupsafe import Markup
 
 from odoo import _, api, exceptions, fields, models
-from odoo.http import SESSION_LIFETIME
-from odoo.tools import ustr
+from odoo.http.session import SESSION_LIFETIME
 
 _logger = logging.getLogger(__name__)
 
 # display top 3 in ranking, could be db variable
 MAX_VISIBILITY_RANKING = 3
+
 
 def start_end_date_for_period(period, default_start_date=False, default_end_date=False):
     """Return the start and end date for a goal period based on today
@@ -46,7 +45,8 @@ def start_end_date_for_period(period, default_start_date=False, default_end_date
 
     return fields.Datetime.to_string(start_date), fields.Datetime.to_string(end_date)
 
-class Challenge(models.Model):
+
+class GamificationChallenge(models.Model):
     """Gamification challenge
 
     Set of predifined objectives assigned to people with rules for recurrence and
@@ -59,15 +59,15 @@ class Challenge(models.Model):
 
     _name = 'gamification.challenge'
     _description = 'Gamification Challenge'
-    _inherit = 'mail.thread'
+    _inherit = ['mail.thread']
     _order = 'end_date, start_date, name, id'
 
     @api.model
-    def default_get(self, fields_list):
-        res = super().default_get(fields_list)
-        if 'user_domain' in fields_list and 'user_domain' not in res:
+    def default_get(self, fields):
+        res = super().default_get(fields)
+        if 'user_domain' in fields and 'user_domain' not in res:
             user_group_id = self.env.ref('base.group_user')
-            res['user_domain'] = f'["&", ("groups_id", "=", "{user_group_id.name}"), ("active", "=", True)]'
+            res['user_domain'] = f'["&", ("all_group_ids", "in", [{user_group_id.id}]), ("active", "=", True)]'
         return res
 
     # description
@@ -107,7 +107,7 @@ class Challenge(models.Model):
                                   help="List of goals that will be set",
                                   required=True, copy=True)
 
-    reward_id = fields.Many2one('gamification.badge', string="For Every Succeeding User")
+    reward_id = fields.Many2one('gamification.badge', string="For Every Succeeding User", index='btree_not_null')
     reward_first_id = fields.Many2one('gamification.badge', string="For 1st user")
     reward_second_id = fields.Many2one('gamification.badge', string="For 2nd user")
     reward_third_id = fields.Many2one('gamification.badge', string="For 3rd user")
@@ -190,8 +190,8 @@ class Challenge(models.Model):
     def create(self, vals_list):
         """Overwrite the create method to add the user of groups"""
         for vals in vals_list:
-            if vals.get('user_domain'):
-                users = self._get_challenger_users(ustr(vals.get('user_domain')))
+            if user_domain := vals.get('user_domain'):
+                users = self._get_challenger_users(str(user_domain))
 
                 if not vals.get('user_ids'):
                     vals['user_ids'] = []
@@ -200,19 +200,14 @@ class Challenge(models.Model):
         return super().create(vals_list)
 
     def write(self, vals):
-        if vals.get('user_domain'):
-            users = self._get_challenger_users(ustr(vals.get('user_domain')))
+        if user_domain := vals.get('user_domain'):
+            users = self._get_challenger_users(str(user_domain))
 
             if not vals.get('user_ids'):
                 vals['user_ids'] = []
             vals['user_ids'].extend((4, user.id) for user in users)
 
-        write_res = super(Challenge, self).write(vals)
-
-        if vals.get('report_message_frequency', 'never') != 'never':
-            # _recompute_challenge_users do not set users for challenges with no reports, subscribing them now
-            for challenge in self:
-                challenge.message_subscribe([user.partner_id.id for user in challenge.user_ids])
+        write_res = super().write(vals)
 
         if vals.get('state') == 'inprogress':
             self._recompute_challenge_users()
@@ -223,7 +218,7 @@ class Challenge(models.Model):
 
         elif vals.get('state') == 'draft':
             # resetting progress
-            if self.env['gamification.goal'].search([('challenge_id', 'in', self.ids), ('state', '=', 'inprogress')], limit=1):
+            if self.env['gamification.goal'].search_count([('challenge_id', 'in', self.ids), ('state', '=', 'inprogress')], limit=1):
                 raise exceptions.UserError(_("You can not reset a challenge with unfinished goals."))
 
         return write_res
@@ -269,7 +264,8 @@ class Challenge(models.Model):
             return True
 
         Goals = self.env['gamification.goal']
-
+        self.flush_recordset()
+        self.user_ids.presence_ids.flush_recordset()
         # include yesterday goals to update the goals that just ended
         # exclude goals for users that have not interacted with the
         # webclient since the last update or whose session is no longer
@@ -277,9 +273,9 @@ class Challenge(models.Model):
         yesterday = fields.Date.to_string(date.today() - timedelta(days=1))
         self.env.cr.execute("""SELECT gg.id
                         FROM gamification_goal as gg
-                        JOIN bus_presence as bp ON bp.user_id = gg.user_id
-                       WHERE gg.write_date <= bp.last_presence
-                         AND bp.last_presence >= now() AT TIME ZONE 'UTC' - interval '%(session_lifetime)s seconds'
+                        JOIN mail_presence as mp ON mp.user_id = gg.user_id
+                       WHERE gg.write_date <= mp.last_presence
+                         AND mp.last_presence >= now() AT TIME ZONE 'UTC' - interval '%(session_lifetime)s seconds'
                          AND gg.closed IS NOT TRUE
                          AND gg.challenge_id IN %(challenge_ids)s
                          AND (gg.state = 'inprogress'
@@ -542,12 +538,12 @@ class Challenge(models.Model):
 
             line_data['own_goal_id'] = False,
             line_data['goals'] = []
-            if line.condition=='higher':
-                goals = Goals.search(domain, order="completeness desc, current desc")
-            else:
-                goals = Goals.search(domain, order="completeness desc, current asc")
+            goals = Goals.search(domain, order='id')
             if not goals:
                 continue
+            goals = goals.sorted(key=lambda goal: (
+                -goal.completeness, -goal.current if line.condition == 'higher' else goal.current
+            ))
 
             for ranking, goal in enumerate(goals):
                 if user and goal.user_id == user:
@@ -618,7 +614,9 @@ class Challenge(models.Model):
                 lines = challenge._get_serialized_challenge_lines(user, restrict_goals=subset_goals)
                 if not lines:
                     continue
-
+                # Avoid error if 'full_suffix' is missing in the line
+                for line in lines:
+                    line.setdefault('full_suffix', '')
                 body_html = challenge.report_template_id.with_user(user).with_context(challenge_lines=lines)._render_field('body_html', challenge.ids)[challenge.id]
 
                 # notify message only to users, do not post on the challenge

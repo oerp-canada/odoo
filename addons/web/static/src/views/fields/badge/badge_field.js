@@ -1,7 +1,5 @@
-/** @odoo-module **/
-
-import { _lt } from "@web/core/l10n/translation";
-import { evaluateExpr } from "@web/core/py_js/py";
+import { _t } from "@web/core/l10n/translation";
+import { evaluateBooleanExpr } from "@web/core/py_js/py";
 import { registry } from "@web/core/registry";
 import { standardFieldProps } from "@web/views/fields/standard_field_props";
 
@@ -13,6 +11,7 @@ export class BadgeField extends Component {
     static props = {
         ...standardFieldProps,
         decorations: { type: Object, optional: true },
+        colorField: { type: String, optional: true },
     };
     static defaultProps = {
         decorations: {},
@@ -25,23 +24,42 @@ export class BadgeField extends Component {
         });
     }
 
-    get classFromDecoration() {
-        const evalContext = this.props.record.evalContext;
+    get badgeClass() {
+        if (this.props.colorField) {
+            return `o_badge_color_${this.props.record.data[this.props.colorField]}`;
+        }
+        const evalContext = this.props.record.evalContextWithVirtualIds;
         for (const decorationName in this.props.decorations) {
-            if (evaluateExpr(this.props.decorations[decorationName], evalContext)) {
+            if (evaluateBooleanExpr(this.props.decorations[decorationName], evalContext)) {
+                // fallback case for text-bg-muted
+                if (decorationName === "muted") {
+                    return "text-bg-300";
+                }
                 return `text-bg-${decorationName}`;
             }
         }
-        return "";
+        return "text-bg-300";
     }
 }
 
 export const badgeField = {
     component: BadgeField,
-    displayName: _lt("Badge"),
+    displayName: _t("Badge"),
     supportedTypes: ["selection", "many2one", "char"],
-    extractProps: ({ decorations }) => {
-        return { decorations };
+    supportedOptions: [
+        {
+            label: _t("Color field"),
+            name: "color_field",
+            type: "field",
+            availableTypes: ["integer"],
+            help: _t("Set an integer field to use colors with the badge."),
+        },
+    ],
+    extractProps: ({ decorations, options }) => {
+        return {
+            decorations,
+            colorField: options.color_field,
+        };
     },
 };
 

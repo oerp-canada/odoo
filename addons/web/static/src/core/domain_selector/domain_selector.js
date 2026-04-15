@@ -1,82 +1,56 @@
-/** @odoo-module **/
-
-import {
-    buildDomain,
-    buildDomainSelectorTree,
-    cloneTree,
-    extractPathsFromDomain,
-    useGetDefaultLeafDomain,
-} from "@web/core/domain_selector/utils";
 import { Component, onWillStart, onWillUpdateProps } from "@odoo/owl";
+import { CheckBox } from "@web/core/checkbox/checkbox";
 import { Domain } from "@web/core/domain";
-import { Dropdown } from "@web/core/dropdown/dropdown";
-import { DropdownItem } from "@web/core/dropdown/dropdown_item";
-import { getOperatorInfo } from "@web/core/domain_selector/domain_selector_operators";
-import {
-    Editor,
-    PathEditor,
-    getDefaultFieldValue,
-    getEditorInfo,
-    getOperatorsInfo,
-} from "@web/core/domain_selector/domain_selector_fields";
+import { getDomainDisplayedOperators } from "@web/core/domain_selector/domain_selector_operator_editor";
+import { _t } from "@web/core/l10n/translation";
 import { ModelFieldSelector } from "@web/core/model_field_selector/model_field_selector";
-import { useLoadFieldInfo } from "@web/core/model_field_selector/utils";
-import { Expression } from "@web/core/domain_tree";
+import {
+    areEqualTrees,
+    condition,
+    connector,
+    formatValue,
+} from "@web/core/tree_editor/condition_tree";
+import { domainFromTree } from "@web/core/tree_editor/domain_from_tree";
+import { TreeEditor } from "@web/core/tree_editor/tree_editor";
+import { getOperatorEditorInfo } from "@web/core/tree_editor/tree_editor_operator_editor";
+import { useService } from "@web/core/utils/hooks";
+import { getDefaultCondition } from "./utils";
+
+const ARCHIVED_CONDITION = condition("active", "in", [true, false]);
+const ARCHIVED_DOMAIN = `[("active", "in", [True, False])]`;
 
 export class DomainSelector extends Component {
-    static template = "web._DomainSelector";
-    static components = {
-        Dropdown,
-        DropdownItem,
-        ModelFieldSelector,
-        Editor,
-        PathEditor,
-    };
+    static template = "web.DomainSelector";
+    static components = { TreeEditor, CheckBox };
     static props = {
         domain: String,
         resModel: String,
         className: { type: String, optional: true },
         defaultConnector: { type: [{ value: "&" }, { value: "|" }], optional: true },
-        defaultLeafValue: { type: Array, optional: true },
         isDebugMode: { type: Boolean, optional: true },
         readonly: { type: Boolean, optional: true },
         update: { type: Function, optional: true },
+        debugUpdate: { type: Function, optional: true },
     };
     static defaultProps = {
-        className: "",
-        defaultConnector: "&",
         isDebugMode: false,
         readonly: true,
         update: () => {},
     };
 
     setup() {
-        this.getDefaultLeafDomain = useGetDefaultLeafDomain();
-        this.loadFieldInfo = useLoadFieldInfo();
+        this.fieldService = useService("field");
+        this.treeProcessor = useService("tree_processor");
+
         this.tree = null;
+        this.showArchivedCheckbox = false;
+        this.includeArchived = false;
+
         onWillStart(() => this.onPropsUpdated(this.props));
         onWillUpdateProps((np) => this.onPropsUpdated(np));
     }
 
-    get className() {
-        return `${this.props.readonly ? "o_read_mode" : "o_edit_mode"} ${
-            this.props.className
-        }`.trim();
-    }
-
     async onPropsUpdated(p) {
-        let defaultLeafDomain;
-        if (p.defaultLeafValue) {
-            try {
-                defaultLeafDomain = new Domain([p.defaultLeafValue]);
-            } catch {
-                // nothing
-            }
-        }
-        if (!defaultLeafDomain) {
-            defaultLeafDomain = new Domain(await this.getDefaultLeafDomain(p.resModel));
-        }
-
         let domain;
         let isSupported = true;
         try {
@@ -84,202 +58,99 @@ export class DomainSelector extends Component {
         } catch {
             isSupported = false;
         }
-
         if (!isSupported) {
             this.tree = null;
+            this.showArchivedCheckbox = false;
+            this.includeArchived = false;
             return;
         }
 
-        const paths = new Set([
-            ...extractPathsFromDomain(domain),
-            ...extractPathsFromDomain(defaultLeafDomain),
+        const [tree, { fieldDef: activeFieldDef }] = await Promise.all([
+            this.treeProcessor.treeFromDomain(p.resModel, domain, !p.isDebugMode),
+            this.fieldService.loadFieldInfo(p.resModel, "active"),
         ]);
 
-        await this.loadFieldDefs(p.resModel, paths);
+        this.tree = tree;
+        this.showArchivedCheckbox = this.getShowArchivedCheckBox(Boolean(activeFieldDef), p);
 
-        const options = {
-            defaultConnector: p.defaultConnector,
-            distributeNot: !p.isDebugMode,
-        };
-        this.tree = buildDomainSelectorTree(domain, this.getFieldDef.bind(this), options);
-        this.defaultCondition = buildDomainSelectorTree(
-            defaultLeafDomain,
-            this.getFieldDef.bind(this),
-            options
-        ).children[0];
-    }
-
-    notifyChanges() {
-        const domain = this.tree ? buildDomain(this.tree) : `[]`;
-        this.props.update(domain);
-    }
-
-    getFieldDef(path) {
-        if (typeof path === "string") {
-            return this.fieldDefs[path];
-        }
-        if ([0, 1].includes(path)) {
-            return { type: "integer", string: String(path) };
-        }
-        return null;
-    }
-
-    getDefaultFieldValue(path, operator) {
-        return getDefaultFieldValue(this.getFieldDef(path), operator);
-    }
-
-    async loadFieldDefs(resModel, paths) {
-        const promises = [];
-        const fieldDefs = {};
-        for (const path of paths) {
-            if (typeof path === "string") {
-                promises.push(
-                    this.loadFieldInfo(resModel, path).then(({ fieldDef }) => {
-                        fieldDefs[path] = fieldDef;
-                    })
-                );
+        this.includeArchived = false;
+        if (this.showArchivedCheckbox) {
+            if (this.tree.type === "connector" && this.tree.value === "&") {
+                this.tree.children = this.tree.children.filter((child) => {
+                    if (areEqualTrees(child, ARCHIVED_CONDITION)) {
+                        this.includeArchived = true;
+                        return false;
+                    }
+                    return true;
+                });
+                if (this.tree.children.length === 1) {
+                    this.tree = this.tree.children[0];
+                }
+            } else if (areEqualTrees(this.tree, ARCHIVED_CONDITION)) {
+                this.includeArchived = true;
+                this.tree = connector("&");
             }
         }
-        await Promise.all(promises);
-        this.fieldDefs = fieldDefs;
     }
 
-    createNewLeaf() {
-        return cloneTree(this.defaultCondition);
+    getShowArchivedCheckBox(hasActiveField, props) {
+        return hasActiveField;
     }
 
-    createNewBranch(connector) {
+    getDefaultCondition(fieldDefs) {
+        return getDefaultCondition(fieldDefs);
+    }
+
+    getDefaultOperator(fieldDef) {
+        return getDomainDisplayedOperators(fieldDef)[0];
+    }
+
+    getOperatorEditorInfo(fieldDef) {
+        const operators = getDomainDisplayedOperators(fieldDef);
+        return getOperatorEditorInfo(operators, fieldDef);
+    }
+
+    getPathEditorInfo(resModel, defaultCondition) {
+        const { isDebugMode } = this.props;
         return {
-            type: "connector",
-            value: connector,
-            negate: false,
-            children: [this.createNewLeaf(), this.createNewLeaf()],
+            component: ModelFieldSelector,
+            extractProps: ({ update, value: path }) => ({
+                path,
+                update,
+                resModel,
+                isDebugMode,
+                readonly: false,
+            }),
+            isSupported: (path) => [0, 1].includes(path) || typeof path === "string",
+            defaultValue: () => defaultCondition.path,
+            stringify: (path) => formatValue(path),
+            message: _t("Invalid field chain"),
         };
     }
 
-    insertRootLeaf(parent) {
-        parent.children.push(this.createNewLeaf());
-        this.notifyChanges();
-    }
-
-    insertLeaf(parent, node) {
-        const newNode = node.type === "condition" ? cloneTree(node) : this.createNewLeaf();
-        const index = parent.children.indexOf(node);
-        parent.children.splice(index + 1, 0, newNode);
-        this.notifyChanges();
-    }
-
-    insertBranch(parent, node) {
-        const nextConnector = parent.value === "&" ? "|" : "&";
-        const newNode = this.createNewBranch(nextConnector);
-        const index = parent.children.indexOf(node);
-        parent.children.splice(index + 1, 0, newNode);
-        this.notifyChanges();
-    }
-
-    delete(parent, node) {
-        const index = parent.children.indexOf(node);
-        parent.children.splice(index, 1);
-        this.notifyChanges();
+    toggleIncludeArchived() {
+        this.includeArchived = !this.includeArchived;
+        this.update(this.tree);
     }
 
     resetDomain() {
-        this.tree = buildDomainSelectorTree(new Domain(`[]`));
-        this.notifyChanges();
+        this.props.update("[]");
     }
 
-    updateBranchConnector(node, connector) {
-        node.value = connector;
-        node.negate = false;
-        this.notifyChanges();
-    }
-
-    updatePath(node, path, { fieldDef } = {}) {
-        if (!path) {
-            // don't like that
-            Object.assign(node, this.createNewLeaf());
-        } else {
-            node.path = path;
-            const operatorInfo = getOperatorsInfo(fieldDef)[0];
-            node.operator = operatorInfo.operator;
-            node.value = getDefaultFieldValue(fieldDef, node.operator);
+    onDomainInput(domain) {
+        if (this.props.debugUpdate) {
+            this.props.debugUpdate(domain);
         }
-        this.notifyChanges();
     }
 
-    updateLeafOperator(node, operator) {
-        const previousOperatorInfo = getOperatorInfo(node.operator);
-        node.operator = operator;
-        const operatorInfo = getOperatorInfo(operator);
-        if (previousOperatorInfo.valueCount !== operatorInfo.valueCount) {
-            switch (operatorInfo.valueCount) {
-                // binary operator with a variable sized array value
-                case "variable": {
-                    node.value = [];
-                    break;
-                }
-                // unary operator (set | not set)
-                case 0: {
-                    node.value = false;
-                    break;
-                }
-                // binary operator with a non array value
-                case 1: {
-                    node.value = this.getDefaultFieldValue(node.path, operator);
-                    break;
-                }
-                // binary operator with a fixed sized array value
-                default: {
-                    const defaultValue = this.getDefaultFieldValue(node.path, operator);
-                    node.value = Array(operatorInfo.valueCount).fill(defaultValue);
-                    break;
-                }
-            }
-        }
-        this.notifyChanges();
+    onDomainChange(domain) {
+        this.props.update(domain, true);
     }
-
-    updateLeafValue(node, value) {
-        node.value = value;
-        this.notifyChanges();
-    }
-
-    isExprValue(value) {
-        return value instanceof Expression;
-    }
-
-    removeExprValue(node) {
-        this.updateLeafValue(node, this.getDefaultFieldValue(node.path, node.operator));
-    }
-
-    onDebugValueChange(value) {
-        return this.props.update(value, true);
-    }
-
-    getEditorInfo(node) {
-        return getEditorInfo(this.getFieldDef(node.path), node.operator);
-    }
-
-    getOperatorInfo(node) {
-        return getOperatorInfo(node.operator, node.negate);
-    }
-
-    getOperatorsInfo(node) {
-        const fieldDef = this.getFieldDef(node.path);
-        const operatorsInfo = getOperatorsInfo(fieldDef);
-        if (
-            !operatorsInfo.some((op) => op.operator === node.operator && op.negate === node.negate)
-        ) {
-            const operatorInfo = this.getOperatorInfo(node);
-            operatorsInfo.push(operatorInfo);
-        }
-        return operatorsInfo;
-    }
-
-    highlightNode(target, toggle, classNames) {
-        const nodeEl = target.closest(".o_domain_node");
-        for (const className of classNames.split(/\s+/i)) {
-            nodeEl.classList.toggle(className, toggle);
-        }
+    update(tree) {
+        const archiveDomain = this.includeArchived ? ARCHIVED_DOMAIN : `[]`;
+        const domain = tree
+            ? Domain.and([domainFromTree(tree), archiveDomain]).toString()
+            : archiveDomain;
+        this.props.update(domain);
     }
 }

@@ -1,4 +1,3 @@
-# Part of Odoo. See LICENSE file for full copyright and licensing details.
 {
     'name': 'OHADA - Accounting',
     'category': 'Accounting/Localizations/Account Charts',
@@ -17,15 +16,13 @@ Countries that use OHADA are the following:
 
     Democratic Republic of the Congo, Senegal, Chad, Togo.
     """,
-    'website': 'http://biblio.ohada.org/pmb/opac_css/doc_num.php?explnum_id=2063',
+    'website': 'https://biblio.ohada.org/pmb/opac_css/doc_num.php?explnum_id=2063',
     'depends': [
         'account',
     ],
     'data': [
         'data/menuitem_data.xml',
     ],
-    'demo': [
-        'demo/demo_company.xml',
-    ],
+    'author': 'Odoo S.A.',
     'license': 'LGPL-3',
 }

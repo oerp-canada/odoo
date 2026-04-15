@@ -14,7 +14,6 @@ class TestMassMailCommon(MassSMSCommon):
 
         cls.test_alias = cls.env['mail.alias'].create({
             'alias_name': 'test.alias',
-            'alias_user_id': False,
             'alias_model_id': cls.env['ir.model']._get('mailing.test.simple').id,
             'alias_contact': 'everyone'
         })
@@ -22,7 +21,6 @@ class TestMassMailCommon(MassSMSCommon):
         # enforce last update by user_marketing to match _process_mass_mailing_queue
         # taking last writer as user running a batch
         cls.mailing_bl = cls.env['mailing.mailing'].with_user(cls.user_marketing).create({
-            'name': 'SourceName',
             'subject': 'MailingSubject',
             # `+ ""` is for insuring that _prepend_preview rule out that case
             'preview': 'Hi {{ object.name + "" }} :)',
@@ -45,7 +43,6 @@ class TestMassMailCommon(MassSMSCommon):
         })
 
         cls.mailing_sms = cls.env['mailing.mailing'].with_user(cls.user_marketing).create({
-            'name': 'XMas SMS',
             'subject': 'Xmas SMS for {object.name}',
             'mailing_model_id': cls.env['ir.model']._get('mail.test.sms').id,
             'mailing_type': 'sms',
@@ -118,7 +115,7 @@ class TestMassSMSCommon(TestMassMailCommon):
                 'name': 'Partner_%s' % (x),
                 'email': '_test_partner_%s@example.com' % (x),
                 'country_id': country_be_id,
-                'mobile': '045600%s%s99' % (x, x)
+                'phone': '045600%s%s99' % (x, x)
             })
             records += cls.env['mail.test.sms'].with_context(**cls._test_context).create({
                 'name': 'MassSMSTest_%s' % (x),
@@ -136,6 +133,24 @@ class TestMassSMSCommon(TestMassMailCommon):
         })
 
         cls.partner_numbers = [
-            phone_validation.phone_format(partner.mobile, partner.country_id.code, partner.country_id.phone_code, force_format='E164')
+            phone_validation.phone_format(partner.phone, partner.country_id.code, partner.country_id.phone_code, force_format='E164')
             for partner in partners
         ]
+
+    @classmethod
+    def _get_sms_test_records(cls, mobile_numbers):
+        """ Helper to create data. Currently simple, to be improved. """
+        country_be_id = cls.env.ref('base.be').id
+        partners = cls.env['res.partner'].with_context(**cls._test_context).create([{
+            'name': f'Partner_{x}',
+            'email': f'_test_partner_{x}@example.com',
+            'country_id': country_be_id,
+            'phone': mobile_numbers[x]
+        } for x, mobile_number in enumerate(mobile_numbers)])
+        records = cls.env['mail.test.sms'].with_context(**cls._test_context).create([{
+            'name': f'MassSMSTest_{x}',
+            'customer_id': partner.id,
+            'phone_nbr': mobile_number
+        } for x, (mobile_number, partner) in enumerate(zip(mobile_numbers, partners))])
+
+        return records

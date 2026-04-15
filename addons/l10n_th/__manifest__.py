@@ -12,13 +12,21 @@ Chart of Accounts for Thailand.
 Thai accounting chart and localization.
     """,
     'author': 'Almacom (http://almacom.co.th/)',
-    'website': 'https://www.odoo.com/documentation/master/applications/finance/fiscal_localizations.html',
+    'website': 'https://www.odoo.com/documentation/latest/applications/finance/fiscal_localizations/thailand.html',
     'depends': [
+        'account_qr_code_emv',
         'account',
+        'l10n_account_withholding_tax',
     ],
+    'auto_install': ['account'],
     'data': [
         'data/account_tax_report_data.xml',
+        'views/account_payment_views.xml',
+        'views/account_tax_views.xml',
         'views/report_invoice.xml',
+        'views/res_partner_view.xml',
+        'views/res_company_view.xml',
+        'wizards/account_payment_register_views.xml',
     ],
     'demo': [
         'demo/demo_company.xml',

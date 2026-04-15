@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 # Part of Odoo. See LICENSE file for full copyright and licensing details.
 
-from odoo import fields, models, api, SUPERUSER_ID
+from odoo import fields, models, api
 
 
 class UtmCampaign(models.Model):
@@ -28,13 +28,16 @@ class UtmCampaign(models.Model):
     is_auto_campaign = fields.Boolean(default=False, string="Automatically Generated Campaign", help="Allows us to filter relevant Campaigns")
     color = fields.Integer(string='Color Index')
 
-    _sql_constraints = [
-        ('unique_name', 'UNIQUE(name)', 'The name must be unique'),
-    ]
+    _unique_name = models.Constraint(
+        'UNIQUE(name)',
+        'The name must be unique',
+    )
 
     @api.depends('title')
     def _compute_name(self):
-        new_names = self.env['utm.mixin']._get_unique_names(self._name, [c.title for c in self])
+        new_names = self.env['utm.mixin'].with_context(
+            utm_check_skip_record_ids=self.ids
+        )._get_unique_names(self._name, [c.title for c in self])
         for campaign, new_name in zip(self, new_names):
             campaign.name = new_name
 
@@ -50,9 +53,9 @@ class UtmCampaign(models.Model):
         return super().create(vals_list)
 
     @api.model
-    def _group_expand_stage_ids(self, stages, domain, order):
+    def _group_expand_stage_ids(self, stages, domain):
         """Read group customization in order to display all the stages in the
         Kanban view, even if they are empty.
         """
-        stage_ids = stages._search([], order=order, access_rights_uid=SUPERUSER_ID)
+        stage_ids = stages.sudo()._search([], order=stages._order)
         return stages.browse(stage_ids)

@@ -1,18 +1,12 @@
-/* @odoo-module */
-
-import { useMessaging } from "@mail/core/common/messaging_hook";
-import { useTypingService } from "@mail/discuss/typing/common/typing_service";
-
 import { Component } from "@odoo/owl";
 
 import { _t } from "@web/core/l10n/translation";
-import { sprintf } from "@web/core/utils/strings";
 
 /**
  * @typedef {Object} Props
- * @property {import("@mail/core/common/thread_model").Thread} channel
- * @property {string} size
- * @property {boolean} displayText
+ * @property {import("models").Thread} channel
+ * @property {string} [size]
+ * @property {boolean} [displayText]
  * @extends {Component<Props, Env>}
  */
 export class Typing extends Component {
@@ -20,33 +14,30 @@ export class Typing extends Component {
         size: "small",
         displayText: true,
     };
-    static props = ["channel", "size?", "displayText?"];
+    static props = ["channel?", "size?", "displayText?", "member?"];
     static template = "discuss.Typing";
-
-    setup() {
-        this.messaging = useMessaging();
-        this.typingService = useTypingService();
-    }
 
     /** @returns {string} */
     get text() {
-        const typingMemberNames = this.typingService
-            .getTypingMembers(this.props.channel)
-            .map(({ persona }) => this.props.channel.getMemberName(persona));
+        const typingMemberNames = this.props.member
+            ? [this.props.member.name]
+            : this.props.channel.otherTypingMembers.map(({ name }) => name);
         if (typingMemberNames.length === 1) {
-            return sprintf(_t("%s is typing..."), typingMemberNames[0]);
+            return _t("%s is typing...", typingMemberNames[0]);
         }
         if (typingMemberNames.length === 2) {
-            return sprintf(
-                _t("%s and %s are typing..."),
-                typingMemberNames[0],
-                typingMemberNames[1]
-            );
+            return _t("%(user1)s and %(user2)s are typing...", {
+                user1: typingMemberNames[0],
+                user2: typingMemberNames[1],
+            });
         }
-        return sprintf(
-            _t("%s, %s and more are typing..."),
-            typingMemberNames[0],
-            typingMemberNames[1]
-        );
+        return _t("%(user1)s, %(user2)s and more are typing...", {
+            user1: typingMemberNames[0],
+            user2: typingMemberNames[1],
+        });
+    }
+
+    get showTypingIcon() {
+        return true;
     }
 }

@@ -33,6 +33,7 @@ class TestMailThreadInternalsCommon(TestMailFullCommon, TestSMSRecipients):
 
 
 @tagged('mail_thread', 'portal')
+@tagged('at_install', '-post_install')  # LEGACY at_install
 class TestMailThreadInternals(TestMailThreadInternalsCommon):
 
     @users('employee')
@@ -48,7 +49,7 @@ class TestMailThreadInternals(TestMailThreadInternalsCommon):
             with self.subTest(test_record=test_record):
                 is_portal = test_record._name != 'mail.test.simple'
                 has_customer = test_record._name != 'mail.test.portal.no.partner'
-                partner_fnames = test_record._mail_get_partner_fields()
+                partner_fnames = test_record._mail_get_partner_fields(introspect_fields=False)
 
                 if is_portal:
                     self.assertFalse(

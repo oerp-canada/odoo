@@ -1,9 +1,8 @@
-# -*- coding: utf-8 -*-
 # Part of Odoo. See LICENSE file for full copyright and licensing details.
 
 from odoo.tests import tagged
 from odoo.tests.common import TransactionCase
-from odoo.tools import transpile_javascript
+from odoo.tools.js_transpiler import transpile_javascript
 
 
 @tagged('post_install', '-at_install')
@@ -401,9 +400,9 @@ return __exports;
         input_content = """export const v = 5;
 
 const a = 12;
-const b = 15;
+const $b = 15;
 
-export { a, b };
+export { a, $b };
 
 export default 100;
 
@@ -417,59 +416,14 @@ let __exports = {};
 const v = __exports.v = 5;
 
 const a = 12;
-const b = 15;
+const $b = 15;
 
-Object.assign(__exports, { a,  b });
+Object.assign(__exports, { a,  $b });
 
 __exports[Symbol.for("default")] = 100;
 
 __exports[Symbol.for("default")] = a;
 
-return __exports;
-});
-"""
-
-        self.assertEqual(result, expected_result)
-
-    def test_10_qunit_module_test(self):
-        input_content = """QUnit.test("Tests", function (assert) {{}})"""
-
-        result = transpile_javascript("/test_assetsbundle/static/tests/alias.js", input_content)
-
-        expected_result = """odoo.define('@test_assetsbundle/../tests/alias', [], function (require) {
-'use strict';
-let __exports = {};
-QUnit.module("test_assetsbundle", function() {QUnit.test("Tests", function (assert) {{}})});
-return __exports;
-});
-"""
-
-        self.assertEqual(result, expected_result)
-
-    def test_11_qunit_module_debug(self):
-        input_content = """QUnit.debug("Tests", function (assert) {{}})"""
-
-        result = transpile_javascript("/test_assetsbundle/static/tests/alias.js", input_content)
-
-        expected_result = """odoo.define('@test_assetsbundle/../tests/alias', [], function (require) {
-'use strict';
-let __exports = {};
-QUnit.module("test_assetsbundle", function() {QUnit.debug("Tests", function (assert) {{}})});
-return __exports;
-});
-"""
-
-        self.assertEqual(result, expected_result)
-
-    def test_12_qunit_no_module(self):
-        input_content = """let a = 1 + 1;"""
-
-        result = transpile_javascript("/test_assetsbundle/static/tests/alias.js", input_content)
-
-        expected_result = """odoo.define('@test_assetsbundle/../tests/alias', [], function (require) {
-'use strict';
-let __exports = {};
-let a = 1 + 1;
 return __exports;
 });
 """
@@ -521,4 +475,25 @@ return __exports;
 });
 """
 
+        self.assertEqual(result, expected_result)
+
+    def test_14_unnamed_import(self):
+        input_content = """
+// first line
+
+import "@test_assetsbundle/some_file";
+"""
+
+        result = transpile_javascript("/test_assetsbundle/static/src/a.js", input_content)
+        expected_result = """odoo.define('@test_assetsbundle/a', ['@test_assetsbundle/some_file'], function (require) {
+'use strict';
+let __exports = {};
+
+// first line
+
+require("@test_assetsbundle/some_file");
+
+return __exports;
+});
+"""
         self.assertEqual(result, expected_result)

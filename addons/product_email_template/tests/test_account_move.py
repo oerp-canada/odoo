@@ -10,7 +10,7 @@ class TestAccountMove(AccountTestInvoicingCommon):
         self.template = Template.create({
             'name': 'Product Template',
             'subject': 'YOUR PRODUCT',
-            'model_id': self.env['ir.model']._get_id('product.template')
+            'model_id': self.env['ir.model']._get_id('account.move')
         })
         self.customer = self.env['res.partner'].create({
             'name': 'James Bond',
@@ -43,11 +43,7 @@ class TestAccountMove(AccountTestInvoicingCommon):
         """
         Test scenario of a product ordered through the portal.
         """
-        id_max = self.env['mail.message'].search([], order='id desc', limit=1)
-        if id_max:
-            id_max = id_max[0].id
-        else:
-            id_max = 0
+        id_max = self.env['mail.message'].sudo().search([], order='id desc', limit=1).id or 0
         invoice = self.env['account.move'].create({
             'move_type': 'out_invoice',
             'partner_id': self.customer.id,
@@ -62,7 +58,7 @@ class TestAccountMove(AccountTestInvoicingCommon):
             'login': 'test_public_user',
             'name': 'test_public_user',
             'email': False,
-            'groups_id': [(6, 0, [self.env.ref('base.group_public').id])]
+            'group_ids': [(6, 0, [self.env.ref('base.group_public').id])]
         })
         invoice.with_user(pub_user).sudo().action_post()
         message_sent = self.env['mail.message'].search([('id', '>', id_max), ('subject', '=', 'YOUR PRODUCT')])

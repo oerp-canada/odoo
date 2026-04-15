@@ -1,11 +1,11 @@
 # -*- coding: utf-8 -*-
 # Part of Odoo. See LICENSE file for full copyright and licensing details.
 
-from odoo import _, api, fields, models
+from odoo import api, fields, models
 from odoo.addons.onboarding.models.onboarding_progress import ONBOARDING_PROGRESS_STATES
 
 
-class Onboarding(models.Model):
+class OnboardingOnboarding(models.Model):
     _name = 'onboarding.onboarding'
     _description = 'Onboarding'
     _order = 'sequence asc, id desc'
@@ -16,7 +16,7 @@ class Onboarding(models.Model):
     step_ids = fields.Many2many('onboarding.onboarding.step', string='Onboarding steps')
 
     text_completed = fields.Char(
-        'Message at completion', default=_('Nice work! Your configuration is done.'),
+        'Message at completion', default=lambda s: s.env._('Nice work! Your configuration is done.'),
         help='Text shown on onboarding when completed')
 
     is_per_company = fields.Boolean(
@@ -37,9 +37,10 @@ class Onboarding(models.Model):
         help='All Onboarding Progress Records (across companies).')
 
     sequence = fields.Integer(default=10)
-    _sql_constraints = [
-        ('route_name_uniq', 'UNIQUE (route_name)', 'Onboarding alias must be unique.'),
-    ]
+    _route_name_uniq = models.Constraint(
+        'UNIQUE (route_name)',
+        'Onboarding alias must be unique.',
+    )
 
     @api.depends('progress_ids', 'progress_ids.company_id', 'step_ids', 'step_ids.is_per_company')
     def _compute_is_per_company(self):

@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 # Part of Odoo. See LICENSE file for full copyright and licensing details.
 
+from odoo.exceptions import AccessError
 from odoo.tests import tagged
 
 from odoo.addons.product.tests.common import ProductCommon
@@ -10,14 +11,10 @@ from odoo.addons.product.tests.common import ProductCommon
 class TestProduct(ProductCommon):
 
     def test_common(self):
-        self.assertEqual(self.consumable_product.type, 'consu')
+        self.assertEqual(self.product.type, 'consu')
         self.assertEqual(self.service_product.type, 'service')
 
-        account_module = self.env['ir.module.module']._get('account')
-        if account_module.state == 'installed':
-            self.assertFalse(self.consumable_product.taxes_id)
-            self.assertFalse(self.service_product.taxes_id)
-
+        self.pricelist = self._enable_pricelists()
         self.assertFalse(self.pricelist.item_ids)
         self.assertEqual(
             self.env['product.pricelist'].search([]),
@@ -28,4 +25,20 @@ class TestProduct(ProductCommon):
             self.pricelist,
         )
         self.assertEqual(self.pricelist.currency_id.name, self.currency.name)
-        self.assertEqual(self.pricelist.discount_policy, 'with_discount')
+
+    def test_any_user_can_print_product_labels(self):
+        base_user = self.env['res.users'].create({
+            'name': 'Base user',
+            'login': 'base_user',
+            'email': 'base.user@test.com',
+            'group_ids': self.group_user,
+        })
+        print_label_action = self.env.ref('product.action_product_template_print_labels')
+        context = {
+            'active_model': 'product.template',
+            'active_id': self.product.product_tmpl_id,
+        }
+        try:
+            print_label_action.with_user(base_user).with_context(context).run()
+        except AccessError:
+            self.fail("AccessError raised while printing product label with base user.")

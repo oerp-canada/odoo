@@ -1,4 +1,3 @@
-/** @odoo-module */
 import { useService } from "@web/core/utils/hooks";
 import { registry } from "@web/core/registry";
 import {
@@ -34,11 +33,11 @@ class WorkOrderPopover extends PopoverComponent {
     }
 };
 
-class WorkOrderPopoverField extends PopoverWidgetField {};
-
-WorkOrderPopoverField.components = {
-    Popover: WorkOrderPopover
-};
+class WorkOrderPopoverField extends PopoverWidgetField {
+    static components = {
+        Popover: WorkOrderPopover,
+    };
+}
 
 registry.category("fields").add("mrp_workorder_popover", {
     ...popoverWidgetField,

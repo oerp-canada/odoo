@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Part of Odoo. See LICENSE file for full copyright and licensing details.
 
 import unittest
@@ -31,21 +30,20 @@ class TestMrpSerialMassProducePerformance(common.TransactionCase):
         for i in range(raw_materials_count):
             raw_materials.append(self.env['product.product'].create({
                 'name': '@raw_material#' + str(i + 1),
-                'type': 'product',
+                'is_storable': True,
                 'tracking': trackings[i % len(trackings)]
             }))
         finished = self.env['product.product'].create({
             'name': '@finished',
-            'type': 'product',
+            'is_storable': True,
             'tracking': 'serial',
         })
         bom = self.env['mrp.bom'].create({
             'product_id': finished.id,
             'product_tmpl_id': finished.product_tmpl_id.id,
-            'product_uom_id': finished.uom_id.id,
+            'uom_id': finished.uom_id.id,
             'product_qty': 1.0,
             'type': 'normal',
-            'consumption': 'flexible',
             'bom_line_ids': [(0, 0, {'product_id': p[0]['id'], 'product_qty': 1}) for p in raw_materials]
         })
 
@@ -70,7 +68,6 @@ class TestMrpSerialMassProducePerformance(common.TransactionCase):
                 while qty > 0:
                     lot = self.env['stock.lot'].create({
                         'product_id': raw_materials[i].id,
-                        'company_id': self.env.company.id,
                     })
                     self.env['stock.quant'].with_context(inventory_mode=True).create({
                         'product_id': raw_materials[i].id,
@@ -79,11 +76,10 @@ class TestMrpSerialMassProducePerformance(common.TransactionCase):
                         'lot_id': lot.id,
                     })._apply_inventory()
                     qty -= 10
-            else:
+            elif raw_materials[i].tracking == 'serial':
                 for _ in range(total_quantity):
                     lot = self.env['stock.lot'].create({
                         'product_id': raw_materials[i].id,
-                        'company_id': self.env.company.id,
                     })
                     self.env['stock.quant'].with_context(inventory_mode=True).create({
                         'product_id': raw_materials[i].id,
@@ -94,7 +90,7 @@ class TestMrpSerialMassProducePerformance(common.TransactionCase):
 
         mo.action_assign()
 
-        action = mo.action_serial_mass_produce_wizard()
+        action = mo.action_mass_produce()
         wizard = Form(self.env['stock.assign.serial'].with_context(**action['context']))
         wizard.next_serial_number = "sn#1"
         wizard.next_serial_count = quantity

@@ -1,8 +1,6 @@
-/** @odoo-module **/
-
-import { _lt } from "@web/core/l10n/translation";
+import { _t } from "@web/core/l10n/translation";
 import { registry } from "@web/core/registry";
-import { archParseBoolean } from "@web/views/utils";
+import { exprToBoolean } from "@web/core/utils/strings";
 import { standardFieldProps } from "../standard_field_props";
 
 import { Component } from "@odoo/owl";
@@ -16,15 +14,20 @@ export class StatInfoField extends Component {
         noLabel: { type: Boolean, optional: true },
         digits: { type: Array, optional: true },
         string: { type: String, optional: true },
+        trailingZeros: { type: Boolean, optional: true },
+    };
+    static defaultProps = {
+        trailingZeros: true,
     };
 
-    get digits() {
-        const fieldDigits = this.props.record.fields[this.props.name].digits;
-        return !this.props.digits && Array.isArray(fieldDigits) ? fieldDigits : this.props.digits;
-    }
     get formattedValue() {
-        const formatter = formatters.get(this.props.record.fields[this.props.name].type);
-        return formatter(this.props.record.data[this.props.name] || 0, { digits: this.digits });
+        const field = this.props.record.fields[this.props.name];
+        const formatter = formatters.get(field.type);
+        return formatter(this.props.record.data[this.props.name], {
+            digits: this.props.digits,
+            field,
+            trailingZeros: this.props.trailingZeros,
+        });
     }
     get label() {
         return this.props.labelField
@@ -35,8 +38,22 @@ export class StatInfoField extends Component {
 
 export const statInfoField = {
     component: StatInfoField,
-    displayName: _lt("Stat Info"),
-    supportedTypes: ["float", "integer", "monetary"],
+    displayName: _t("Stat Info"),
+    supportedOptions: [
+        {
+            label: _t("Label field"),
+            name: "label_field",
+            type: "field",
+            availableTypes: ["char"],
+        },
+        {
+            label: _t("Hide trailing zeros"),
+            name: "hide_trailing_zeros",
+            type: "boolean",
+            help: _t("Hide zeros to the right of the last non-zero digit, e.g. 1.20 becomes 1.2"),
+        },
+    ],
+    supportedTypes: ["float", "integer", "monetary", "char", "one2many", "many2one"],
     isEmpty: () => false,
     extractProps: ({ attrs, options, string }) => {
         // Sadly, digits param was available as an option and an attr.
@@ -51,8 +68,9 @@ export const statInfoField = {
         return {
             digits,
             labelField: options.label_field,
-            noLabel: archParseBoolean(attrs.nolabel),
+            noLabel: exprToBoolean(attrs.nolabel),
             string,
+            trailingZeros: !options.hide_trailing_zeros,
         };
     },
 };

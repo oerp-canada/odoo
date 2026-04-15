@@ -1,52 +1,110 @@
-/** @odoo-module */
-
-import { _lt } from "@web/core/l10n/translation";
+import { _t } from "@web/core/l10n/translation";
 import * as spreadsheet from "@odoo/o-spreadsheet";
-import AccountingPlugin from "./plugins/accounting_plugin";
-import { getFirstAccountFunction, getNumberOfAccountFormulas } from "./utils";
+import { AccountingPlugin } from "./plugins/accounting_plugin";
+import { getFirstAccountFunction, hasAccountingFormula } from "./utils";
 import { parseAccountingDate } from "./accounting_functions";
 import { camelToSnakeObject } from "@spreadsheet/helpers/helpers";
 
 const { cellMenuRegistry, featurePluginRegistry } = spreadsheet.registries;
 const { astToFormula } = spreadsheet;
-const { toString, toBoolean } = spreadsheet.helpers;
+const { isEvaluationError, toString, toBoolean } = spreadsheet.helpers;
 
 featurePluginRegistry.add("odooAccountingAggregates", AccountingPlugin);
 
 cellMenuRegistry.add("move_lines_see_records", {
-    name: _lt("See records"),
+    name: _t("See records"),
     sequence: 176,
-    async execute(env) {
+    async execute(env, newWindow) {
         const position = env.model.getters.getActivePosition();
         const sheetId = position.sheetId;
         const cell = env.model.getters.getCell(position);
-        const { args } = getFirstAccountFunction(cell.content);
-        let [codes, date_range, offset, companyId, includeUnposted] = args
+        const func = getFirstAccountFunction(cell.compiledFormula, env.model.getters);
+        let codes,
+            partner_ids,
+            account_tag_ids = "";
+        let date_range,
+            offset,
+            companyId,
+            includeUnposted = false;
+        const parsed_args = func.args
             .map(astToFormula)
-            .map((arg) => env.model.getters.evaluateFormula(sheetId, arg));
-        codes = toString(codes).split(",");
+            .map((arg) => env.model.getters.evaluateFormulaResult(sheetId, arg));
+        if (func.functionName === "ODOO.PARTNER.BALANCE") {
+            [partner_ids, codes, date_range, offset, companyId, includeUnposted] = parsed_args;
+        } else if (func.functionName === "ODOO.BALANCE.TAG") {
+            [account_tag_ids, date_range, offset, companyId, includeUnposted] = parsed_args;
+        } else {
+            [codes, date_range, offset, companyId, includeUnposted] = parsed_args;
+        }
+        if (codes?.value && !isEvaluationError(codes.value)) {
+            codes = toString(codes?.value)
+                .split(",")
+                .map((code) => code.trim());
+        } else {
+            codes = [];
+        }
         const locale = env.model.getters.getLocale();
-        const dateRange = parseAccountingDate(date_range, locale);
+        let dateRange;
+        if (date_range?.value && !isEvaluationError(date_range.value)) {
+            dateRange = parseAccountingDate(date_range, locale);
+        } else {
+            if (
+                ["ODOO.PARTNER.BALANCE", "ODOO.RESIDUAL", "ODOO.BALANCE.TAG"].includes(
+                    func.functionName
+                )
+            ) {
+                dateRange = parseAccountingDate({ value: new Date().getFullYear() }, locale);
+            }
+        }
+        offset = parseInt(offset?.value) || 0;
         dateRange.year += offset || 0;
-        companyId = companyId || null;
-        includeUnposted = toBoolean(includeUnposted);
+        companyId = parseInt(companyId?.value) || null;
+        try {
+            includeUnposted = toBoolean(includeUnposted.value);
+        } catch {
+            includeUnposted = false;
+        }
 
+        let partnerIds, accountTagIds;
+        if (func.functionName === "ODOO.BALANCE.TAG") {
+            accountTagIds = toString(account_tag_ids)
+                .split(",")
+                .map((tag) => tag.trim());
+        } else {
+            partnerIds = toString(partner_ids)
+                .split(",")
+                .map((code) => code.trim());
+        }
+
+        let param;
+        if (func.functionName === "ODOO.BALANCE.TAG") {
+            param = [camelToSnakeObject({ accountTagIds, dateRange, companyId, includeUnposted })];
+        } else if (func.functionName === "ODOO.PARTNER.BALANCE") {
+            param = [
+                camelToSnakeObject({ dateRange, companyId, codes, includeUnposted, partnerIds }),
+            ];
+        } else {
+            param = [camelToSnakeObject({ dateRange, companyId, codes, includeUnposted })];
+        }
         const action = await env.services.orm.call(
             "account.account",
             "spreadsheet_move_line_action",
-            [camelToSnakeObject({ dateRange, companyId, codes, includeUnposted })]
+            param
         );
-        await env.services.action.doAction(action);
+        await env.services.action.doAction(action, { newWindow });
     },
     isVisible: (env) => {
         const position = env.model.getters.getActivePosition();
         const evaluatedCell = env.model.getters.getEvaluatedCell(position);
         const cell = env.model.getters.getCell(position);
         return (
-            !evaluatedCell.error &&
+            !isEvaluationError(evaluatedCell.value) &&
             evaluatedCell.value !== "" &&
             cell &&
-            getNumberOfAccountFormulas(cell.content) === 1
+            cell.isFormula &&
+            hasAccountingFormula(cell.compiledFormula)
         );
     },
+    icon: "o-spreadsheet-Icon.SEE_RECORDS",
+    isEnabledOnLockedSheet: true,
 });

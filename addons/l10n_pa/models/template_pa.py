@@ -10,10 +10,6 @@ class AccountChartTemplate(models.AbstractModel):
     def _get_pa_template_data(self):
         return {
             'code_digits': '7',
-            'property_account_receivable_id': '121',
-            'property_account_payable_id': '211',
-            'property_account_expense_categ_id': '62_01',
-            'property_account_income_categ_id': '411_01',
         }
 
     @template('pa', 'res.company')
@@ -27,5 +23,11 @@ class AccountChartTemplate(models.AbstractModel):
                 'account_default_pos_receivable_account_id': '121_01',
                 'income_currency_exchange_account_id': 'gain81_01',
                 'expense_currency_exchange_account_id': 'loss81_01',
+                'account_sale_tax_id': 'ITAX_19',
+                'account_purchase_tax_id': 'OTAX_19',
+                'expense_account_id': '62_01',
+                'income_account_id': '411_01',
+                'receivable_account_id': '121',
+                'payable_account_id': '211',
             },
         }

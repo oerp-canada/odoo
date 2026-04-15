@@ -1,24 +1,15 @@
-# -*- coding: utf-8 -*-
-# Part of Odoo. See LICENSE file for full copyright and licensing details.
-
-import base64
-import json
 import logging
-import requests
+import re
 
-from odoo import api, fields, models, tools, _
+from stdnum.eu.vat import check_vies
+
+from odoo import api, models, _
 
 _logger = logging.getLogger(__name__)
 
-PARTNER_AC_TIMEOUT = 5
-
 
 class ResPartner(models.Model):
-    _name = 'res.partner'
     _inherit = 'res.partner'
-
-    partner_gid = fields.Integer('Company database ID')
-    additional_info = fields.Char('Additional info')
 
     @api.model
     def _iap_replace_location_codes(self, iap_data):
@@ -40,8 +31,6 @@ class ResPartner(models.Model):
                 state = self.env['res.country.state'].search([
                     ('country_id', '=', country.id), ('name', '=ilike', state_name)
                 ], limit=1)
-        else:
-            _logger.info('Country code not found: %s', country_code)
 
         if country:
             iap_data['country_id'] = {'id': country.id, 'display_name': country.display_name}
@@ -51,61 +40,89 @@ class ResPartner(models.Model):
         return iap_data
 
     @api.model
-    def _iap_replace_logo(self, iap_data):
-        if iap_data.get('logo'):
-            try:
-                iap_data['image_1920'] = base64.b64encode(
-                    requests.get(iap_data['logo'], timeout=PARTNER_AC_TIMEOUT).content
-                )
-            except Exception:
-                iap_data['image_1920'] = False
-            finally:
-                iap_data.pop('logo')
-            # avoid keeping falsy images (may happen that a blank page is returned that leads to an incorrect image)
-            if iap_data['image_1920']:
-                try:
-                    tools.base64_to_image(iap_data['image_1920'])
-                except Exception:
-                    iap_data.pop('image_1920')
+    def _iap_replace_industry_code(self, iap_data):
+        if industry_code := iap_data.pop('industry_code', False):
+            if industry := self.env.ref(f'base.res_partner_industry_{industry_code}', raise_if_not_found=False):
+                iap_data['industry_id'] = {'id': industry.id, 'display_name': industry.display_name}
+        return iap_data
+
+    @api.model
+    def _iap_replace_language_codes(self, iap_data):
+        if lang := iap_data.pop('preferred_language', False):
+            if installed_lang := (
+                self.env['res.lang'].search([('code', '=', lang), ('iso_code', '=', lang)])  # specific lang (e.g.: fr_BE)
+                or
+                self.env['res.lang'].search([('code', 'ilike', lang[:2]), ('iso_code', 'ilike', lang[:2])], limit=1)  # fallback to generic lang (e.g. fr)
+            ):
+                iap_data['lang'] = installed_lang.code
         return iap_data
 
     @api.model
     def _format_data_company(self, iap_data):
         self._iap_replace_location_codes(iap_data)
-
-        if iap_data.get('child_ids'):
-            child_ids = []
-            for child in iap_data.get('child_ids'):
-                child_ids.append(self._iap_replace_location_codes(child))
-            iap_data['child_ids'] = child_ids
-
-        if iap_data.get('additional_info'):
-            iap_data['additional_info'] = json.dumps(iap_data['additional_info'])
-
+        self._iap_replace_industry_code(iap_data)
+        self._iap_replace_language_codes(iap_data)
         return iap_data
 
     @api.model
-    def autocomplete(self, query, timeout=15):
-        suggestions, _ = self.env['iap.autocomplete.api']._request_partner_autocomplete('search', {
+    def autocomplete_by_name(self, query, query_country_id, timeout=15):
+        if query_country_id is False:  # If it's 0, we purposely do not want to filter on the country
+            query_country_id = self.env.company.country_id.id
+        query_country_code = self.env['res.country'].browse(query_country_id).code
+        response, _ = self.env['iap.autocomplete.api']._request_partner_autocomplete('search_by_name', {
             'query': query,
+            'query_country_code': query_country_code,
         }, timeout=timeout)
-        if suggestions:
+        if response and not response.get("error"):
             results = []
-            for suggestion in suggestions:
+            for suggestion in response.get("data"):
                 results.append(self._format_data_company(suggestion))
             return results
         else:
             return []
 
     @api.model
-    def enrich_company(self, company_domain, partner_gid, vat, timeout=15):
-        response, error = self.env['iap.autocomplete.api']._request_partner_autocomplete('enrich', {
-            'domain': company_domain,
-            'partner_gid': partner_gid,
-            'vat': vat,
+    def autocomplete_by_vat(self, vat, query_country_id, timeout=15):
+        query_country_id = query_country_id or self.env.company.country_id.id
+        query_country_code = self.env['res.country'].browse(query_country_id).code
+        response, _ = self.env['iap.autocomplete.api']._request_partner_autocomplete('search_by_vat', {
+            'query': vat,
+            'query_country_code': query_country_code,
         }, timeout=timeout)
-        if response and response.get('company_data'):
-            result = self._format_data_company(response.get('company_data'))
+        if response and not response.get("error"):
+            results = []
+            for suggestion in response.get("data"):
+                results.append(self._format_data_company(suggestion))
+            return results
+        else:
+            vies_result = None
+            try:
+                vies_result = check_vies(vat, timeout=timeout)
+            except Exception:
+                _logger.warning("Failed VIES VAT check.", exc_info=True)
+            if vies_result:
+                name = vies_result['name']
+                if vies_result['valid'] and name != '---':
+                    address = list(filter(bool, vies_result['address'].split('\n')))
+                    street = address[0]
+                    zip_city_record = next(filter(lambda addr: re.match(r'^\d.*', addr), address[1:]), None)
+                    zip_city = zip_city_record.split(' ', 1) if zip_city_record else [None, None]
+                    street2 = next((addr for addr in filter(lambda addr: addr != zip_city_record, address[1:])), None)
+                    return [self._iap_replace_location_codes({
+                        'name': name,
+                        'vat': vat,
+                        'street': street,
+                        'street2': street2,
+                        'city': zip_city[1],
+                        'zip': zip_city[0],
+                        'country_code': vies_result['countryCode'],
+                    })]
+            return []
+
+    @api.model
+    def _process_enriched_response(self, response, error):
+        if response and response.get('data'):
+            result = self._format_data_company(response.get('data'))
         else:
             result = {}
 
@@ -114,70 +131,85 @@ class ResPartner(models.Model):
                 'error': True,
                 'error_message': 'Insufficient Credit'
             })
+        elif response and response.get('error'):
+            result.update({
+                'error': True,
+                'error_message': _('Unable to enrich company (no credit was consumed).'),
+            })
         elif error:
             result.update({
                 'error': True,
                 'error_message': error
             })
-
-        return result
+        return self._validate_partner_autocomplete_response(result)
 
     @api.model
-    def read_by_vat(self, vat, timeout=15):
-        vies_vat_data, _ = self.env['iap.autocomplete.api']._request_partner_autocomplete('search_vat', {
-            'vat': vat,
+    def _validate_partner_autocomplete_response(self, autocomplete_response):
+        if (
+            self.env['ir.module.module']._get('base_vat').state == 'installed'
+            and (vat_number := autocomplete_response.get('vat'))
+            and (enriched_company := self.env.context.get('enriched_company_data'))
+            ):
+            country = self.env['res.country'].browse(enriched_company['country_id']['id']).exists()
+            autocomplete_response['vat'] = self._run_vat_checks(country, vat_number, validation='setnull')[0]
+        return autocomplete_response
+
+    @api.model
+    def enrich_by_duns(self, duns, timeout=15):
+        response, error = self.env['iap.autocomplete.api']._request_partner_autocomplete('enrich_by_duns', {
+            'duns': duns,
         }, timeout=timeout)
-        if vies_vat_data:
-            return [self._format_data_company(vies_vat_data)]
-        else:
-            return []
+        return self._process_enriched_response(response, error)
 
     @api.model
-    def _is_company_in_europe(self, country_code):
-        country = self.env['res.country'].search([('code', '=ilike', country_code)])
-        if country:
-            country_id = country.id
-            europe = self.env.ref('base.europe')
-            if not europe:
-                europe = self.env["res.country.group"].search([('name', '=', 'Europe')], limit=1)
-            if not europe or country_id not in europe.country_ids.ids:
-                return False
-        return True
+    def enrich_by_gst(self, gst, timeout=15):
+        response, error = self.env['iap.autocomplete.api']._request_partner_autocomplete('enrich_by_gst', {
+            'gst': gst,
+        }, timeout=timeout)
+        return self._process_enriched_response(response, error)
 
-    def _is_vat_syncable(self, vat):
-        vat_country_code = vat[:2]
-        partner_country_code = self.country_id.code if self.country_id else ''
-        return self._is_company_in_europe(vat_country_code) and (partner_country_code == vat_country_code or not partner_country_code)
+    @api.model
+    def enrich_by_domain(self, domain, timeout=15):
+        response, error = self.env['iap.autocomplete.api']._request_partner_autocomplete('enrich_by_domain', {
+            'domain': domain,
+        }, timeout=timeout)
+        return self._process_enriched_response(response, error)
 
-    def _is_synchable(self):
-        already_synched = self.env['res.partner.autocomplete.sync'].search([('partner_id', '=', self.id), ('synched', '=', True)])
-        return self.is_company and self.partner_gid and not already_synched
+    @api.model
+    def _get_view(self, view_id=None, view_type='form', **options):
+        arch, view = super()._get_view(view_id, view_type, **options)
 
-    def _update_autocomplete_data(self, vat):
-        self.ensure_one()
-        if vat and self._is_synchable() and self._is_vat_syncable(vat):
-            self.env['res.partner.autocomplete.sync'].sudo().add_to_queue(self.id)
+        if view_type == 'form':
+            for node in arch.xpath("//field[@name='name' or @name='vat' or @name='duns']"):
+                node.set('widget', 'field_partner_autocomplete')
 
-    @api.model_create_multi
-    def create(self, vals_list):
-        partners = super(ResPartner, self).create(vals_list)
-        if len(vals_list) == 1:
-            partners._update_autocomplete_data(vals_list[0].get('vat', False))
-            if partners.additional_info:
-                template_values = json.loads(partners.additional_info)
-                template_values['flavor_text'] = _("Partner created by Odoo Partner Autocomplete Service")
-                partners.message_post_with_source(
-                    'iap_mail.enrich_company',
-                    render_values=template_values,
-                    subtype_xmlid='mail.mt_note',
-                )
-                partners.write({'additional_info': False})
+        return arch, view
 
-        return partners
-
-    def write(self, values):
-        res = super(ResPartner, self).write(values)
-        if len(self) == 1:
-            self._update_autocomplete_data(values.get('vat', False))
-
-        return res
+    def enrich_company_message_post(self, data):
+        """
+         Post a chatter note containing company enrichment data received from IAP
+        """
+        template = self.env.ref('iap_mail.enrich_company_by_dnb', raise_if_not_found=False)
+        if not template:
+            return
+        company = {
+            'phone': self.phone,
+            'name': self.name,
+            'email': self.email,
+            'company_type': data.get('entity_type', ''),
+            'vat': self.vat or self.company_registry,
+            'website': self.website,
+            'logo': self.image_1920,
+            'street': self.street,
+            'street2': self.street2,
+            'zip_code': self.zip,
+            'city': self.city,
+            'country': self.country_id.name,
+            'state': self.state_id.code,
+            'tags': data.get('unspsc_codes', ''),
+        }
+        self.message_post_with_source(
+            'iap_mail.enrich_company_by_dnb',
+            render_values=company,
+            subtype_xmlid='mail.mt_note',
+        )

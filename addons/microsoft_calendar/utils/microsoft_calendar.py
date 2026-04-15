@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Part of Odoo. See LICENSE file for full copyright and licensing details.
 
 import requests
@@ -45,6 +44,14 @@ class MicrosoftCalendarService():
         self.microsoft_service = microsoft_service
 
     @requires_auth_token
+    def _get_single_event(self, iCalUId, token, timeout=TIMEOUT):
+        """ Fetch a single event from Graph API filtered by its iCalUId. """
+        url = "/v1.0/me/events?$filter=iCalUId eq '%s'" % iCalUId
+        headers = {'Content-type': 'application/json', 'Authorization': 'Bearer %s' % token}
+        status, event, _dummy = self.microsoft_service._do_request(url, {}, headers, method='GET', timeout=timeout)
+        return status not in RESOURCE_NOT_FOUND_STATUSES, event
+
+    @requires_auth_token
     def _get_events_from_paginated_url(self, url, token=None, params=None, timeout=TIMEOUT):
         """
         Get a list of events from a paginated URL.
@@ -56,9 +63,12 @@ class MicrosoftCalendarService():
             'Prefer': 'outlook.body-content-type="html", odata.maxpagesize=50'
         }
         if not params:
+            # By default, fetch events from at most one year in the past and two years in the future.
+            # Can be modified by microsoft_calendar.sync.range_days system parameter.
+            day_range = self.microsoft_service.env['ir.config_parameter'].sudo().get_int('microsoft_calendar.sync.range_days') or 365
             params = {
-                'startDateTime': fields.Datetime.subtract(fields.Datetime.now(), years=2).strftime("%Y-%m-%dT00:00:00Z"),
-                'endDateTime': fields.Datetime.add(fields.Datetime.now(), years=2).strftime("%Y-%m-%dT00:00:00Z"),
+                'startDateTime': fields.Datetime.subtract(fields.Datetime.now(), days=day_range).strftime("%Y-%m-%dT00:00:00Z"),
+                'endDateTime': fields.Datetime.add(fields.Datetime.now(), days=day_range * 2).strftime("%Y-%m-%dT00:00:00Z"),
             }
 
         # get the first page of events
@@ -81,6 +91,12 @@ class MicrosoftCalendarService():
 
         return events, next_sync_token
 
+    def _check_full_sync_required(self, response):
+        """ Checks if full sync is required according to the error code received. """
+        response_json = response.json()
+        response_code = response_json.get('error', {}).get('code', '')
+        return any(error_code in response_code for error_code in ['fullSyncRequired', 'SyncStateNotFound'])
+
     @requires_auth_token
     def _get_events_delta(self, sync_token=None, token=None, timeout=TIMEOUT):
         """
@@ -94,7 +110,8 @@ class MicrosoftCalendarService():
             events, next_sync_token = self._get_events_from_paginated_url(
                 url, params=params, token=token, timeout=timeout)
         except requests.HTTPError as e:
-            if e.response.status_code == 410 and 'fullSyncRequired' in str(e.response.content) and sync_token:
+            full_sync_needed = self._check_full_sync_required(e.response)
+            if e.response.status_code == 410 and full_sync_needed and sync_token:
                 # retry with a full sync
                 return self._get_events_delta(token=token, timeout=timeout)
             raise e
@@ -189,7 +206,13 @@ class MicrosoftCalendarService():
         return 'offline_access openid Calendars.ReadWrite'
 
     def _microsoft_authentication_url(self, from_url='http://www.odoo.com'):
-        return self.microsoft_service._get_authorize_uri(from_url, service='calendar', scope=self._get_calendar_scope())
+        redirect_uri = self.microsoft_service.get_base_url() + '/microsoft_account/authentication'
+        return self.microsoft_service._get_authorize_uri(
+            from_url,
+            service='calendar',
+            scope=self._get_calendar_scope(),
+            redirect_uri=redirect_uri
+        )
 
     def _can_authorize_microsoft(self, user):
         return user.has_group('base.group_erp_manager')

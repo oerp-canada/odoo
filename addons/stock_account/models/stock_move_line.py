@@ -1,74 +1,74 @@
-# -*- coding: utf-8 -*-
-# Part of Odoo. See LICENSE file for full copyright and licensing details.
-
 from odoo import api, models
-from odoo.tools import float_compare, float_is_zero
 
 
 class StockMoveLine(models.Model):
     _inherit = 'stock.move.line'
 
-    # -------------------------------------------------------------------------
-    # CRUD
-    # -------------------------------------------------------------------------
     @api.model_create_multi
     def create(self, vals_list):
-        analytic_move_to_recompute = set()
-        move_lines = super(StockMoveLine, self).create(vals_list)
-        for move_line in move_lines:
-            move = move_line.move_id
-            analytic_move_to_recompute.add(move.id)
-            if move_line.state != 'done':
-                continue
-            rounding = move.product_id.uom_id.rounding
-            diff = move.product_uom._compute_quantity(move_line.qty_done, move.product_id.uom_id)
-            if float_is_zero(diff, precision_rounding=rounding):
-                continue
-            self._create_correction_svl(move, diff)
-        if analytic_move_to_recompute:
-            self.env['stock.move'].browse(
-                analytic_move_to_recompute)._account_analytic_entry_move()
-        return move_lines
+        mls = super().create(vals_list)
+        mls._update_stock_move_value()
+        return mls
 
     def write(self, vals):
         analytic_move_to_recompute = set()
-        if 'qty_done' in vals or 'move_id' in vals:
+        if 'quantity' in vals or 'move_id' in vals:
             for move_line in self:
-                move_id = vals.get('move_id', move_line.move_id.id)
+                move_id = vals.get('move_id') or move_line.move_id.id
                 analytic_move_to_recompute.add(move_id)
-        if 'qty_done' in vals:
-            for move_line in self:
-                if move_line.state != 'done':
-                    continue
-                move = move_line.move_id
-                if float_compare(vals['qty_done'], move_line.qty_done, precision_rounding=move.product_uom.rounding) == 0:
-                    continue
-                rounding = move.product_id.uom_id.rounding
-                diff = move.product_uom._compute_quantity(vals['qty_done'] - move_line.qty_done, move.product_id.uom_id, rounding_method='HALF-UP')
-                if float_is_zero(diff, precision_rounding=rounding):
-                    continue
-                self._create_correction_svl(move, diff)
-        res = super(StockMoveLine, self).write(vals)
+        valuation_fields = ['quantity', 'location_id', 'location_dest_id', 'owner_id', 'quant_id', 'lot_id']
+        valuation_trigger = any(field in vals for field in valuation_fields)
+        qty_by_ml = {}
+        if valuation_trigger:
+            qty_by_ml = {ml: ml.quantity for ml in self if ml.move_id.is_in or ml.move_id.is_out}
+        res = super().write(vals)
+        if valuation_trigger and qty_by_ml:
+            self._update_stock_move_value(qty_by_ml)
         if analytic_move_to_recompute:
-            self.env['stock.move'].browse(analytic_move_to_recompute)._account_analytic_entry_move()
+            self.env['stock.move'].browse(analytic_move_to_recompute).sudo()._create_analytic_move()
         return res
 
-    # -------------------------------------------------------------------------
-    # SVL creation helpers
-    # -------------------------------------------------------------------------
-    @api.model
-    def _create_correction_svl(self, move, diff):
-        stock_valuation_layers = self.env['stock.valuation.layer']
-        if move._is_in() and diff > 0 or move._is_out() and diff < 0:
-            move.product_price_update_before_done(forced_qty=diff)
-            stock_valuation_layers |= move._create_in_svl(forced_quantity=abs(diff))
-            if move.product_id.cost_method in ('average', 'fifo'):
-                move.product_id._run_fifo_vacuum(move.company_id)
-        elif move._is_in() and diff < 0 or move._is_out() and diff > 0:
-            stock_valuation_layers |= move._create_out_svl(forced_quantity=abs(diff))
-        elif move._is_dropshipped() and diff > 0 or move._is_dropshipped_returned() and diff < 0:
-            stock_valuation_layers |= move._create_dropshipped_svl(forced_quantity=abs(diff))
-        elif move._is_dropshipped() and diff < 0 or move._is_dropshipped_returned() and diff > 0:
-            stock_valuation_layers |= move._create_dropshipped_returned_svl(forced_quantity=abs(diff))
+    def unlink(self):
+        analytic_move_to_recompute = self.move_id
+        res = super().unlink()
+        analytic_move_to_recompute.sudo()._create_analytic_move()
+        return res
 
-        stock_valuation_layers._validate_accounting_entries()
+    @api.model
+    def _should_exclude_for_valuation(self):
+        """
+        Determines if this move line should be excluded from valuation based on its ownership.
+        :return: True if the move line's owner is different from the company's partner (indicating
+                it should be excluded from valuation), False otherwise.
+        """
+        self.ensure_one()
+        return self.owner_id and self.owner_id != self.company_id.partner_id
+
+    def _update_stock_move_value(self, old_qty_by_ml=None):
+        move_to_update = set()
+        if not old_qty_by_ml:
+            old_qty_by_ml = {}
+
+        for move, mls in self.grouped('move_id').items():
+            if not (move.is_in or move.is_out):
+                continue
+            if move.is_in:
+                move_to_update.add(move.id)
+            elif move.is_out:
+                delta = sum(
+                    ml.quantity - old_qty_by_ml.get(ml, 0)
+                    for ml in mls
+                    if not ml._should_exclude_for_valuation()
+                )
+                if delta:
+                    move._set_value(correction_quantity=delta)
+        if move_to_update:
+            self.env['stock.move'].browse(move_to_update)._set_value()
+
+    def _is_consigned_valued_line(self):
+        """ return true if the move line would have been considered in the _get_valued_qty() method except for
+        the _should_exclude_for_valuation criteria (.i.e the line would have been valued if it wasn't consigned)
+        """
+        return self.picked and self._should_exclude_for_valuation() and\
+            (not self.location_id._should_be_valued() and self.location_dest_id._should_be_valued()
+            or self.location_id._should_be_valued() and not self.location_dest_id._should_be_valued())

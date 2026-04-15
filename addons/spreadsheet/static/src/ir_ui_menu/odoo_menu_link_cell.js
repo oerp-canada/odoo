@@ -1,5 +1,3 @@
-/** @odoo-module */
-
 const VIEW_PREFIX = "odoo://view/";
 const IR_MENU_ID_PREFIX = "odoo://ir_menu_id/";
 const IR_MENU_XML_ID_PREFIX = "odoo://ir_menu_xml_id/";
@@ -34,7 +32,7 @@ export function isMarkdownViewUrl(url) {
  */
 export function parseViewLink(viewLink) {
     if (viewLink.startsWith(VIEW_PREFIX)) {
-        return JSON.parse(viewLink.substr(VIEW_PREFIX.length));
+        return JSON.parse(viewLink.substring(VIEW_PREFIX.length));
     }
     throw new Error(`${viewLink} is not a valid view link`);
 }
@@ -63,7 +61,7 @@ export function isMarkdownIrMenuIdUrl(url) {
  */
 export function parseIrMenuIdLink(irMenuLink) {
     if (irMenuLink.startsWith(IR_MENU_ID_PREFIX)) {
-        return parseInt(irMenuLink.substr(IR_MENU_ID_PREFIX.length), 10);
+        return parseInt(irMenuLink.substring(IR_MENU_ID_PREFIX.length), 10);
     }
     throw new Error(`${irMenuLink} is not a valid menu id link`);
 }
@@ -92,7 +90,7 @@ export function isIrMenuXmlUrl(url) {
  */
 export function parseIrMenuXmlUrl(irMenuUrl) {
     if (irMenuUrl.startsWith(IR_MENU_XML_ID_PREFIX)) {
-        return irMenuUrl.substr(IR_MENU_XML_ID_PREFIX.length);
+        return irMenuUrl.substring(IR_MENU_XML_ID_PREFIX.length);
     }
     throw new Error(`${irMenuUrl} is not a valid menu xml link`);
 }

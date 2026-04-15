@@ -1,65 +1,87 @@
-/* @odoo-module */
-
 import { Message } from "@mail/core/common/message";
 import { markEventHandled } from "@web/core/utils/misc";
 
-import { getCurrency } from "@web/core/currency";
-import { deserializeDateTime } from "@web/core/l10n/dates";
+import {
+    deserializeDate,
+    deserializeDateTime,
+    formatDate,
+    formatDateTime,
+} from "@web/core/l10n/dates";
 import { _t } from "@web/core/l10n/translation";
-import { registry } from "@web/core/registry";
+import {
+    formatChar,
+    formatFloat,
+    formatInteger,
+    formatMonetary,
+    formatText,
+} from "@web/views/fields/formatters";
 import { useService } from "@web/core/utils/hooks";
+import { usePopover } from "@web/core/popover/popover_hook";
 import { patch } from "@web/core/utils/patch";
-import { format } from "web.field_utils";
+import { AvatarCard } from "@mail/core/web/avatar_card/avatar_card";
 
-const formatters = registry.category("formatters");
-
-patch(Message.prototype, "mail/core/web", {
+patch(Message.prototype, {
     setup() {
-        this._super(...arguments);
+        super.setup(...arguments);
         this.action = useService("action");
-        this.userService = useService("user");
+        this.avatarCard = usePopover(AvatarCard);
     },
-    get authorText() {
-        return this.hasAuthorClickable ? _t("Open profile") : undefined;
+    get attClass() {
+        return {
+            ...super.attClass,
+            "o-needaction-message o-rounded-bubble bg-view shadow-sm border pb-1 pt-sm-2":
+                this.message.needaction && this.env.inChatter,
+        };
     },
-    get hasAuthorClickable() {
-        return this.message.author && !this.message.isSelfAuthored;
+    get authorAvatarAttClass() {
+        return {
+            ...super.authorAvatarAttClass,
+            "o_redirect cursor-pointer": this.hasAuthorClickable(),
+        };
+    },
+    getAuthorAttClass() {
+        return {
+            ...super.getAuthorAttClass(),
+            "cursor-pointer o-hover-text-underline": this.hasAuthorClickable(),
+        };
+    },
+    getAuthorText() {
+        return this.hasAuthorClickable() ? _t("Open card") : undefined;
+    },
+    getAvatarContainerAttClass() {
+        return {
+            ...super.getAvatarContainerAttClass(),
+            "cursor-pointer": this.hasAuthorClickable(),
+        };
+    },
+    hasAuthorClickable() {
+        return this.message.author_id;
     },
     onClickAuthor(ev) {
-        if (this.hasAuthorClickable) {
+        if (this.hasAuthorClickable()) {
             markEventHandled(ev, "Message.ClickAuthor");
-            this.messaging.openDocument({
-                model: "res.partner",
-                id: this.message.author.id,
-            });
+            const target = ev.currentTarget;
+            if (!this.avatarCard.isOpen) {
+                this.avatarCard.open(target, {
+                    id: this.message.author_id.id,
+                    model: "res.partner",
+                });
+            }
         }
     },
+
     openRecord() {
-        if (this.message.resModel === "discuss.channel") {
-            this.threadService.open(this.message.originThread);
-        } else {
-            this.action.doAction({
-                type: "ir.actions.act_window",
-                res_id: this.message.resId,
-                res_model: this.message.resModel,
-                views: [[false, "form"]],
-            });
-        }
+        this.message.thread.open({ focus: true });
+        this.message.thread.highlightMessage = this.message;
     },
 
     /**
      * @returns {string}
      */
-    formatTracking(trackingValue) {
-        /**
-         * Maps tracked field type to a JS formatter. Tracking values are
-         * not always stored in the same field type as their origin type.
-         * Field types that are not listed here are not supported by
-         * tracking in Python. Also see `create_tracking_values` in Python.
-         */
-        switch (trackingValue.fieldType) {
+    formatTracking(trackingFieldInfo, trackingValue) {
+        switch (trackingFieldInfo.fieldType) {
             case "boolean":
-                return trackingValue.value ? _t("Yes") : _t("No");
+                return trackingValue ? _t("Yes") : _t("No");
             /**
              * many2one formatter exists but is expecting id/display_name or data
              * object but only the target record name is known in this context.
@@ -70,43 +92,37 @@ patch(Message.prototype, "mail/core/web", {
             case "char":
             case "many2one":
             case "selection":
-                return format.char(trackingValue.value);
-            case "date":
-                if (trackingValue.value) {
-                    return luxon.DateTime.fromISO(trackingValue.value, { zone: "utc" })
-                        .setZone("system")
-                        .toLocaleString({ locale: this.userService.lang.replace("_", "-") });
-                }
-                return format.date(trackingValue.value);
+                return formatChar(trackingValue);
+            case "date": {
+                const value = trackingValue ? deserializeDate(trackingValue) : trackingValue;
+                return formatDate(value);
+            }
             case "datetime": {
-                const value = trackingValue.value
-                    ? deserializeDateTime(trackingValue.value)
-                    : trackingValue.value;
-                return formatters.get("datetime")(value);
+                const value = trackingValue ? deserializeDateTime(trackingValue) : trackingValue;
+                return formatDateTime(value);
             }
             case "float":
-                return format.float(trackingValue.value);
+                return formatFloat(trackingValue, { digits: trackingFieldInfo.floatPrecision });
             case "integer":
-                return format.integer(trackingValue.value);
+                return formatInteger(trackingValue);
             case "text":
-                return format.text(trackingValue.value);
+                return formatText(trackingValue);
             case "monetary":
-                return format.monetary(trackingValue.value, undefined, {
-                    currency: trackingValue.currencyId
-                        ? getCurrency(trackingValue.currencyId)
-                        : undefined,
-                    forceString: true,
+                return formatMonetary(trackingValue, {
+                    currencyId: trackingFieldInfo.currencyId,
                 });
             default:
-                return trackingValue.value;
+                return trackingValue;
         }
     },
 
     /**
      * @returns {string}
      */
-    formatTrackingOrNone(trackingValue) {
-        const formattedValue = this.formatTracking(trackingValue);
-        return formattedValue || _t("None");
+    formatTrackingOrNone(trackingFieldInfo, trackingValue) {
+        const formattedValue = this.formatTracking(trackingFieldInfo, trackingValue);
+        return formattedValue
+            ? this.props.messageSearch?.highlight(formattedValue) ?? formattedValue
+            : _t("None");
     },
 });

@@ -7,7 +7,7 @@ from odoo.tools.translate import _
 
 class View(Controller):
 
-    @route('/web/view/edit_custom', type='json', auth="user")
+    @route('/web/view/edit_custom', type='jsonrpc', auth="user")
     def edit_custom(self, custom_id, arch):
         """
         Edit a custom view
@@ -18,6 +18,10 @@ class View(Controller):
         """
         custom_view = request.env['ir.ui.view.custom'].sudo().browse(custom_id)
         if not custom_view.user_id == request.env.user:
-            raise AccessError(_("Custom view %s does not belong to user %s", custom_id, self.env.user.login))
+            raise AccessError(_(
+                "Custom view %(view)s does not belong to user %(user)s",
+                view=custom_id,
+                user=self.env.user.login,
+            ))
         custom_view.write({'arch': arch})
         return {'result': True}

@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Part of Odoo. See LICENSE file for full copyright and licensing details.
 
 {
@@ -8,9 +7,7 @@
 Allows the outsourcing of services. This module allows one to sell services provided
 by external providers and will automatically generate purchase orders directed to the service seller.
     """,
-    'version': '1.0',
-    'website': 'https://www.odoo.com/',
-    'category': 'Hidden',
+    'category': 'Sales/Sales',
     'depends': [
         'sale',
         'purchase',
@@ -20,8 +17,8 @@ by external providers and will automatically generate purchase orders directed t
         'views/product_views.xml',
         'views/sale_order_views.xml',
         'views/purchase_order_views.xml',
-        'wizards/sale_order_cancel_views.xml',
     ],
     'auto_install': True,
+    'author': 'Odoo S.A.',
     'license': 'LGPL-3',
 }

@@ -1,8 +1,6 @@
-/** @odoo-module **/
-
 import { registry } from "@web/core/registry";
 import { floatField, FloatField } from "../float/float_field";
-import { _lt } from "@web/core/l10n/translation";
+import { _t } from "@web/core/l10n/translation";
 
 export class FloatFactorField extends FloatField {
     static props = {
@@ -15,11 +13,7 @@ export class FloatFactorField extends FloatField {
     };
 
     parse(value) {
-        let factorValue = value / this.props.factor;
-        if (this.props.inputType !== "number") {
-            factorValue = factorValue.toString();
-        }
-        return super.parse(factorValue);
+        return super.parse(value) / this.props.factor;
     }
 
     get value() {
@@ -33,7 +27,7 @@ export const floatFactorField = {
     supportedOptions: [
         ...floatField.supportedOptions,
         {
-            label: _lt("Factor"),
+            label: _t("Factor"),
             name: "factor",
             type: "number",
         },

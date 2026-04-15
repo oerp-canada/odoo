@@ -1,15 +1,20 @@
-/** @odoo-module **/
-
+import { rpc } from "@web/core/network/rpc";
 import { useService } from "@web/core/utils/hooks";
 import { View } from "@web/views/view";
 import { makeContext } from "@web/core/context";
-
-const { Component, onWillStart } = owl;
+import { user } from "@web/core/user";
+import { Component, onWillStart } from "@odoo/owl";
 
 export class BoardAction extends Component {
+    static template = "board.BoardAction";
+    static components = { View };
+    static props = {
+        action: Object,
+        actionId: { type: Number, optional: true },
+        className: { type: String, optional: true },
+    };
+    static cache = {};
     setup() {
-        const rpc = useService("rpc");
-        const userService = useService("user");
         this.actionService = useService("action");
         const action = this.props.action;
         this.formViewId = false;
@@ -40,12 +45,14 @@ export class BoardAction extends Component {
             if (view) {
                 this.viewProps.viewId = view[0];
             }
+            const searchView = result.views.find((v) => v[1] === "search");
+            this.viewProps.views = [
+                [this.viewProps.viewId || false, viewMode],
+                [(searchView && searchView[0]) || false, "search"],
+            ];
 
             if (action.context) {
-                this.viewProps.context = makeContext([
-                    action.context,
-                    { lang: userService.context.lang },
-                ]);
+                this.viewProps.context = makeContext([action.context, { lang: user.context.lang }]);
                 if ("group_by" in this.viewProps.context) {
                     const groupBy = this.viewProps.context.group_by;
                     this.viewProps.groupBy = typeof groupBy === "string" ? [groupBy] : groupBy;
@@ -68,6 +75,3 @@ export class BoardAction extends Component {
         });
     }
 }
-BoardAction.template = "board.BoardAction";
-BoardAction.components = { View };
-BoardAction.cache = {};

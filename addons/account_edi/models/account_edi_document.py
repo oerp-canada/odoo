@@ -1,12 +1,10 @@
-# -*- coding: utf-8 -*-
 # Part of Odoo. See LICENSE file for full copyright and licensing details.
+import logging
 
 from odoo import models, fields, api, _
-from odoo.exceptions import UserError
+from odoo.exceptions import LockError, UserError
+from odoo.tools import BinaryBytes
 
-from psycopg2 import OperationalError
-import base64
-import logging
 
 _logger = logging.getLogger(__name__)
 
@@ -18,7 +16,7 @@ class AccountEdiDocument(models.Model):
     _description = 'Electronic Document for an account.move'
 
     # == Stored fields ==
-    move_id = fields.Many2one('account.move', required=True, ondelete='cascade')
+    move_id = fields.Many2one('account.move', required=True, ondelete='cascade', index=True)
     edi_format_id = fields.Many2one('account.edi.format', required=True)
     attachment_id = fields.Many2one(
         comodel_name='ir.attachment',
@@ -37,15 +35,12 @@ class AccountEdiDocument(models.Model):
     # == Not stored fields ==
     name = fields.Char(related='attachment_id.name')
     edi_format_name = fields.Char(string='Format Name', related='edi_format_id.name')
-    edi_content = fields.Binary(compute='_compute_edi_content', compute_sudo=True)
+    edi_content = fields.Binary(compute='_compute_edi_content')
 
-    _sql_constraints = [
-        (
-            'unique_edi_document_by_move_by_format',
-            'UNIQUE(edi_format_id, move_id)',
-            'Only one edi document by move by format',
-        ),
-    ]
+    _unique_edi_document_by_move_by_format = models.Constraint(
+        'UNIQUE(edi_format_id, move_id)',
+        'Only one edi document by move by format',
+    )
 
     @api.depends('move_id', 'error', 'state')
     def _compute_edi_content(self):
@@ -55,12 +50,12 @@ class AccountEdiDocument(models.Model):
                 move = doc.move_id
                 config_errors = doc.edi_format_id._check_move_configuration(move)
                 if config_errors:
-                    res = base64.b64encode('\n'.join(config_errors).encode('UTF-8'))
+                    res = '\n'.join(config_errors).encode()
                 else:
                     move_applicability = doc.edi_format_id._get_move_applicability(move)
                     if move_applicability and move_applicability.get('edi_content'):
-                        res = base64.b64encode(move_applicability['edi_content'](move))
-            doc.edi_content = res
+                        res = move_applicability['edi_content'](move)
+            doc.edi_content = BinaryBytes(res)
 
     def action_export_xml(self):
         self.ensure_one()
@@ -72,7 +67,7 @@ class AccountEdiDocument(models.Model):
     def _prepare_jobs(self):
         """Creates a list of jobs to be performed by '_process_job' for the documents in self.
         Each document represent a job, BUT if multiple documents have the same state, edi_format_id,
-        doc_type (invoice or payment) and company_id AND the edi_format_id supports batching, they are grouped
+        doc_type invoice and company_id AND the edi_format_id supports batching, they are grouped
         into a single job.
 
         :returns:  [{
@@ -106,8 +101,7 @@ class AccountEdiDocument(models.Model):
 
     @api.model
     def _process_job(self, job):
-        """Post or cancel move_id (invoice or payment) by calling the related methods on edi_format_id.
-        Invoices are processed before payments.
+        """Post or cancel move_id by calling the related methods on edi_format_id.
 
         :param job:  {
             'documents': account.edi.document,
@@ -138,7 +132,7 @@ class AccountEdiDocument(models.Model):
 
             # Attachments that are not explicitly linked to a business model could be removed because they are not
             # supposed to have any traceability from the user.
-            attachments_to_unlink.unlink()
+            attachments_to_unlink.sudo().unlink()
 
         def _postprocess_cancel_edi_results(documents, edi_result):
             move_ids_to_cancel = set()  # Avoid duplicates
@@ -155,7 +149,11 @@ class AccountEdiDocument(models.Model):
                         'blocking_level': False,
                     })
 
-                    if move.state == 'posted':
+                    if move.state == 'posted' and all(
+                        doc.state == 'cancelled'
+                        or not doc.edi_format_id._needs_web_services()
+                        for doc in move.edi_document_ids
+                    ):
                         # The user requested a cancellation of the EDI and it has been approved. Then, the invoice
                         # can be safely cancelled.
                         move_ids_to_cancel.add(move.id)
@@ -192,10 +190,7 @@ class AccountEdiDocument(models.Model):
         documents.move_id.line_ids.flush_recordset()  # manual flush for tax details
         moves = documents.move_id
         if state == 'to_send':
-            if all(move.is_invoice(include_receipts=True) for move in moves):
-                with moves._send_only_when_ready():
-                    edi_result = method_to_call(moves)
-            else:
+            with moves._send_only_when_ready():
                 edi_result = method_to_call(moves)
             _postprocess_post_edi_results(documents, edi_result)
         elif state == 'to_cancel':
@@ -224,22 +219,14 @@ class AccountEdiDocument(models.Model):
             move_to_lock = documents.move_id
             attachments_potential_unlink = documents.sudo().attachment_id.filtered(lambda a: not a.res_model and not a.res_id)
             try:
-                with self.env.cr.savepoint(flush=False):
-                    self._cr.execute('SELECT * FROM account_edi_document WHERE id IN %s FOR UPDATE NOWAIT', [tuple(documents.ids)])
-                    self._cr.execute('SELECT * FROM account_move WHERE id IN %s FOR UPDATE NOWAIT', [tuple(move_to_lock.ids)])
-
-                    # Locks the attachments that might be unlinked
-                    if attachments_potential_unlink:
-                        self._cr.execute('SELECT * FROM ir_attachment WHERE id IN %s FOR UPDATE NOWAIT', [tuple(attachments_potential_unlink.ids)])
-
-            except OperationalError as e:
-                if e.pgcode == '55P03':
-                    _logger.debug('Another transaction already locked documents rows. Cannot process documents.')
-                    if not with_commit:
-                        raise UserError(_('This document is being sent by another process already. '))
-                    continue
-                else:
-                    raise e
+                documents.lock_for_update()
+                move_to_lock.lock_for_update()
+                attachments_potential_unlink.lock_for_update()
+            except LockError:
+                _logger.debug('Another transaction already locked documents rows. Cannot process documents.')
+                if not with_commit:
+                    raise UserError(_('This document is being sent by another process already. ')) from None
+                continue
             self._process_job(job)
             if with_commit and len(jobs_to_process) > 1:
                 self.env.cr.commit()
@@ -252,7 +239,11 @@ class AccountEdiDocument(models.Model):
 
         :param job_count: Limit explicitely the number of web service calls. If not provided, process all.
         '''
-        edi_documents = self.search([('state', 'in', ('to_send', 'to_cancel')), ('move_id.state', '=', 'posted')])
+        edi_documents = self.search([
+            ('state', 'in', ('to_send', 'to_cancel')),
+            ('move_id.state', '=', 'posted'),
+            ('blocking_level', '!=', 'error'),
+        ])
         nb_remaining_jobs = edi_documents._process_documents_web_services(job_count=job_count)
 
         # Mark the CRON to be triggered again asap since there is some remaining jobs to process.
@@ -272,7 +263,7 @@ class AccountEdiDocument(models.Model):
         _action_send_mail in mail.compose.message).
         :param document: an edi document
         :return: dict {
-            'attachments': tuple with the name and base64 content of the attachment}
+            'attachments': tuple with the name and binary value of the attachment}
             'attachment_ids': list containing the id of the attachment
         }
         """
@@ -283,8 +274,8 @@ class AccountEdiDocument(models.Model):
         if not (attachment_sudo.res_model and attachment_sudo.res_id):
             # do not return system attachment not linked to a record
             return {}
-        if len(self._context.get('active_ids', [])) > 1:
+        if len(self.env.context.get('active_ids', [])) > 1:
             # In mass mail mode 'attachments_ids' is removed from template values
             # as they should not be rendered
-            return {'attachments': [(attachment_sudo.name, attachment_sudo.datas)]}
+            return {'attachments': [(attachment_sudo.name, attachment_sudo.raw)]}
         return {'attachment_ids': attachment_sudo.ids}

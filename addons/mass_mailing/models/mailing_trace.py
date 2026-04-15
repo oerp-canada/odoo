@@ -13,18 +13,19 @@ class MailingTrace(models.Model):
     Note:: State management / Error codes / Failure types summary
 
       * trace_status
-        'outgoing', 'sent', 'opened', 'replied',
-        'error', 'bouce', 'cancel'
+        'outgoing', 'process', 'pending', 'sent', 'opened', 'replied',
+        'error', 'bounce', 'cancel'
       * failure_type
         # generic
         'unknown',
         # mass_mailing
-        "mail_email_invalid", "mail_smtp", "mail_email_missing"
+        "mail_email_invalid", "mail_smtp", "mail_email_missing",
+        "mail_from_invalid", "mail_from_missing",
         # mass mailing mass mode specific codes
         "mail_bl", "mail_optout", "mail_dup"
         # mass_mailing_sms
-        'sms_number_missing', 'sms_number_format', 'sms_credit',
-        'sms_server', 'sms_acc'
+        'sms_number_missing', 'sms_number_format', 'sms_credit', 'sms_server',
+        'sms_acc', 'sms_country_not_supported', 'sms_registration_needed',
         # mass_mailing_sms mass mode specific codes
         'sms_blacklist', 'sms_duplicate', 'sms_optout',
       * cancel:
@@ -38,8 +39,12 @@ class MailingTrace(models.Model):
         * invalid mail / invalid sms number -> error (RECIPIENT, sms_number_format)
       * exception: set in  _postprocess_sent_message (_postprocess_iap_sent_sms)
         if mail (sms) not sent with failure type, reset if sent;
-      * sent: set in _postprocess_sent_message (_postprocess_iap_sent_sms) if
-        mail (sms) sent
+      * process: (used in sms): set in SmsTracker._update_sms_traces when held back
+        (at IAP) before actual sending to the sms_service.
+      * pending: (used in sms): default value for sent sms.
+      * sent: set in
+        * _postprocess_sent_message if mail
+        * SmsTracker._update_sms_traces if sms, when delivery report is received.
       * clicked: triggered by add_click
       * opened: triggered by add_click + blank gif (mail) + gateway reply (mail)
       * replied: triggered by gateway reply (mail)
@@ -52,6 +57,7 @@ class MailingTrace(models.Model):
     _order = 'create_date DESC'
 
     trace_type = fields.Selection([('mail', 'Email')], string='Type', default='mail', required=True)
+    is_test_trace = fields.Boolean('Generated for testing')
     # mail data
     mail_mail_id = fields.Many2one('mail.mail', string='Mail', index='btree_not_null')
     mail_mail_id_int = fields.Integer(
@@ -80,19 +86,24 @@ class MailingTrace(models.Model):
     reply_datetime = fields.Datetime('Replied On')
     trace_status = fields.Selection(selection=[
         ('outgoing', 'Outgoing'),
-        ('sent', 'Sent'),
+        ('process', 'Processing'),
+        ('pending', 'Sent'),
+        ('sent', 'Delivered'),
         ('open', 'Opened'),
         ('reply', 'Replied'),
         ('bounce', 'Bounced'),
         ('error', 'Exception'),
-        ('cancel', 'Canceled')], string='Status', default='outgoing')
+        ('cancel', 'Cancelled')], string='Status', default='outgoing')
     failure_type = fields.Selection(selection=[
         # generic
         ("unknown", "Unknown error"),
         # mail
         ("mail_bounce", "Bounce"),
+        ("mail_spam", "Detected As Spam"),
         ("mail_email_invalid", "Invalid email address"),
         ("mail_email_missing", "Missing email address"),
+        ("mail_from_invalid", "Invalid from address"),
+        ("mail_from_missing", "Missing from address"),
         ("mail_smtp", "Connection failed (outgoing mail server problem)"),
         # mass mode
         ("mail_bl", "Blacklisted Address"),
@@ -104,26 +115,28 @@ class MailingTrace(models.Model):
     links_click_ids = fields.One2many('link.tracker.click', 'mailing_trace_id', string='Links click')
     links_click_datetime = fields.Datetime('Clicked On', help='Stores last click datetime in case of multi clicks.')
 
-    _sql_constraints = [
-        # Required on a Many2one reference field is not sufficient as actually
-        # writing 0 is considered as a valid value, because this is an integer field.
-        # We therefore need a specific constraint check.
-        ('check_res_id_is_set',
-         'CHECK(res_id IS NOT NULL AND res_id !=0 )',
-         'Traces have to be linked to records with a not null res_id.')
-    ]
+    _check_res_id_is_set = models.Constraint(
+        'CHECK(res_id IS NOT NULL AND res_id !=0 )',
+        'Traces have to be linked to records with a not null res_id.',
+    )
 
     @api.depends('trace_type', 'mass_mailing_id')
     def _compute_display_name(self):
         for trace in self:
-            trace.display_name = f'{trace.trace_type}: {trace.mass_mailing_id.name} ({trace.id})'
+            trace.display_name = f'{trace.trace_type}: {trace.mass_mailing_id.subject} ({trace.id})'
 
     @api.model_create_multi
-    def create(self, values_list):
-        for values in values_list:
+    def create(self, vals_list):
+        for values in vals_list:
             if 'mail_mail_id' in values:
                 values['mail_mail_id_int'] = values['mail_mail_id']
-        return super(MailingTrace, self).create(values_list)
+        return super().create(vals_list)
+
+    def action_retry_failed(self):
+        traces = self.filtered(lambda t: t.trace_status in ("error", "cancel", "bounce"))
+        if not traces:
+            return
+        traces.mass_mailing_id.action_retry_failed([("mailing_trace_ids", "in", traces.ids)])
 
     def action_view_contact(self):
         self.ensure_one()

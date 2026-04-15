@@ -1,7 +1,5 @@
-# -*- coding: utf-8 -*-
 # Part of Odoo. See LICENSE file for full copyright and licensing details.
 
-import base64
 import functools
 import io
 import qrcode
@@ -12,12 +10,14 @@ from odoo import _, api, fields, models
 from odoo.addons.base.models.res_users import check_identity
 from odoo.exceptions import UserError
 from odoo.http import request
+from odoo.tools import BinaryBytes
 
 from odoo.addons.auth_totp.models.totp import ALGORITHM, DIGITS, TIMESTEP
 
 compress = functools.partial(re.sub, r'\s', '')
 
-class TOTPWizard(models.TransientModel):
+
+class Auth_TotpWizard(models.TransientModel):
     _name = 'auth_totp.wizard'
     _description = "2-Factor Setup Wizard"
 
@@ -28,7 +28,7 @@ class TOTPWizard(models.TransientModel):
         attachment=False, store=True, readonly=True,
         compute='_compute_qrcode',
     )
-    code = fields.Char(string="Verification Code", size=7)
+    code = fields.Char(string="Verification Code", size=7, store=False)
 
     @api.depends('user_id.login', 'user_id.company_id.display_name', 'secret')
     def _compute_qrcode(self):
@@ -52,12 +52,12 @@ class TOTPWizard(models.TransientModel):
 
             data = io.BytesIO()
             qrcode.make(url.encode(), box_size=4).save(data, optimise=True, format='PNG')
-            w.qrcode = base64.b64encode(data.getvalue()).decode()
+            w.qrcode = BinaryBytes(data.getvalue())
 
     @check_identity
     def enable(self):
         try:
-            c = int(compress(self.code))
+            c = int(compress(self.env.context.get('code', '')))
         except ValueError:
             raise UserError(_("The verification code should only contain numbers"))
         if self.user_id._totp_try_setting(self.secret, c):

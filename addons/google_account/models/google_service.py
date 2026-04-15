@@ -31,7 +31,8 @@ def _get_client_secret(ICP_sudo, service):
     :return: The ICP value
     :rtype: str
     """
-    return ICP_sudo.get_param('google_%s_client_secret' % service)
+    return ICP_sudo.get_str('google_%s_client_secret' % service)
+
 
 class GoogleService(models.AbstractModel):
     _name = 'google.service'
@@ -40,7 +41,7 @@ class GoogleService(models.AbstractModel):
     def _get_client_id(self, service):
         # client id is not a secret, and can be leaked without risk. e.g. in clear in authorize uri.
         ICP = self.env['ir.config_parameter'].sudo()
-        return ICP.get_param('google_%s_client_id' % service)
+        return ICP.get_str('google_%s_client_id' % service)
 
     @api.model
     def _get_authorize_uri(self, service, scope, redirect_uri, state=None, approval_prompt=None, access_type=None):
@@ -90,8 +91,21 @@ class GoogleService(models.AbstractModel):
             error_msg = _("Something went wrong during your token generation. Maybe your Authorization Code is invalid or already expired")
             raise self.env['res.config.settings'].get_config_warning(error_msg)
 
+    def _refresh_google_token(self, service, rtoken):
+        ICP = self.env['ir.config_parameter'].sudo()
+
+        headers = {"content-type": "application/x-www-form-urlencoded"}
+        data = {
+            'refresh_token': rtoken,
+            'client_id': self._get_client_id(service),
+            'client_secret': _get_client_secret(ICP, service),
+            'grant_type': 'refresh_token',
+        }
+        dummy, response, dummy = self._do_request(GOOGLE_TOKEN_ENDPOINT, params=data, headers=headers, method='POST', preuri='')
+        return response.get('access_token'), response.get('expires_in')
+
     @api.model
-    def _do_request(self, uri, params=None, headers=None, method='POST', preuri="https://www.googleapis.com", timeout=TIMEOUT):
+    def _do_request(self, uri, params=None, headers=None, method='POST', preuri=GOOGLE_API_BASE_URL, timeout=TIMEOUT):
         """ Execute the request to Google API. Return a tuple ('HTTP_CODE', 'HTTP_RESPONSE')
             :param uri : the url to contact
             :param params : dict or already encoded parameters for the request to make
@@ -104,13 +118,17 @@ class GoogleService(models.AbstractModel):
         if headers is None:
             headers = {}
 
+        assert urls.url_parse(preuri + uri).host in [
+            urls.url_parse(url).host for url in (GOOGLE_TOKEN_ENDPOINT, GOOGLE_API_BASE_URL)
+        ]
+
         # Remove client_secret key from logs
         if isinstance(params, str):
             _log_params = json.loads(params) or {}
         else:
             _log_params = (params or {}).copy()
         if _log_params.get('client_secret'):
-            _log_params['client_secret'] = _log_params['client_secret'][0:4] + 'x' * 12
+            _log_params['client_secret'] = str(_log_params['client_secret'])[0:4] + 'x' * 12
 
         _logger.debug("Uri: %s - Type : %s - Headers: %s - Params : %s!", uri, method, headers, _log_params)
 
@@ -121,7 +139,7 @@ class GoogleService(models.AbstractModel):
             elif method.upper() in ('POST', 'PATCH', 'PUT'):
                 res = requests.request(method.lower(), preuri + uri, data=params, headers=headers, timeout=timeout)
             else:
-                raise Exception(_('Method not supported [%s] not in [GET, POST, PUT, PATCH or DELETE]!') % (method))
+                raise Exception(_('Method not supported [%s] not in [GET, POST, PUT, PATCH or DELETE]!', method))
             res.raise_for_status()
             status = res.status_code
 

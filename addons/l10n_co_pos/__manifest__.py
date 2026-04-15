@@ -1,25 +1,22 @@
-# -*- coding: utf-8 -*-
 # Part of Odoo. See LICENSE file for full copyright and licensing details.
 
 {
     'name': 'Colombian - Point of Sale',
-    'countries': ['co'],
-    'version': '1.0',
     'description': """Colombian - Point of Sale""",
     'category': 'Accounting/Localizations/Point of Sale',
     'auto_install': True,
+    'data': [
+        'receipt/pos_order_receipt.xml',
+    ],
     'depends': [
         'l10n_co',
         'point_of_sale'
     ],
-    'data': [
-        'views/res_config_settings_views.xml'
-    ],
     'assets': {
         'point_of_sale._assets_pos': [
-            'l10n_co_pos/static/src/js/**/*',
-            'l10n_co_pos/static/src/xml/**/*',
+            'l10n_co_pos/static/src/**/*',
         ],
     },
+    'author': 'Odoo S.A.',
     'license': 'LGPL-3',
 }

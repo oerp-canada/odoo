@@ -1,21 +1,48 @@
-.o-mail-Thread-date hr {
-    opacity: $hr-opacity / 2;
+.o-mail-Thread {
+    &:has(.o-mail-Message.o-selected) .o-mail-Message:not(.o-selected) {
+        opacity: 50% !important;
+    }
+
+    &:focus-visible {
+        outline: 0;
+    }
+}
+
+.o-mail-Thread-jumpPresent {
+    z-index: $o-mail-NavigableList-zIndex - 1;
+    --border-opacity: .5;
 }
 
 .o-mail-Thread-newMessage {
     transition: opacity 0.5s;
 
-    hr {
-        border-color: lighten($o-brand-odoo, 15%) !important;
-    }
-
-    hr, span {
-        color: lighten($o-brand-odoo, 15%);
-    }
-
     span {
-        font-size: 0.8rem;
+        --bg-opacity: 90%;
+        clip-path: polygon(-1px 50%, 15% 0%, 100% 0%, 100% 100%, 15% 100%);
     }
+}
+
+.o-mail-Thread-avatar {
+    --avatar-size: #{$h1-font-size};
+    --icon-font-size: 2.6em;
+
+    &.o-mail-Thread-avatarChatWindow {
+        --avatar-size: 28px;
+        --icon-font-size: 1.5em;
+    }
+
+    img {
+        height: var(--avatar-size);
+        width: var(--avatar-size);
+    }
+
+    i::before {
+        font-size: var(--icon-font-size);
+    }
+}
+
+.o-mail-Thread-newMessageLine {
+    --border-opacity: .5;
 }
 
 .o_mail_notification {
@@ -25,17 +52,25 @@
     display: inline;
 }
 
-.o-mail-Thread-jumpPresent {
-    background-color: mix(map-get($theme-colors, 'info'), $o-webclient-background-color, 5%);
-    z-index: $o-mail-NavigableList-zIndex - 1;
-}
-
 .o-mail-NotificationMessage p {
     margin-bottom: 0;
+}
+
+.o-mail-Message:not(:has(.o-mail-MessageReaction)) + .o-mail-NotificationMessage {
+    margin-top: map-get($spacers, 1);
 }
 
 .o-mail-NotificationMessage:has(.o_hide_author) {
     & .o-mail-NotificationMessage-author {
         display: none!important;
     }
+}
+
+.o-mail-Thread-banner {
+    z-index: $o-mail-NavigableList-zIndex - 1;
+    --border-opacity: 0.35;
+}
+
+.o-mail-Thread-bannerHover:hover {
+    filter: brightness(98%);
 }

@@ -1,4 +1,14 @@
-/** @odoo-module **/
+/**
+ * Returns a promise resolved after 'wait' milliseconds
+ *
+ * @param {int} [wait=0] the delay in ms
+ * @return {Promise}
+ */
+export function delay(wait) {
+    return new Promise(function (resolve) {
+        setTimeout(resolve, wait);
+    });
+}
 
 /**
  * KeepLast is a concurrency primitive that manages a list of tasks, and only
@@ -167,6 +177,8 @@ export class Race {
 }
 
 /**
+ * @deprecated Use Promise.withResolvers() instead.
+ *
  * Deferred is basically a resolvable/rejectable extension of Promise.
  */
 export class Deferred extends Promise {

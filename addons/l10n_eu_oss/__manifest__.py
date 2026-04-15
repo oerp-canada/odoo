@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Part of Odoo. See LICENSE file for full copyright and licensing details.
 
 {
@@ -23,10 +22,9 @@ Council Implementing Regulation (EU) 2019/2026
     """,
     'depends': ['account'],
     'data': [
-        'views/res_config_settings_views.xml',
         'data/account_account_tag.xml',
     ],
-    'post_init_hook': 'l10n_eu_oss_post_init',
     'uninstall_hook': 'l10n_eu_oss_uninstall',
+    'author': 'Odoo S.A.',
     'license': 'LGPL-3',
 }

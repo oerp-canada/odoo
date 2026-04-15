@@ -1,12 +1,11 @@
-/** @odoo-module **/
-
 import { makeContext } from "@web/core/context";
-import { _lt } from "@web/core/l10n/translation";
-import { evaluateExpr } from "@web/core/py_js/py";
-import { XMLParser } from "@web/core/utils/xml";
-import { DEFAULT_INTERVAL, DEFAULT_PERIOD } from "@web/search/utils/dates";
+import { _t } from "@web/core/l10n/translation";
+import { evaluateBooleanExpr, evaluateExpr } from "@web/core/py_js/py";
+import { clamp } from "@web/core/utils/numbers";
+import { visitXML } from "@web/core/utils/xml";
+import { DEFAULT_INTERVAL, toGeneratorId } from "@web/search/utils/dates";
 
-const ALL = _lt("All");
+const ALL = _t("All");
 const DEFAULT_LIMIT = 200;
 const DEFAULT_VIEWS_WITH_SEARCH_PANEL = ["kanban", "list"];
 
@@ -17,16 +16,16 @@ const DEFAULT_VIEWS_WITH_SEARCH_PANEL = ["kanban", "list"];
  * @param {string} context
  * @returns {string[]}
  */
-function getContextGroubBy(context) {
+function getContextGroupBy(context) {
     try {
-        return makeContext([context]).group_by.split(":");
+        return makeContext([context]).group_by?.split(":") || [];
     } catch {
         return [];
     }
 }
 
 function reduceType(type) {
-    if (type === "dateFilter") {
+    if (type === "dateFilter" || type === "parentFilter") {
         return "filter";
     }
     if (type === "dateGroupBy") {
@@ -35,10 +34,8 @@ function reduceType(type) {
     return type;
 }
 
-export class SearchArchParser extends XMLParser {
+export class SearchArchParser {
     constructor(searchViewDescription, fields, searchDefaults = {}, searchPanelDefaults = {}) {
-        super();
-
         const { irFilters, arch } = searchViewDescription;
 
         this.fields = fields || {};
@@ -60,10 +57,12 @@ export class SearchArchParser extends XMLParser {
         this.currentTag = null;
         this.groupNumber = 0;
         this.pregroupOfGroupBys = [];
+
+        this.optionsParams = null;
     }
 
     parse() {
-        this.visitXML(this.arch, (node, visitChildren) => {
+        visitXML(this.arch, (node, visitChildren) => {
             switch (node.tagName) {
                 case "search":
                     this.visitSearch(node, visitChildren);
@@ -80,7 +79,11 @@ export class SearchArchParser extends XMLParser {
                     this.visitField(node);
                     break;
                 case "filter":
-                    this.visitFilter(node);
+                    if (this.optionsParams) {
+                        this.visitInnerFilter(node);
+                    } else {
+                        this.visitFilter(node, visitChildren);
+                    }
                     break;
             }
         });
@@ -109,9 +112,8 @@ export class SearchArchParser extends XMLParser {
     visitField(node) {
         this.pushGroup("field");
         const preField = { type: "field" };
-        const modifiers = JSON.parse(node.getAttribute("modifiers") || "{}");
-        if (modifiers.invisible === true) {
-            preField.invisible = true;
+        if (node.hasAttribute("invisible")) {
+            preField.invisible = node.getAttribute("invisible");
         }
         if (node.hasAttribute("domain")) {
             preField.domain = node.getAttribute("domain");
@@ -126,13 +128,16 @@ export class SearchArchParser extends XMLParser {
         }
         if (node.hasAttribute("name")) {
             const name = node.getAttribute("name");
+            if (!this.fields[name]) {
+                throw Error(`Unknown field ${name}`);
+            }
             const fieldType = this.fields[name].type;
             preField.fieldName = name;
             preField.fieldType = fieldType;
             if (fieldType !== "properties" && name in this.searchDefaults) {
                 preField.isDefault = true;
-                let value = this.searchDefaults[name];
-                value = Array.isArray(value) ? value[0] : value;
+                const val = this.searchDefaults[name];
+                const value = Array.isArray(val) ? val[0] : val;
                 let operator = preField.operator;
                 if (!operator) {
                     let type = fieldType;
@@ -158,13 +163,30 @@ export class SearchArchParser extends XMLParser {
                     }
                     preField.defaultAutocompleteValue.label = option[1];
                 } else if (fieldType === "many2one") {
-                    this.labels.push((orm) => {
-                        return orm
-                            .call(relation, "read", [value, ['display_name']], { context })
+                    this.labels.push((orm) =>
+                        orm
+                            .call(relation, "read", [value, ["display_name"]], { context })
                             .then((results) => {
-                                preField.defaultAutocompleteValue.label = results[0]['display_name'];
-                            });
-                    });
+                                preField.defaultAutocompleteValue.label =
+                                    results[0]["display_name"];
+                            })
+                    );
+                } else if (
+                    ["many2many", "one2many"].includes(fieldType) &&
+                    Array.isArray(val) &&
+                    val.every((v) => Number.isInteger(v) && v > 0)
+                ) {
+                    preField.defaultAutocompleteValue.operator = "in";
+                    preField.defaultAutocompleteValue.value = val;
+                    this.labels.push((orm) =>
+                        orm
+                            .call(relation, "read", [val, ["display_name"]], { context })
+                            .then((results) => {
+                                preField.defaultAutocompleteValue.label = `${results
+                                    .map((r) => r["display_name"])
+                                    .join(" or ")}`;
+                            })
+                    );
                 }
             }
         } else {
@@ -180,11 +202,11 @@ export class SearchArchParser extends XMLParser {
         this.currentGroup.push(preField);
     }
 
-    visitFilter(node) {
+    visitFilter(node, visitChildren) {
         const preSearchItem = { type: "filter" };
         if (node.hasAttribute("context")) {
             const context = node.getAttribute("context");
-            const [fieldName, defaultInterval] = getContextGroubBy(context);
+            const [fieldName, defaultInterval] = getContextGroupBy(context);
             const groupByField = this.fields[fieldName];
             if (groupByField) {
                 preSearchItem.type = "groupBy";
@@ -207,23 +229,37 @@ export class SearchArchParser extends XMLParser {
                 preSearchItem.type = "dateFilter";
                 preSearchItem.fieldName = fieldName;
                 preSearchItem.fieldType = this.fields[fieldName].type;
-                preSearchItem.defaultGeneratorIds = [DEFAULT_PERIOD];
+                const optionsParams = {
+                    startYear: Number(node.getAttribute("start_year") || -2),
+                    endYear: Number(node.getAttribute("end_year") || 0),
+                    startMonth: Number(node.getAttribute("start_month") || -2),
+                    endMonth: Number(node.getAttribute("end_month") || 0),
+                    customOptions: [],
+                };
+                const defaultOffset = clamp(optionsParams.startMonth, optionsParams.endMonth, 0);
+                preSearchItem.defaultGeneratorIds = [toGeneratorId("month", defaultOffset)];
                 if (node.hasAttribute("default_period")) {
                     preSearchItem.defaultGeneratorIds = node
                         .getAttribute("default_period")
                         .split(",");
                 }
-            } else {
-                let stringRepr = "[]";
-                if (node.hasAttribute("domain")) {
-                    stringRepr = node.getAttribute("domain");
-                }
-                preSearchItem.domain = stringRepr;
+                this.optionsParams = optionsParams;
+                visitChildren();
+                preSearchItem.optionsParams = optionsParams;
+                this.optionsParams = null;
             }
+            if (!node.hasAttribute("date") && !!node.childElementCount) {
+                preSearchItem.type = "parentFilter";
+                this.optionsParams = { customOptions: [] };
+                visitChildren();
+                preSearchItem.optionsParams = this.optionsParams;
+                this.optionsParams = null;
+            }
+
+            preSearchItem.domain = node.getAttribute("domain") || "[]";
         }
-        const modifiers = JSON.parse(node.getAttribute("modifiers") || "{}");
-        if (modifiers.invisible === true) {
-            preSearchItem.invisible = true;
+        if (node.hasAttribute("invisible")) {
+            preSearchItem.invisible = node.getAttribute("invisible");
             const fieldName = preSearchItem.fieldName;
             if (fieldName && !this.fields[fieldName]) {
                 // In some case when a field is limited to specific groups
@@ -238,11 +274,18 @@ export class SearchArchParser extends XMLParser {
             preSearchItem.name = name;
             if (name in this.searchDefaults) {
                 preSearchItem.isDefault = true;
+                const value = this.searchDefaults[name];
                 if (["groupBy", "dateGroupBy"].includes(preSearchItem.type)) {
-                    const value = this.searchDefaults[name];
                     preSearchItem.defaultRank = typeof value === "number" ? value : 100;
                 } else {
                     preSearchItem.defaultRank = -5;
+                }
+                if (
+                    preSearchItem.type === "dateFilter" &&
+                    typeof value === "string" &&
+                    !/^(true|1)$/i.test(value)
+                ) {
+                    preSearchItem.defaultGeneratorIds = value.split(",");
                 }
             }
         }
@@ -258,6 +301,19 @@ export class SearchArchParser extends XMLParser {
             preSearchItem.description = "Ω";
         }
         this.currentGroup.push(preSearchItem);
+    }
+
+    visitInnerFilter(node) {
+        const preInnerFilterOption = { type: "innerFilter" };
+        for (const attribute of ["name", "string", "domain"]) {
+            if (!node.getAttribute(attribute)) {
+                throw new Error(`Attribute "${attribute}" is missing.`);
+            }
+        }
+        preInnerFilterOption.id = `custom_${node.getAttribute("name")}`;
+        preInnerFilterOption.description = node.getAttribute("string");
+        preInnerFilterOption.domain = node.getAttribute("domain");
+        this.optionsParams.customOptions.push(preInnerFilterOption);
     }
 
     visitGroup(node, visitChildren) {
@@ -290,8 +346,10 @@ export class SearchArchParser extends XMLParser {
             if (node.nodeType !== 1 || node.tagName !== "field") {
                 continue;
             }
-            const modifiers = JSON.parse(node.getAttribute("modifiers") || "{}");
-            if (modifiers.invisible === true) {
+            if (
+                node.getAttribute("invisible") === "True" ||
+                node.getAttribute("invisible") === "1"
+            ) {
                 continue;
             }
             const attrs = {};
@@ -303,8 +361,8 @@ export class SearchArchParser extends XMLParser {
             const section = {
                 color: attrs.color || null,
                 description: attrs.string || this.fields[attrs.name].string,
-                enableCounters: Boolean(evaluateExpr(attrs.enable_counters || "0")),
-                expand: Boolean(evaluateExpr(attrs.expand || "0")),
+                enableCounters: evaluateBooleanExpr(attrs.enable_counters),
+                expand: evaluateBooleanExpr(attrs.expand),
                 fieldName: attrs.name,
                 icon: attrs.icon || null,
                 id: nextSectionId++,
@@ -315,7 +373,8 @@ export class SearchArchParser extends XMLParser {
             if (type === "category") {
                 section.activeValueId = this.searchPanelDefaults[attrs.name];
                 section.icon = section.icon || "fa-folder";
-                section.hierarchize = Boolean(evaluateExpr(attrs.hierarchize || "1"));
+                section.hierarchize = evaluateBooleanExpr(attrs.hierarchize || "1");
+                section.depth = attrs.depth ? parseInt(attrs.depth) : 0;
                 section.values.set(false, {
                     childrenIds: [],
                     display_name: ALL.toString(),

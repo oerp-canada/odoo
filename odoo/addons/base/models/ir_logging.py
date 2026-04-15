@@ -6,6 +6,7 @@ class IrLogging(models.Model):
     _name = 'ir.logging'
     _description = 'Logging'
     _order = 'id DESC'
+    _allow_sudo_commands = False
 
     # The _log_access fields are defined manually for the following reasons:
     #
@@ -33,11 +34,12 @@ class IrLogging(models.Model):
     line = fields.Char(required=True)
 
     def init(self):
-        super(IrLogging, self).init()
-        self._cr.execute("select 1 from information_schema.constraint_column_usage where table_name = 'ir_logging' and constraint_name = 'ir_logging_write_uid_fkey'")
-        if self._cr.rowcount:
+        super().init()
+        self.env.cr.execute("select 1 from information_schema.constraint_column_usage where table_name = 'ir_logging' and constraint_name = 'ir_logging_write_uid_fkey'"
+                            " and table_schema = current_schema")
+        if self.env.cr.rowcount:
             # DROP CONSTRAINT unconditionally takes an ACCESS EXCLUSIVE lock
             # on the table, even "IF EXISTS" is set and not matching; disabling
             # the relevant trigger instead acquires SHARE ROW EXCLUSIVE, which
             # still conflicts with the ROW EXCLUSIVE needed for an insert
-            self._cr.execute("ALTER TABLE ir_logging DROP CONSTRAINT ir_logging_write_uid_fkey")
+            self.env.cr.execute("ALTER TABLE ir_logging DROP CONSTRAINT ir_logging_write_uid_fkey")

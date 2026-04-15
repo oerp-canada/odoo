@@ -1,5 +1,4 @@
-/** @odoo-module **/
-
+import { useExternalListener, useState } from "@web/owl2/utils";
 import { useOwnDebugContext } from "@web/core/debug/debug_context";
 import { DebugMenu } from "@web/core/debug/debug_menu";
 import { localization } from "@web/core/l10n/localization";
@@ -9,16 +8,24 @@ import { useBus, useService } from "@web/core/utils/hooks";
 import { ActionContainer } from "./actions/action_container";
 import { NavBar } from "./navbar/navbar";
 
-import { Component, onMounted, useExternalListener, useState } from "@odoo/owl";
+import { Component, onMounted, onWillStart } from "@odoo/owl";
+import { router, routerBus } from "@web/core/browser/router";
+import { browser } from "@web/core/browser/browser";
+import { rpcBus } from "@web/core/network/rpc";
 
 export class WebClient extends Component {
+    static template = "web.WebClient";
+    static props = {};
+    static components = {
+        ActionContainer,
+        NavBar,
+        MainComponentsContainer,
+    };
+
     setup() {
         this.menuService = useService("menu");
         this.actionService = useService("action");
         this.title = useService("title");
-        this.router = useService("router");
-        this.user = useService("user");
-        useService("legacy_service_provider");
         useOwnDebugContext({ categories: ["default"] });
         if (this.env.debug) {
             registry.category("systray").add(
@@ -33,13 +40,20 @@ export class WebClient extends Component {
         this.state = useState({
             fullscreen: false,
         });
-        this.title.setParts({ zopenerp: "Odoo" }); // zopenerp is easy to grep
-        useBus(this.env.bus, "ROUTE_CHANGE", this.loadRouterState);
+        useBus(routerBus, "ROUTE_CHANGE", async () => {
+            document.body.style.pointerEvents = "none";
+            try {
+                await this.loadRouterState();
+            } finally {
+                document.body.style.pointerEvents = "auto";
+            }
+        });
         useBus(this.env.bus, "ACTION_MANAGER:UI-UPDATED", ({ detail: mode }) => {
             if (mode !== "new") {
                 this.state.fullscreen = mode === "fullscreen";
             }
         });
+        useBus(this.env.bus, "WEBCLIENT:LOAD_DEFAULT_APP", this._loadDefaultApp);
         onMounted(() => {
             this.loadRouterState();
             // the chat window and dialog services listen to 'web_client_ready' event in
@@ -47,12 +61,40 @@ export class WebClient extends Component {
             this.env.bus.trigger("WEB_CLIENT_READY");
         });
         useExternalListener(window, "click", this.onGlobalClick, { capture: true });
+        this.serviceWorkerActivationResolvers = Promise.withResolvers();
+        this.serviceWorkerIsActivated = this.serviceWorkerActivationResolvers.promise;
+        onWillStart(this.registerServiceWorker);
     }
 
     async loadRouterState() {
-        let stateLoaded = await this.actionService.loadState();
-        let menuId = Number(this.router.current.hash.menu_id || 0);
+        // ** url-retrocompatibility **
+        // the menu_id in the url is only possible if we came from an old url
+        let menuId = Number(router.current.menu_id || 0);
+        const storedMenuId = Number(browser.sessionStorage.getItem("menu_id"));
+        const firstAction = router.current.actionStack?.[0]?.action;
+        if (!menuId && firstAction) {
+            // Find all menus that match this action
+            const matchingMenus = this.menuService
+                .getAll()
+                .filter((m) => m.actionID === firstAction || m.actionPath === firstAction);
 
+            if (matchingMenus.length > 0) {
+                // Use sessionStorage context to determine the correct menu
+                menuId = matchingMenus.find(m => 
+                    m.appID === storedMenuId
+                )?.appID;
+                if (!menuId) {
+                    menuId = matchingMenus[0]?.appID;
+                }
+            }
+        }
+        if (menuId) {
+            this.menuService.setCurrentMenu(menuId);
+        }
+        let stateLoaded = await this.actionService.loadState();
+
+        // ** url-retrocompatibility **
+        // when there is only menu_id in url
         if (!stateLoaded && menuId) {
             // Determines the current actionId based on the current menu
             const menu = this.menuService.getAll().find((m) => menuId === m.id);
@@ -63,17 +105,34 @@ export class WebClient extends Component {
             }
         }
 
+        // Setting the menu based on the action after it was loaded (eg when the action in url is an xmlid)
         if (stateLoaded && !menuId) {
             // Determines the current menu based on the current action
             const currentController = this.actionService.currentController;
             const actionId = currentController && currentController.action.id;
-            const menu = this.menuService.getAll().find((m) => m.actionID === actionId);
-            menuId = menu && menu.appID;
+            menuId = this.menuService.getAll().find((m) => m.actionID === actionId)?.appID;
+            if (!menuId) {
+                // Setting the menu based on the session storage if no other menu was found
+                menuId = storedMenuId;
+            }
+            if (menuId) {
+                // Sets the menu according to the current action
+                this.menuService.setCurrentMenu(menuId);
+            }
         }
 
-        if (menuId) {
-            // Sets the menu according to the current action
-            this.menuService.setCurrentMenu(menuId);
+        // Scroll to anchor after the state is loaded
+        if (stateLoaded) {
+            if (browser.location.hash !== "") {
+                try {
+                    const el = document.querySelector(browser.location.hash);
+                    if (el !== null) {
+                        el.scrollIntoView(true);
+                    }
+                } catch {
+                    // do nothing if the hash is not a correct selector.
+                }
+            }
         }
 
         if (!stateLoaded) {
@@ -99,7 +158,7 @@ export class WebClient extends Component {
         // we let the browser do the default behavior and
         // we do not want any other listener to execute.
         if (
-            ev.ctrlKey &&
+            (ev.ctrlKey || ev.metaKey) &&
             !ev.target.isContentEditable &&
             ((ev.target instanceof HTMLAnchorElement && ev.target.href) ||
                 (ev.target instanceof HTMLElement && ev.target.closest("a[href]:not([href=''])")))
@@ -108,11 +167,33 @@ export class WebClient extends Component {
             return;
         }
     }
+
+    registerServiceWorker() {
+        if (navigator.serviceWorker) {
+            navigator.serviceWorker
+                .register("/web/service-worker.js", { scope: "/odoo" })
+                .then((registration) => {
+                    if (registration.active && registration.active.state === "activated") {
+                        this.serviceWorkerActivationResolvers.resolve();
+                    } else {
+                        const sw =
+                            registration.installing || registration.waiting || registration.active;
+                        sw.addEventListener("statechange", (e) => {
+                            if (e.target.state === "activated") {
+                                this.serviceWorkerActivationResolvers.resolve();
+                            }
+                        });
+                    }
+                    navigator.serviceWorker.ready.then(() => {
+                        if (!navigator.serviceWorker.controller) {
+                            // https://stackoverflow.com/questions/51597231/register-service-worker-after-hard-refresh
+                            rpcBus.trigger("CLEAR-CACHES");
+                        }
+                    });
+                })
+                .catch((error) => {
+                    console.error("Service worker registration failed, error:", error);
+                });
+        }
+    }
 }
-WebClient.components = {
-    ActionContainer,
-    NavBar,
-    MainComponentsContainer,
-};
-WebClient.template = "web.WebClient";
-WebClient.props = {};

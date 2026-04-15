@@ -1,12 +1,9 @@
-# -*- coding: utf-8 -*-
 # Part of Odoo. See LICENSE file for full copyright and licensing details.
-from odoo.modules.module import get_module_resource
 from odoo.addons.account.tests.common import AccountTestInvoicingCommon
 
 from contextlib import contextmanager
+from functools import wraps
 from unittest.mock import patch
-
-import base64
 
 
 def _generate_mocked_needs_web_services(needs_web_services):
@@ -14,17 +11,10 @@ def _generate_mocked_needs_web_services(needs_web_services):
 
 
 def _mocked_get_move_applicability(edi_format, move):
-    if move.is_invoice():
-        return {
-            'post': edi_format._post_invoice_edi,
-            'cancel': edi_format._cancel_invoice_edi,
-        }
-    elif move.payment_id or move.statement_line_id:
-        return {
-            'post': edi_format._post_payment_edi,
-            'cancel': edi_format._cancel_invoice_edi,
-        }
-
+    return {
+        'post': edi_format._post_invoice_edi,
+        'cancel': edi_format._cancel_invoice_edi,
+    }
 
 def _mocked_check_move_configuration_success(edi_format, move):
     return []
@@ -39,14 +29,16 @@ def _mocked_cancel_success(edi_format, invoices):
 
 
 class AccountEdiTestCommon(AccountTestInvoicingCommon):
+    # To override by the helper method setup_edi_format to set up an edi format
+    edi_format_ref = False
 
     @classmethod
-    def setUpClass(cls, chart_template_ref=None, edi_format_ref=None):
-        super().setUpClass(chart_template_ref=chart_template_ref)
+    def setUpClass(cls):
+        super().setUpClass()
 
         # ==== EDI ====
-        if edi_format_ref:
-            cls.edi_format = cls.env.ref(edi_format_ref)
+        if cls.edi_format_ref:
+            cls.edi_format = cls.env.ref(cls.edi_format_ref)
         else:
             with cls.mock_edi(cls, _needs_web_services_method=_generate_mocked_needs_web_services(True)):
                 cls.edi_format = cls.env['account.edi.format'].sudo().create({
@@ -56,6 +48,17 @@ class AccountEdiTestCommon(AccountTestInvoicingCommon):
         cls.journal = cls.company_data['default_journal_sale']
         cls.journal.edi_format_ids = [(6, 0, cls.edi_format.ids)]
 
+    @staticmethod
+    def setup_edi_format(edi_format_ref):
+        def _decorator(function):
+            @wraps(function)
+            def wrapper(self):
+                self.edi_format_ref = edi_format_ref
+                function(self)
+            return wrapper
+
+        return _decorator
+
     ####################################################
     # EDI helpers
     ####################################################
@@ -63,7 +66,7 @@ class AccountEdiTestCommon(AccountTestInvoicingCommon):
     def _create_fake_edi_attachment(self):
         return self.env['ir.attachment'].create({
             'name': '_create_fake_edi_attachment.xml',
-            'datas': base64.encodebytes(b"<?xml version='1.0' encoding='UTF-8'?><Invoice/>"),
+            'raw': b"<?xml version='1.0' encoding='UTF-8'?><Invoice/>",
             'mimetype': 'application/xml'
         })
 
@@ -80,33 +83,17 @@ class AccountEdiTestCommon(AccountTestInvoicingCommon):
                  _check_move_configuration_method=_mocked_check_move_configuration_success,
                  ):
 
-        try:
-            with patch('odoo.addons.account_edi.models.account_edi_format.AccountEdiFormat._needs_web_services',
-                       new=_needs_web_services_method), \
-                 patch('odoo.addons.account_edi.models.account_edi_format.AccountEdiFormat._check_move_configuration',
-                       new=_check_move_configuration_method), \
-                 patch('odoo.addons.account_edi.models.account_edi_format.AccountEdiFormat._get_move_applicability',
-                       new=_get_move_applicability_method):
+        with patch('odoo.addons.account_edi.models.account_edi_format.AccountEdiFormat._needs_web_services',
+                   new=_needs_web_services_method), \
+             patch('odoo.addons.account_edi.models.account_edi_format.AccountEdiFormat._check_move_configuration',
+                   new=_check_move_configuration_method), \
+             patch('odoo.addons.account_edi.models.account_edi_format.AccountEdiFormat._get_move_applicability',
+                   new=_get_move_applicability_method):
 
-                yield
-        finally:
-            pass
+            yield
 
     def edi_cron(self):
         self.env['account.edi.document'].sudo().search([('state', 'in', ('to_send', 'to_cancel'))])._process_documents_web_services(with_commit=False)
-
-    def create_invoice_from_file(self, module_name, subfolder, filename):
-        file_path = get_module_resource(module_name, subfolder, filename)
-        file = open(file_path, 'rb').read()
-
-        attachment = self.env['ir.attachment'].create({
-            'name': filename,
-            'datas': base64.encodebytes(file),
-            'res_model': 'account.move',
-        })
-        journal_id = self.company_data['default_journal_sale']
-        action_vals = journal_id.with_context(default_move_type='in_invoice').create_document_from_attachment(attachment.ids)
-        return self.env['account.move'].browse(action_vals['res_id'])
 
     def assert_generated_file_equal(self, invoice, expected_values, applied_xpath=None):
         invoice.action_post()
@@ -114,7 +101,7 @@ class AccountEdiTestCommon(AccountTestInvoicingCommon):
         attachment = invoice._get_edi_attachment(self.edi_format)
         if not attachment:
             raise ValueError('No attachment was generated after posting EDI')
-        xml_content = base64.b64decode(attachment.with_context(bin_size=False).datas)
+        xml_content = attachment.raw.content
         current_etree = self.get_xml_tree_from_string(xml_content)
         expected_etree = self.get_xml_tree_from_string(expected_values)
         if applied_xpath:
@@ -145,11 +132,8 @@ class AccountEdiTestCommon(AccountTestInvoicingCommon):
         moves.edi_document_ids._process_documents_web_services(with_commit=False)
 
         documents_to_return = moves.edi_document_ids
-        if formats_to_return != None:
+        if formats_to_return:
             documents_to_return = documents_to_return.filtered(lambda x: x.edi_format_id.code in formats_to_return)
 
         attachments = documents_to_return.attachment_id
-        data_str_list = []
-        for attachment in attachments.with_context(bin_size=False):
-            data_str_list.append(base64.decodebytes(attachment.datas))
-        return data_str_list
+        return [attachment.raw.content for attachment in attachments]

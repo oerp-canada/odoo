@@ -1,6 +1,4 @@
-/** @odoo-module **/
-
-import { _lt } from "@web/core/l10n/translation";
+import { _t } from "@web/core/l10n/translation";
 import { registry } from "@web/core/registry";
 import { formatFloatFactor } from "../formatters";
 import { standardFieldProps } from "../standard_field_props";
@@ -42,14 +40,11 @@ export class FloatToggleField extends Component {
         return this.props.factor;
     }
 
-    get digits() {
-        const fieldDigits = this.props.record.fields[this.props.name].digits;
-        return !this.props.digits && Array.isArray(fieldDigits) ? fieldDigits : this.props.digits;
-    }
     get formattedValue() {
         return formatFloatFactor(this.props.record.data[this.props.name], {
-            digits: this.digits,
+            digits: this.props.digits,
             factor: this.factor,
+            field: this.props.record.fields[this.props.name],
         });
     }
 }
@@ -58,27 +53,27 @@ export const floatToggleField = {
     component: FloatToggleField,
     supportedOptions: [
         {
-            label: _lt("Digits"),
+            label: _t("Digits"),
             name: "digits",
-            type: "string",
+            type: "digits",
         },
         {
-            label: _lt("Type"),
+            label: _t("Type"),
             name: "type",
             type: "string",
         },
         {
-            label: _lt("Range"),
+            label: _t("Range"),
             name: "range",
             type: "string",
         },
         {
-            label: _lt("Factor"),
+            label: _t("Factor"),
             name: "factor",
             type: "number",
         },
         {
-            label: _lt("Disable readonly"),
+            label: _t("Disable readonly"),
             name: "force_button",
             type: "boolean",
         },

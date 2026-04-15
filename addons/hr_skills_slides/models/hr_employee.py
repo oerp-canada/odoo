@@ -4,7 +4,7 @@
 from odoo import api, fields, models, _
 
 
-class Employee(models.Model):
+class HrEmployee(models.Model):
     _inherit = 'hr.employee'
 
     subscribed_courses = fields.Many2many('slide.channel', related='user_partner_id.slide_channel_ids')

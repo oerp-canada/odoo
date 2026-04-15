@@ -1,55 +1,43 @@
-/** @odoo-module **/
-
 import {
     start,
-    endDiscussion,
+    closeChat,
     goodRating,
     okRating,
     sadRating,
     feedback,
-    transcript,
+    downloadTranscript,
+    emailTranscript,
     close,
+    confirmnClose,
 } from "./website_livechat_common";
 import { registry } from "@web/core/registry";
 
 registry.category("web_tour.tours").add("website_livechat_complete_flow_tour", {
-    test: true,
-    url: "/",
-    shadow_dom: ".o-livechat-root",
-    steps: [].concat(start, endDiscussion, okRating, feedback, transcript, close),
+    steps: () =>
+        [].concat(start, closeChat, confirmnClose, okRating, feedback, downloadTranscript, close),
+});
+
+registry.category("web_tour.tours").add("website_livechat_complete_flow_tour_logged_in", {
+    steps: () =>
+        [].concat(start, closeChat, confirmnClose, okRating, feedback, emailTranscript, close),
 });
 
 registry.category("web_tour.tours").add("website_livechat_happy_rating_tour", {
-    test: true,
-    url: "/",
-    shadow_dom: ".o-livechat-root",
-    steps: [].concat(start, endDiscussion, goodRating, feedback),
+    steps: () => [].concat(start, closeChat, confirmnClose, goodRating, feedback),
 });
 
 registry.category("web_tour.tours").add("website_livechat_ok_rating_tour", {
-    test: true,
-    url: "/",
-    shadow_dom: ".o-livechat-root",
-    steps: [].concat(start, endDiscussion, okRating, feedback),
+    steps: () => [].concat(start, closeChat, confirmnClose, okRating, feedback),
 });
 
 registry.category("web_tour.tours").add("website_livechat_sad_rating_tour", {
-    test: true,
-    url: "/",
-    shadow_dom: ".o-livechat-root",
-    steps: [].concat(start, endDiscussion, sadRating, feedback),
+    steps: () => [].concat(start, closeChat, confirmnClose, sadRating, feedback),
 });
 
 registry.category("web_tour.tours").add("website_livechat_no_rating_tour", {
-    test: true,
-    url: "/",
-    shadow_dom: ".o-livechat-root",
-    steps: [].concat(start, endDiscussion, transcript, close),
+    steps: () => [].concat(start, closeChat, confirmnClose, downloadTranscript, close),
 });
 
 registry.category("web_tour.tours").add("website_livechat_no_rating_no_close_tour", {
-    test: true,
-    url: "/",
-    shadow_dom: ".o-livechat-root",
-    steps: [].concat(start),
+    steps: () => [].concat(start),
 });

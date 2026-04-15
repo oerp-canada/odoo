@@ -1,47 +1,86 @@
-# -*- coding: utf-8 -*-
-# Part of Odoo. See LICENSE file for full copyright and licensing details.
-
 from odoo import models
+from odoo.addons.mail.tools.discuss import Store
 
 
 class MailMessage(models.Model):
     _inherit = 'mail.message'
 
-    def _message_format(self, fnames, format_reply=True):
-        """Override to remove email_from and to return the livechat username if applicable.
-        A third param is added to the author_id tuple in this case to be able to differentiate it
-        from the normal name in client code.
+    def _store_message_fields(self, res: Store.FieldList, **kwargs):
+        super()._store_message_fields(res, **kwargs)
+        res.attr("chatbot_current_step")
 
-        In addition, if we are currently running a chatbot.script, we include the information about
+    def _to_store(self, store: Store, res: Store.FieldList):
+        """If we are currently running a chatbot.script, we include the information about
         the chatbot.message related to this mail.message.
         This allows the frontend display to include the additional features
-        (e.g: Show additional buttons with the available answers for this step). """
+        (e.g: Show additional buttons with the available answers for this step)."""
+        if add_current_step := "chatbot_current_step" in res:
+            res.remove("chatbot_current_step")
+        super()._to_store(store, res)
+        if not add_current_step:
+            return
+        channel_messages = self.filtered(lambda message: message.channel_id)
+        channel_by_message = channel_messages._record_by_message()
+        for message in channel_messages.filtered(
+            lambda message: channel_by_message[message].channel_type == "livechat"
+        ):
+            channel = channel_by_message[message]
+            # sudo: chatbot.script.step - checking whether the current message is from chatbot
+            chatbot = channel.chatbot_current_step_id.sudo().chatbot_script_id.operator_partner_id
+            if channel.chatbot_current_step_id and message.author_id == chatbot:
+                chatbot_message = (
+                    self.env["chatbot.message"]
+                    .sudo()
+                    .search([("mail_message_id", "=", message.id)], limit=1)
+                )
+                if step := chatbot_message.script_step_id:
 
-        vals_list = super()._message_format(fnames=fnames, format_reply=format_reply)
-        for vals in vals_list:
-            message_sudo = self.browse(vals['id']).sudo().with_prefetch(self.ids)
-            discuss_channel = self.env['discuss.channel'].browse(message_sudo.res_id) if message_sudo.model == 'discuss.channel' else self.env['discuss.channel']
-            if discuss_channel.channel_type == 'livechat':
-                if message_sudo.author_id:
-                    vals.pop('email_from')
-                if message_sudo.author_id.user_livechat_username:
-                    vals['author'] = {
-                        'id': message_sudo.author_id.id,
-                        'user_livechat_username': message_sudo.author_id.user_livechat_username,
-                    }
-                if discuss_channel.chatbot_current_step_id \
-                        and message_sudo.author_id == discuss_channel.chatbot_current_step_id.chatbot_script_id.operator_partner_id:
-                    chatbot_message_id = self.env['chatbot.message'].sudo().search([
-                        ('mail_message_id', '=', message_sudo.id)], limit=1)
-                    if chatbot_message_id.script_step_id:
-                        vals['chatbotStep'] = {
-                            'id': chatbot_message_id.script_step_id.id,
-                            'answers': [] if chatbot_message_id.script_step_id.step_type != 'question_selection' else [{
-                                'id': answer.id,
-                                'label': answer.name,
-                                'redirectLink': answer.redirect_link,
-                            } for answer in chatbot_message_id.script_step_id.answer_ids],
-                            'selectedAnswerId': chatbot_message_id.user_script_answer_id.id,
+                    def chatbot_step_fields(
+                        res: Store.FieldList,
+                        chatbot=chatbot,
+                        chatbot_message=chatbot_message,
+                        channel=channel,
+                        message=message,
+                        step=step,
+                    ):
+                        res.attr("id", (step.id, message.id))
+                        res.attr("message", message.id)
+                        res.one("scriptStep", ["message", "step_type"], value=step)
+                        res.attr(
+                            "operatorFound",
+                            step.step_type == "forward_operator" and
+                            bool(channel.livechat_agent_partner_ids),
+                        )
+                        if answer := chatbot_message.user_script_answer_id:
+                            res.attr("selectedAnswer", {"id": answer.id, "label": answer.name})
+                        if step.step_type in [
+                            "free_input_multi",
+                            "free_input_single",
+                            "question_email",
+                            "question_phone",
+                        ]:
+                            domain = [
+                                ("script_step_id", "=", step.id),
+                                ("id", "!=", chatbot_message.id),
+                                ("discuss_channel_id", "=", channel.id),
+                            ]
+                            # sudo: chatbot.message - checking the user answer to the step is allowed
+                            user_answer_message = (
+                                self.env["chatbot.message"].sudo().search_fetch(domain, limit=1)
+                            )
+                            res.attr("rawAnswer", user_answer_message.user_raw_answer)
 
-                        }
-        return vals_list
+                    store.add_model_values("ChatbotStep", chatbot_step_fields)
+                    store.add(
+                        message,
+                        lambda res, step=step: res.attr(
+                            "chatbotStep",
+                            value=lambda m: {"scriptStep": step.id, "message": m.id},
+                        ),
+                    )
+
+    def _store_partner_name_dynamic_fields(self, partner_res: Store.FieldList):
+        super()._store_partner_name_dynamic_fields(partner_res)
+        if self.channel_id.channel_type == "livechat":
+            partner_res.remove("name")
+            partner_res.from_method("_store_livechat_username_fields")

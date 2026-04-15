@@ -6,14 +6,11 @@
         <field name="inherit_id" ref="hr_recruitment.hr_job_survey"/>
         <field name="arch" type="xml">
             <field name="interviewer_ids" position="after">
-                <label for="survey_id" groups="survey.group_survey_user"/>
-                <div groups="survey.group_survey_user">
+                <label for="survey_id"/>
+                <div>
                     <field name="survey_id"
-                        context="{'default_access_mode': 'token'}"/>
-                    <div class="o_link_trackers col-6 text-end">
-                        <a type="object" name="action_test_survey">
-                        </a>
-                    </div>
+                        context="{'default_access_mode': 'token', 'form_view_ref': 'hr_recruitment_survey.survey_survey_view_form', 'default_survey_type': 'recruitment'}"
+                        domain="[('survey_type', '=', 'recruitment')]"/>
                 </div>
             </field>
         </field>
@@ -23,10 +20,10 @@
         <field name="model">hr.job</field>
         <field name="inherit_id" ref="hr_recruitment.view_hr_job_kanban"/>
         <field name="arch" type="xml">
-            <xpath expr="//field[@name='manager_id']" position="after">
+            <xpath expr="//field[@name='active']" position="after">
                 <field name="survey_id"/>
             </xpath>
-            <xpath expr="//div[@name='menu_view_applications']" position="after">
+            <xpath expr="//div[@name='menu_view_job_posts']" position="after">
                 <div role="menuitem" t-if="record.survey_id.raw_value">
                     <a name="action_test_survey" type="object" title="Display Interview Form">Interviews</a>
                 </div>

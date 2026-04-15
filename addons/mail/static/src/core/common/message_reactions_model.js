@@ -1,19 +1,38 @@
-/* @odoo-module */
+import { AND, fields, Record } from "@mail/model/export";
+import { rpc } from "@web/core/network/rpc";
 
-export class MessageReactions {
+export class MessageReactions extends Record {
+    static id = AND("message", "content");
+
     /** @type {string} */
     content;
     /** @type {number} */
     count;
-    /** @type {number[]} */
-    personaLocalIds = [];
+    guests = fields.Many("mail.guest");
+    message = fields.One("mail.message");
+    partners = fields.Many("res.partner");
+    personas = fields.Attr([], {
+        compute() {
+            return [...this.partners, ...this.guests];
+        },
+    });
     /** @type {number} */
-    messageId;
-    /** @type {import("@mail/core/common/store_service").Store} */
-    _store;
+    sequence;
 
-    /** @type {import("@mail/core/common/persona_model").Persona[]} */
-    get personas() {
-        return this.personaLocalIds.map((localId) => this._store.personas[localId]);
+    async remove() {
+        this.store.insert(
+            await rpc(
+                "/mail/message/reaction",
+                {
+                    action: "remove",
+                    content: this.content,
+                    message_id: this.message.id,
+                    ...this.message.thread.rpcParams,
+                },
+                { silent: true }
+            )
+        );
     }
 }
+
+MessageReactions.register();

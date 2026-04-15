@@ -1,12 +1,11 @@
-/** @odoo-module **/
-
+import { useState } from "@web/owl2/utils";
 import { registry } from "@web/core/registry";
 import { useService } from "@web/core/utils/hooks";
 import { parseFloatTime } from "@web/views/fields/parsers";
 import { useInputField } from "@web/views/fields/input_field_hook";
+import { useRecordObserver } from "@web/model/relational_model/utils";
 import { standardFieldProps } from "@web/views/fields/standard_field_props";
-
-const { Component, useState, onWillUpdateProps, onWillStart, onWillDestroy } = owl;
+import { Component, onWillUpdateProps, onWillStart, onWillDestroy } from "@odoo/owl";
 
 function formatMinutes(value) {
     if (value === false) {
@@ -16,11 +15,16 @@ function formatMinutes(value) {
     if (isNegative) {
         value = Math.abs(value);
     }
-    let min = Math.floor(value);
-    let sec = Math.floor((value % 1) * 60);
-    sec = `${sec}`.padStart(2, "0");
-    min = `${min}`.padStart(2, "0");
-    return `${isNegative ? "-" : ""}${min}:${sec}`;
+    let hour = Math.floor(value / 60);
+    let min = Math.floor(value % 60);
+    let sec = Math.round((value % 1) * 60);
+    sec = `${sec}`.padStart(1, "0");
+    min = `${min}`.padStart(1, "0");
+    if (hour > 0) {
+        hour = `${hour}`.padStart(1, "0");
+        return `${isNegative ? "-" : ""}${hour}h ${min}m ${sec}s`;
+    }
+    return `${isNegative ? "-" : ""}${min}m ${sec}s`;
 }
 
 export class MrpTimer extends Component {
@@ -95,35 +99,30 @@ class MrpTimerField extends Component {
             parse: (v) => parseFloatTime(v),
         });
 
-        // duration is expected to be given in minutes
-        this.duration = this.props.record.data[this.props.name];
-        this.ongoing = this.props.record.data.is_user_working;
-
-        onWillStart(async () => {
-            if (
-                !this.props.record.model.useSampleModel &&
-                this.props.record.data.state == "progress"
-            ) {
+        useRecordObserver(async (record) => {
+            if (!this.props.record.model.useSampleModel && record.data.state === "progress") {
                 this.duration = await this.orm.call(
                     "mrp.workorder",
                     "get_duration",
                     [this.props.record.resId]
                 );
+            } else {
+                this.duration = record.data[this.props.name];
             }
-        });
-        onWillUpdateProps((nextProps) => {
-            this.ongoing = nextProps.record.data.is_user_working;
-            this.duration = nextProps.record.data[nextProps.name];
-        });
+        })
 
         onWillDestroy(() => clearTimeout(this.timer));
     }
 
     get durationFormatted() {
-        if (this.props.record.data[this.props.name] != this.duration && this.props.record.isDirty) {
+        if (this.props.record.data[this.props.name] != this.duration && this.props.record.dirty) {
             this.duration = this.props.record.data[this.props.name];
         }
         return formatMinutes(this.duration);
+    }
+
+    get ongoing() {
+        return this.props.record.data.is_user_working;
     }
 }
 

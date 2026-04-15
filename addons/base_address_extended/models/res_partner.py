@@ -3,8 +3,9 @@
 
 from odoo import api, fields, models, tools
 
-class Partner(models.Model):
-    _inherit = ['res.partner']
+
+class ResPartner(models.Model):
+    _inherit = 'res.partner'
 
     street_name = fields.Char(
         'Street Name', compute='_compute_street_data', inverse='_inverse_street_data', store=True)
@@ -15,6 +16,10 @@ class Partner(models.Model):
 
     city_id = fields.Many2one(comodel_name='res.city', string='City ID')
     country_enforce_cities = fields.Boolean(related='country_id.enforce_cities')
+
+    @api.model
+    def _address_fields(self):
+        return super()._address_fields() + ['city_id']
 
     def _inverse_street_data(self):
         """ update self.street based on street_name, street_number and street_number2 """
@@ -43,9 +48,31 @@ class Partner(models.Model):
     def _onchange_city_id(self):
         if self.city_id:
             self.city = self.city_id.name
-            self.zip = self.city_id.zipcode
-            self.state_id = self.city_id.state_id
+            if self.city_id.state_id:
+                self.state_id = self.city_id.state_id
+            if self.city_id.zipcode:
+                self.zip = self.city_id.zipcode
         elif self._origin:
             self.city = False
             self.zip = False
             self.state_id = False
+
+    @api.onchange('country_id')
+    def _onchange_country_id(self):
+        super()._onchange_country_id()
+        if self.country_id and self.country_id != self.city_id.country_id:
+            self.city_id = False
+
+    @api.model
+    def _get_res_city_by_name(self, name, country_id):
+        ResCity = self.env['res.city']
+        if not name or not country_id:
+            return ResCity
+
+        if self.env.user._is_public():
+            ResCity = ResCity.sudo()
+
+        return ResCity.search([
+            ('name', '=ilike', name),
+            ('country_id', '=', country_id),
+        ], limit=1)

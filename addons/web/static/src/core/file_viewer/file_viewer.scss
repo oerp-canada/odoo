@@ -9,6 +9,8 @@
 }
 
 .o-FileViewer-header {
+    color: #fff;
+    background-color: var(--FileViewer-toolbarBgColor, #{$o-gray-800});
     height: $o-navbar-height;
 }
 
@@ -27,7 +29,7 @@
 }
 
 .o-FileViewer-toolbarButton {
-    background-color: var(--file-viewer-toolbarButton-background-color, #{$o-gray-800});
+    background-color: var(--FileViewer-toolbarBgColor, #{$o-gray-800});
     color: #fff;
 
     &:hover {
@@ -41,6 +43,12 @@
     outline: none;
 
     &.o-isText {
-        background: #FFFFFF;
+        background: $white;
+    }
+
+    // Remove the radius of the chrome audio player since it doesn't look good
+    // inside our squared file viewer
+    audio::-webkit-media-controls-enclosure {
+        border-radius: 0;
     }
 }

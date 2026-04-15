@@ -1,26 +1,24 @@
-/* @odoo-module */
-
-import { useMessaging } from "@mail/core/common/messaging_hook";
-
-import { Component, onMounted, useExternalListener, useRef, useState } from "@odoo/owl";
-
-import { useService } from "@web/core/utils/hooks";
+import { useExternalListener, useRef, useState } from "@web/owl2/utils";
+import { Component, onMounted } from "@odoo/owl";
 
 export class ActivityMarkAsDone extends Component {
     static template = "mail.ActivityMarkAsDone";
-    static props = ["activity", "close?", "hasHeader?", "onClickDoneAndScheduleNext?", "reload?"];
+    static props = [
+        "activity",
+        "close?",
+        "hasHeader?",
+        "onClickDone?",
+        "onClickDoneAndScheduleNext?",
+        "onActivityChanged",
+    ];
     static defaultProps = {
         hasHeader: false,
     };
 
-    get isSuggested() {
-        return this.props.activity.chaining_type === "suggest";
-    }
-
     setup() {
-        this.messaging = useMessaging();
-        this.threadService = useState(useService("mail.thread"));
+        super.setup();
         this.textArea = useRef("textarea");
+        this.state = useState({ disableDoneButton: false });
         onMounted(() => {
             this.textArea.el.focus();
         });
@@ -34,31 +32,42 @@ export class ActivityMarkAsDone extends Component {
     }
 
     async onClickDone() {
-        const { res_id: resId, res_model: resModel } = this.props.activity;
-        const thread = this.threadService.getThread(resModel, resId);
-        await this.env.services["mail.activity"].markAsDone(this.props.activity);
-        if (this.props.reload) {
-            this.props.reload(this.props.activity.res_id, ["activities"]);
+        if (this.state.disableDoneButton) {
+            return;
         }
-        await this.threadService.fetchNewMessages(thread);
+        const { res_id, res_model } = this.props.activity;
+        const thread = this.env.services["mail.store"]["mail.thread"].insert({
+            model: res_model,
+            id: res_id,
+        });
+        this.state.disableDoneButton = true;
+        try {
+            if (this.props.onClickDone) {
+                this.props.onClickDone();
+            }
+            await this.props.activity.markAsDone();
+            this.props.onActivityChanged(thread);
+            await thread.fetchNewMessages();
+        } finally {
+            this.state.disableDoneButton = false;
+        }
     }
 
     async onClickDoneAndScheduleNext() {
-        const { res_id: resId, res_model: resModel } = this.props.activity;
-        const thread = this.threadService.getThread(resModel, resId);
+        const { res_id, res_model } = this.props.activity;
+        const thread = this.env.services["mail.store"]["mail.thread"].insert({
+            model: res_model,
+            id: res_id,
+        });
         if (this.props.onClickDoneAndScheduleNext) {
             this.props.onClickDoneAndScheduleNext();
         }
         if (this.props.close) {
             this.props.close();
         }
-        const action = await this.env.services["mail.activity"].markAsDoneAndScheduleNext(
-            this.props.activity
-        );
-        this.threadService.fetchNewMessages(thread);
-        if (this.props.reload) {
-            this.props.reload(this.props.activity.res_id, ["activities", "attachments"]);
-        }
+        const action = await this.props.activity.markAsDoneAndScheduleNext();
+        thread.fetchNewMessages();
+        this.props.onActivityChanged(thread);
         if (!action) {
             return;
         }
@@ -67,8 +76,6 @@ export class ActivityMarkAsDone extends Component {
                 onClose: resolve,
             });
         });
-        if (this.props.reload) {
-            this.props.reload(this.props.activity.res_id, ["activities"]);
-        }
+        this.props.onActivityChanged(thread);
     }
 }

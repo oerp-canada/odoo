@@ -1,7 +1,7 @@
 .editor_enable .s_website_form[data-vcss="001"] {
     // Hidden field is only partially hidden in editor
     .s_website_form_field_hidden {
-        display: block;
+        display: block !important;
         opacity: 0.5;
     }
     // Fields with conditional visibility are visible and identifiable in the editor
@@ -14,23 +14,6 @@
     .s_website_form_field select {
         pointer-events: none;
     }
-    // Display the editable select as a single big field
-    #editable_select.form-control {
-        height: auto;
-
-        .s_website_form_select_item {
-            &.selected {
-                font-weight: bold;
-            }
-            &:empty::before {
-                content: attr(data-empty-value);
-                pointer-events: none;
-                font-style: italic;
-                font-weight: normal;
-                opacity: 0.6;
-            }
-        }
-    }
 }
 
 .s_website_form[data-vcss="001"] {
@@ -41,11 +24,11 @@
     }
 
     .s_website_form_field_hidden {
-        display: none;
+        display: none !important;
     }
 
     span.s_website_form_mark {
-        font-size: 0.85em;
+        @include font-size(0.85em);
         font-weight: 400;
     }
 
@@ -53,7 +36,7 @@
         display: none;
     }
 
-    .s_website_form_submit, .s_website_form_recaptcha {
+    .s_website_form_submit {
         .s_website_form_label {
             float: left;
             height: 1px;
@@ -70,7 +53,7 @@
         div.o_file_wrap {
             border: 1px solid $o-gray-400;
             border-radius: 0.25rem;
-            font-size: 0.9em;
+            @include font-size(0.9em);
             line-height: normal;
 
             div.o_file_name {
@@ -100,6 +83,16 @@
             background-color: darken($o-gray-200, 4.5%);
         }
     }
+    @include media-breakpoint-down(md) {
+        .datetimepicker-input{
+            caret-color: transparent;
+        }
+    }
+}
+
+.o_datetime_picker .o_day_of_week_cell,
+.o_datetime_picker .o_week_number_cell {
+    background-color: $o-gray-100 !important;
 }
 
 body:not(.editor_enable) .s_website_form[data-vcss="001"] {

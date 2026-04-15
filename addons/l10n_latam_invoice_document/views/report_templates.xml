@@ -1,99 +1,105 @@
 <?xml version="1.0" encoding="utf-8"?>
 <odoo>
 
+    <template id="external_layout_footer_content" inherit_id="web.external_layout_footer_content">
+        <xpath expr="//div[contains(@t-attf-class, 'o_footer_content')]" position="attributes">
+            <attribute name="t-if">not custom_footer</attribute>
+        </xpath>
+        <xpath expr="//div[contains(@t-attf-class, 'o_footer_content')]" position="after">
+            <div
+                t-attf-class="o_footer_content {{footer_content_classes}}"
+                t-if="custom_footer and company._localization_use_documents()"
+            >
+                <t t-out="custom_footer"/>
+            </div>
+        </xpath>
+    </template>
+
     <template id="external_layout_standard" inherit_id="web.external_layout_standard" >
         <!-- support for custom header -->
-        <div t-attf-class="header o_company_#{company.id}_layout" position="attributes">
+        <xpath expr="//div[contains(@t-attf-class, 'header')]" position="attributes">
             <attribute name="t-if">not custom_header</attribute>
-        </div>
-        <div t-attf-class="header o_company_#{company.id}_layout" position="after">
-            <div t-attf-class="header o_company_#{company.id}_layout" t-if="custom_header">
+        </xpath>
+        <xpath expr="//div[contains(@t-attf-class, 'header')]" position="after">
+            <div t-attf-class="header o_company_#{company.id}_layout"
+                 t-if="custom_header and company._localization_use_documents()">
                 <t t-call="#{custom_header}"/>
             </div>
-        </div>
-
-        <!-- support for custom footer -->
-        <div t-attf-class="footer o_standard_footer o_company_#{company.id}_layout" position="attributes">
-            <attribute name="t-if">not custom_footer</attribute>
-        </div>
-
-        <div t-attf-class="footer o_standard_footer o_company_#{company.id}_layout" position="after">
-            <div t-attf-class="footer o_standard_footer o_company_#{company.id}_layout" t-if="custom_footer">
-                <t t-out="custom_footer"/>
-            </div>
-        </div>
+        </xpath>
     </template>
 
-    <template id="external_layout_bold" inherit_id="web.external_layout_bold" >
+    <template id="external_layout_bubble" inherit_id="web.external_layout_bubble">
         <!-- support for custom header -->
-        <div t-attf-class="header o_company_#{company.id}_layout" position="attributes">
+        <xpath expr="//div[contains(@t-attf-class, 'header')]" position="attributes">
             <attribute name="t-if">not custom_header</attribute>
-        </div>
-        <div t-attf-class="header o_company_#{company.id}_layout" position="after">
-            <div t-attf-class="header o_company_#{company.id}_layout" t-if="custom_header">
-                <div class="o_clean_header">
-                    <t t-call="#{custom_header}"/>
-                </div>
+        </xpath>
+        <xpath expr="//div[contains(@t-attf-class, 'header')]" position="after">
+            <div t-attf-class="header o_company_#{company.id}_layout"
+                 t-if="custom_header and company._localization_use_documents()">
+                <t t-call="#{custom_header}"/>
             </div>
-        </div>
-
-        <!-- support for custom footer -->
-        <div t-attf-class="footer o_clean_footer o_company_#{company.id}_layout" position="attributes">
-            <attribute name="t-if">not custom_footer</attribute>
-        </div>
-        <div t-attf-class="footer o_clean_footer o_company_#{company.id}_layout" position="after">
-            <div t-attf-class="footer o_clean_footer o_company_#{company.id}_layout" t-if="custom_footer">
-                <t t-out="custom_footer"/>
-            </div>
-        </div>
+        </xpath>
     </template>
 
-    <template id="external_layout_boxed" inherit_id="web.external_layout_boxed" >
+    <template id="external_layout_wave" inherit_id="web.external_layout_wave">
         <!-- support for custom header -->
-        <div t-attf-class="header o_company_#{company.id}_layout" position="attributes">
+        <xpath expr="//div[contains(@t-attf-class, 'header')]" position="attributes">
             <attribute name="t-if">not custom_header</attribute>
-        </div>
-        <div t-attf-class="header o_company_#{company.id}_layout" position="after">
-            <div t-attf-class="header o_company_#{company.id}_layout" t-if="custom_header">
-                <div class="o_boxed_header">
-                    <t t-call="#{custom_header}"/>
-                </div>
+        </xpath>
+        <xpath expr="//div[contains(@t-attf-class, 'header')]" position="after">
+            <div t-attf-class="header o_company_#{company.id}_layout"
+                 t-if="custom_header and company._localization_use_documents()">
+                <t t-call="#{custom_header}"/>
             </div>
-        </div>
-
-        <!-- support for custom footer -->
-        <div t-attf-class="footer o_boxed_footer o_company_#{company.id}_layout" position="attributes">
-            <attribute name="t-if">not custom_footer</attribute>
-        </div>
-        <div t-attf-class="footer o_boxed_footer o_company_#{company.id}_layout" position="after">
-            <div t-attf-class="footer o_boxed_footer o_company_#{company.id}_layout" t-if="custom_footer">
-                <t t-out="custom_footer"/>
-            </div>
-        </div>
+        </xpath>
     </template>
 
-    <template id="external_layout_striped" inherit_id="web.external_layout_striped" >
+    <template id="external_layout_folder" inherit_id="web.external_layout_folder">
         <!-- support for custom header -->
-        <div t-attf-class="o_company_#{company.id}_layout header" position="attributes">
+        <xpath expr="//div[contains(@t-attf-class, 'header')]" position="attributes">
             <attribute name="t-if">not custom_header</attribute>
-        </div>
-        <div t-attf-class="o_company_#{company.id}_layout header" position="after">
-            <div t-attf-class="o_company_#{company.id}_layout header" t-if="custom_header">
-                <div class="o_background_header">
-                    <t t-call="#{custom_header}"/>
-                </div>
+        </xpath>
+        <xpath expr="//div[contains(@t-attf-class, 'header')]" position="after">
+            <div t-attf-class="header o_company_#{company.id}_layout"
+                 t-if="custom_header and company._localization_use_documents()">
+                <t t-call="#{custom_header}"/>
             </div>
-        </div>
-
-        <!-- support for custom footer -->
-        <div t-attf-class="o_company_#{company.id}_layout footer o_background_footer" position="attributes">
-            <attribute name="t-if">not custom_footer</attribute>
-        </div>
-        <div t-attf-class="o_company_#{company.id}_layout footer o_background_footer" position="after">
-            <div t-attf-class="o_company_#{company.id}_layout footer o_background_footer" t-if="custom_footer">
-                <t t-out="custom_footer"/>
-            </div>
-        </div>
+        </xpath>
     </template>
 
+    <template id="external_layout_center" inherit_id="web.external_layout_center">
+        <!-- support for custom header -->
+        <xpath expr="//table" position="attributes">
+            <attribute name="t-if">not custom_header</attribute>
+        </xpath>
+        <xpath expr="//table" position="after">
+            <div t-if="custom_header and company._localization_use_documents()">
+                <t t-call="#{custom_header}"/>
+            </div>
+        </xpath>
+    </template>
+
+    <template id="external_layout_dual" inherit_id="web.external_layout_dual">
+        <!-- support for custom header -->
+        <xpath expr="//table" position="attributes">
+            <attribute name="t-if">not custom_header</attribute>
+        </xpath>
+        <xpath expr="//table" position="after">
+            <div t-if="custom_header and company._localization_use_documents()">
+                <t t-call="#{custom_header}"/>
+            </div>
+        </xpath>
+    </template>
+
+    <template id="external_layout_lines" inherit_id="web.external_layout_lines">
+        <!-- support for custom header -->
+        <xpath expr="//table" position="attributes">
+            <attribute name="t-if">not custom_header</attribute>
+        </xpath>
+        <xpath expr="//table" position="after">
+            <div t-if="custom_header and company._localization_use_documents()">
+                <t t-call="#{custom_header}"/>
+            </div>
+        </xpath>
+    </template>
 </odoo>

@@ -2,11 +2,10 @@
 # Part of Odoo. See LICENSE file for full copyright and licensing details.
 
 from markupsafe import Markup
-from odoo import fields, models, _, tools
+from odoo import api, fields, models, tools, _
 
 
-class MassMailing(models.Model):
-    _name = 'mailing.mailing'
+class MailingMailing(models.Model):
     _inherit = 'mailing.mailing'
 
     use_leads = fields.Boolean('Use Leads', compute='_compute_use_leads')
@@ -17,12 +16,27 @@ class MassMailing(models.Model):
 
     def _compute_crm_lead_count(self):
         lead_data = self.env['crm.lead'].with_context(active_test=False).sudo()._read_group(
-            [('source_id', 'in', self.source_id.ids)],
-            ['source_id'], ['__count'],
+            [('utm_reference', 'in', [f'{mailing._name},{mailing.id}' for mailing in self])],
+            ['utm_reference'], ['__count'],
         )
-        mapped_data = {source.id: count for source, count in lead_data}
+        mapped_data = dict(lead_data)
         for mass_mailing in self:
-            mass_mailing.crm_lead_count = mapped_data.get(mass_mailing.source_id.id, 0)
+            mass_mailing.crm_lead_count = mapped_data.get(f'{mass_mailing._name},{mass_mailing.id}', 0)
+
+    @api.model
+    def action_create_mailing_template_with_leads(self):
+        reply_to = self.env.user.sale_team_id.alias_email or False
+        return {
+            'type': 'ir.actions.act_window',
+            'res_model': 'mailing.mailing',
+            'name': _('Lead Recall'),
+            'views': [(False, 'form')],
+            'context': {
+                'default_mailing_model_id': self.env['ir.model']._get_id('res.partner'),
+                'default_reply_to': reply_to,
+                'default_reply_to_mode': 'new'
+            }
+        }
 
     def action_redirect_to_leads_and_opportunities(self):
         text = _("Leads") if self.use_leads else _("Opportunities")
@@ -35,26 +49,32 @@ class MassMailing(models.Model):
                 'search_default_group_by_create_date_day': True,
                 'crm_lead_view_hide_month': True,
             },
-            'domain': [('source_id', 'in', self.source_id.ids)],
+            'domain': [('utm_reference', 'in', [f'{mailing._name},{mailing.id}' for mailing in self])],
             'help': Markup('<p class="o_view_nocontent_smiling_face">%s</p><p>%s</p>') % (
                 helper_header, helper_message,
             ),
             'name': _("Leads Analysis"),
             'res_model': 'crm.lead',
             'type': 'ir.actions.act_window',
-            'view_mode': 'graph,pivot,tree,form',
+            'view_mode': 'list,pivot,graph,form',
         }
 
     def _prepare_statistics_email_values(self):
         self.ensure_one()
-        values = super(MassMailing, self)._prepare_statistics_email_values()
+        values = super()._prepare_statistics_email_values()
         if not self.user_id:
             return values
-        if not self.env['crm.lead'].check_access_rights('read', raise_exception=False):
+        if not self.env['crm.lead'].has_access('read'):
             return values
         values['kpi_data'][1]['kpi_col1'] = {
-            'value': tools.format_decimalized_number(self.crm_lead_count, decimal=0),
+            'value': tools.misc.format_decimalized_number(self.crm_lead_count, decimal=0),
             'col_subtitle': _('LEADS'),
         }
         values['kpi_data'][1]['kpi_name'] = 'lead'
+        if not self.crm_lead_count:
+            values['kpi_data'][1]['kpi_tip'] = Markup("{crm_lead_tip_text} <a href='{doc_url}'>{doc_url_text}</a>").format(
+                    crm_lead_tip_text=_("Looking to turn your mailings into leads? Use your sales team's email as the reply-to address."),
+                    doc_url='https://www.odoo.com/documentation/latest/applications/sales/crm/acquire_leads/email_manual.html',
+                    doc_url_text=_('Learn More'),
+                )
         return values

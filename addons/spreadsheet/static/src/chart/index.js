@@ -1,16 +1,14 @@
-/** @odoo-module */
-
 import * as spreadsheet from "@odoo/o-spreadsheet";
+import { OdooChartCorePlugin } from "./plugins/odoo_chart_core_plugin";
+import { ChartOdooLinkPlugin } from "./plugins/chart_odoo_link_plugin";
+import { OdooChartCoreViewPlugin } from "./plugins/odoo_chart_core_view_plugin";
+import { chartOdooLinkPlugin } from "./odoo_link/odoo_link_chartjs_plugin";
 
-const { chartComponentRegistry } = spreadsheet.registries;
-const { ChartJsComponent } = spreadsheet.components;
+const { chartJsExtensionRegistry } = spreadsheet.registries;
 
-chartComponentRegistry.add("odoo_bar", ChartJsComponent);
-chartComponentRegistry.add("odoo_line", ChartJsComponent);
-chartComponentRegistry.add("odoo_pie", ChartJsComponent);
+chartJsExtensionRegistry.add("chartOdooLinkPlugin", {
+    register: (Chart) => Chart.register(chartOdooLinkPlugin),
+    unregister: (Chart) => Chart.unregister(chartOdooLinkPlugin),
+});
 
-import OdooChartCorePlugin from "./plugins/odoo_chart_core_plugin";
-import ChartOdooMenuPlugin from "./plugins/chart_odoo_menu_plugin";
-import OdooChartUIPlugin from "./plugins/odoo_chart_ui_plugin";
-
-export { OdooChartCorePlugin, ChartOdooMenuPlugin, OdooChartUIPlugin };
+export { OdooChartCorePlugin, ChartOdooLinkPlugin, OdooChartCoreViewPlugin };

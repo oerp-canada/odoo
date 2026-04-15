@@ -1,9 +1,6 @@
-/** @odoo-module */
-
+import { useLayoutEffect } from "@web/owl2/utils";
 import { makeContext } from "@web/core/context";
 import { ListRenderer } from "@web/views/list/list_renderer";
-
-const { useEffect } = owl;
 
 export class QuestionPageListRenderer extends ListRenderer {
     setup() {
@@ -13,7 +10,7 @@ export class QuestionPageListRenderer extends ListRenderer {
         this.fieldsToShow = ["random_questions_count"];
         this.titleField = "title";
 
-        useEffect(
+        useLayoutEffect(
             (table) => {
                 if (table) {
                     table.classList.add("o_section_list_view");
@@ -61,7 +58,7 @@ export class QuestionPageListRenderer extends ListRenderer {
     getSectionColumns(columns) {
         let titleColumnIndex = 0;
         let found = false;
-        let colspan = 1
+        let colspan = 1;
         for (let index = 0; index < columns.length; index++) {
             const col = columns[index];
             if (!found && col.name !== this.titleField) {
@@ -78,9 +75,11 @@ export class QuestionPageListRenderer extends ListRenderer {
             colspan += 1;
         }
 
-        const sectionColumns = columns.slice(0, titleColumnIndex + 1).concat(columns.slice(titleColumnIndex + colspan));
+        const sectionColumns = columns
+            .slice(0, titleColumnIndex + 1)
+            .concat(columns.slice(titleColumnIndex + colspan));
 
-        sectionColumns[titleColumnIndex] = {...sectionColumns[titleColumnIndex], colspan};
+        sectionColumns[titleColumnIndex] = { ...sectionColumns[titleColumnIndex], colspan };
 
         return sectionColumns;
     }
@@ -103,9 +102,9 @@ export class QuestionPageListRenderer extends ListRenderer {
      * @override
      */
     focusCell(column, forward = true) {
-        const actualColumn = column.name ? this.state.columns.find(
-            (col) => col.name === column.name
-        ) : column;
+        const actualColumn = column.name
+            ? this.columns.find((col) => col.name === column.name)
+            : column;
         super.focusCell(actualColumn, forward);
     }
 
@@ -114,7 +113,7 @@ export class QuestionPageListRenderer extends ListRenderer {
             case "enter":
             case "tab":
             case "shift+tab": {
-                this.props.list.unselectRecord(true);
+                this.props.list.leaveEditMode();
                 return true;
             }
         }
@@ -131,10 +130,12 @@ export class QuestionPageListRenderer extends ListRenderer {
      * @return {Promise<void>}
      */
     async onDeleteRecord(record) {
-        const triggeredRecords = this.props.list.records.filter(rec => rec.data.triggering_question_id[0] === record.data.id);
+        const triggeredRecords = this.props.list.records.filter(
+            (rec) => rec.data.triggering_question_ids.currentIds.includes(record.resId)
+        );
         if (triggeredRecords.length) {
             const res = await super.onDeleteRecord(record);
-            await this.props.list.model.root.save({stayInEdition: true});
+            await this.props.list.model.root.save();
             return res;
         } else {
             return super.onDeleteRecord(record);

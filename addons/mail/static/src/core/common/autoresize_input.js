@@ -1,8 +1,5 @@
-/* @odoo-module */
-
-import { onExternalClick } from "@mail/utils/common/hooks";
-
-import { Component, useRef, useState, onWillUpdateProps, onMounted } from "@odoo/owl";
+import { useRef, useState } from "@web/owl2/utils";
+import { Component, onWillUpdateProps, onMounted } from "@odoo/owl";
 
 import { useAutoresize } from "@web/core/utils/autoresize";
 
@@ -14,7 +11,7 @@ export class AutoresizeInput extends Component {
         enabled: { optional: true },
         onValidate: { type: Function, optional: true },
         placeholder: { type: String, optional: true },
-        value: { type: String },
+        value: { type: String, optional: true },
     };
     static defaultProps = {
         autofocus: false,
@@ -25,20 +22,16 @@ export class AutoresizeInput extends Component {
     };
 
     setup() {
+        super.setup();
         this.state = useState({
             value: this.props.value,
+            isFocused: false,
         });
         this.inputRef = useRef("input");
         onWillUpdateProps((nextProps) => {
             if (this.props.value !== nextProps.value) {
                 this.state.value = nextProps.value;
             }
-        });
-        onExternalClick("input", async (ev, { downTarget }) => {
-            if (downTarget === this.inputRef.el) {
-                return;
-            }
-            this.onValidate();
         });
         useAutoresize(this.inputRef);
         onMounted(() => {
@@ -55,22 +48,18 @@ export class AutoresizeInput extends Component {
     onKeydownInput(ev) {
         switch (ev.key) {
             case "Enter":
-                this.onValidate();
                 this.inputRef.el.blur();
                 break;
             case "Escape":
-                this.onDiscard();
+                ev.stopPropagation();
+                this.state.value = this.props.value;
                 this.inputRef.el.blur();
                 break;
         }
     }
 
-    onValidate() {
+    onBlurInput() {
+        this.state.isFocused = false;
         this.props.onValidate(this.state.value);
-        this.state.value = this.props.value;
-    }
-
-    onDiscard() {
-        this.state.value = this.props.value;
     }
 }

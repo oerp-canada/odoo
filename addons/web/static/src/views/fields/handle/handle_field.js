@@ -1,7 +1,5 @@
-/** @odoo-module **/
-
 import { registry } from "@web/core/registry";
-import { _lt } from "@web/core/l10n/translation";
+import { _t } from "@web/core/l10n/translation";
 import { standardFieldProps } from "../standard_field_props";
 
 import { Component } from "@odoo/owl";
@@ -15,9 +13,15 @@ export class HandleField extends Component {
 
 export const handleField = {
     component: HandleField,
-    displayName: _lt("Handle"),
+    displayName: _t("Handle"),
     supportedTypes: ["integer"],
     isEmpty: () => false,
+    listViewWidth: 20,
+    extractProps(_, dynamicInfo) {
+        return {
+            readonly: dynamicInfo.readonly,
+        };
+    },
 };
 
 registry.category("fields").add("handle", handleField);

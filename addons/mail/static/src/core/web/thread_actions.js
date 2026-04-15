@@ -1,50 +1,41 @@
-/* @odoo-module */
-
-import { threadActionsRegistry } from "@mail/core/common/thread_actions";
+import { registerThreadAction } from "@mail/core/common/thread_actions";
 
 import { _t } from "@web/core/l10n/translation";
 
-threadActionsRegistry
-    .add("mark-all-read", {
-        condition(component) {
-            return component.thread?.id === "inbox";
-        },
-        disabledCondition(component) {
-            return component.thread.isEmpty;
-        },
-        open(component) {
-            component.orm.silent.call("mail.message", "mark_all_as_read");
-        },
-        sequence: 1,
-        text: _t("Mark all read"),
-    })
-    .add("unstar-all", {
-        condition(component) {
-            return component.thread?.id === "starred";
-        },
-        disabledCondition(component) {
-            return component.thread.isEmpty;
-        },
-        open(component) {
-            component.messageService.unstarAll();
-        },
-        sequence: 2,
-        text: _t("Unstar all"),
-    })
-    .add("expand-form", {
-        condition(component) {
-            return component.thread?.type === "chatter" && component.props.chatWindow?.isOpen;
-        },
-        icon: "fa fa-fw fa-expand",
-        name: _t("Open Form View"),
-        open(component) {
-            component.actionService.doAction({
-                type: "ir.actions.act_window",
-                res_id: component.thread.id,
-                res_model: component.thread.model,
-                views: [[false, "form"]],
-            });
-            component.chatWindowService.close(component.props.chatWindow);
-        },
-        sequence: 50,
-    });
+registerThreadAction("mark-all-read", {
+    condition: ({ owner, thread }) =>
+        thread?.id === "inbox" && !owner.isDiscussSidebarChannelActions,
+    disabledCondition: ({ thread }) => thread.isEmpty,
+    onSelected: async ({ store }) => {
+        const orm = store.env.services.orm;
+        const readMessageIds = await orm.silent.call("mail.message", "mark_all_as_read");
+        const closeFn = store.env.services.notification.add(
+            readMessageIds.length === 1
+                ? _t("1 item marked as read")
+                : _t("%(amount)s items marked as read", { amount: readMessageIds.length }),
+            {
+                type: "success",
+                buttons: [
+                    {
+                        name: _t("Undo"),
+                        icon: "fa-undo",
+                        onClick: () => {
+                            orm.silent.call("mail.message", "mark_as_unread", [readMessageIds]);
+                            closeFn();
+                        },
+                    },
+                ],
+            }
+        );
+    },
+    sequence: 1,
+    name: _t("Mark all read"),
+});
+registerThreadAction("remove-all-bookmarks", {
+    condition: ({ owner, store, thread }) =>
+        thread?.eq(store.bookmarkBox) && !owner.isDiscussSidebarChannelActions,
+    disabledCondition: ({ thread }) => thread.isEmpty,
+    onSelected: ({ store }) => store.removeAllBookmarks(),
+    sequence: 2,
+    name: _t("Remove all bookmarks"),
+});

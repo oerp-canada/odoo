@@ -1,9 +1,7 @@
-/** @odoo-module **/
-
 import { registry } from "@web/core/registry";
 import { CommandPalette } from "./command_palette";
 
-import { Component, xml, EventBus } from "@odoo/owl";
+import { Component, EventBus } from "@odoo/owl";
 
 /**
  * @typedef {import("./command_palette").CommandPaletteConfig} CommandPaletteConfig
@@ -16,6 +14,7 @@ import { Component, xml, EventBus } from "@odoo/owl";
  *  action: ()=>(void | CommandPaletteConfig);
  *  category?: string;
  *  href?: string;
+ *  className?: string;
  * }} Command
  */
 
@@ -40,6 +39,10 @@ const commandProviderRegistry = registry.category("command_provider");
 const commandSetupRegistry = registry.category("command_setup");
 
 class DefaultFooter extends Component {
+    static template = "web.DefaultFooter";
+    static props = {
+        switchNamespace: { type: Function },
+    };
     setup() {
         this.elements = commandSetupRegistry
             .getEntries()
@@ -51,18 +54,6 @@ class DefaultFooter extends Component {
         this.props.switchNamespace(namespace);
     }
 }
-DefaultFooter.template = xml`
-<span>
-    <span class="fw-bolder text-primary">TIP</span> — search for
-    <t t-foreach="elements" t-as="element" t-key="element.namespace">
-        <t t-if="!(element_first || element_last)">, </t>
-        <t t-if="element_last and !element_first"> and </t>
-        <span class="o_namespace btn-link text-primary cursor-pointer" t-on-click="() => this.onClick(element.namespace)">
-            <span t-out="element.namespace" class="fw-bolder text-primary"/><t t-out="element.name"/>
-        </span>
-    </t>
-</span>
-`;
 
 export const commandService = {
     dependencies: ["dialog", "hotkey", "ui"],
@@ -90,14 +81,17 @@ export const commandService = {
                 if (!configByNamespace[namespace]) {
                     configByNamespace[namespace] = {
                         categories: [],
+                        categoryNames: {},
                     };
                 }
             }
 
             for (const [category, el] of commandCategoryRegistry.getEntries()) {
                 const namespace = el.namespace || "default";
+                const name = el.name;
                 if (namespace in configByNamespace) {
                     configByNamespace[namespace].categories.push(category);
+                    configByNamespace[namespace].categoryNames[category] = name;
                 }
             }
 
@@ -167,8 +161,24 @@ export const commandService = {
             if (!command.name || !command.action || typeof command.action !== "function") {
                 throw new Error("A Command must have a name and an action function.");
             }
-
             const registration = Object.assign({}, command, options);
+            if (registration.identifier) {
+                const commandsArray = Array.from(registeredCommands.values());
+                const sameName = commandsArray.find((com) => com.name === registration.name);
+                if (sameName) {
+                    if (registration.identifier !== sameName.identifier) {
+                        registration.name += ` (${registration.identifier})`;
+                        sameName.name += ` (${sameName.identifier})`;
+                    }
+                } else {
+                    const sameFullName = commandsArray.find(
+                        (com) => com.name === registration.name + `(${registration.identifier})`
+                    );
+                    if (sameFullName) {
+                        registration.name += ` (${registration.identifier})`;
+                    }
+                }
+            }
             if (registration.hotkey) {
                 const action = async () => {
                     const commandService = env.services.command;

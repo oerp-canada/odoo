@@ -1,40 +1,27 @@
-# -*- coding: utf-8 -*-
 from odoo.addons.account.tests.common import AccountTestInvoicingCommon
 from odoo.tests import tagged
-from odoo.tests.common import Form
 from odoo.exceptions import ValidationError, UserError
 from odoo import fields, Command
 
-import base64
 
 @tagged('post_install', '-at_install')
 class TestAccountBankStatementLine(AccountTestInvoicingCommon):
 
     @classmethod
-    def setUpClass(cls, chart_template_ref=None):
-        super().setUpClass(chart_template_ref=chart_template_ref)
+    def setUpClass(cls):
+        super().setUpClass()
 
+        cls.currency_1 = cls.company_data['currency']
         # We need a third currency as you could have a company's currency != journal's currency !=
-        cls.currency_data_2 = cls.setup_multi_currency_data(default_values={
-            'name': 'Dark Chocolate Coin',
-            'symbol': '🍫',
-            'currency_unit_label': 'Dark Choco',
-            'currency_subunit_label': 'Dark Cacao Powder',
-        }, rate2016=6.0, rate2017=4.0)
-        cls.currency_data_3 = cls.setup_multi_currency_data(default_values={
-            'name': 'Black Chocolate Coin',
-            'symbol': '🍫',
-            'currency_unit_label': 'Black Choco',
-            'currency_subunit_label': 'Black Cacao Powder',
-        }, rate2016=12.0, rate2017=8.0)
+        cls.currency_2 = cls.setup_other_currency('EUR')
+        cls.currency_3 = cls.setup_other_currency('CAD', rates=[('2015-12-31', 6.0), ('2016-12-31', 4.0)])
+        cls.currency_4 = cls.setup_other_currency('GBP', rates=[('2015-12-31', 12.0), ('2016-12-31', 8.0)])
+
+        cls.company_data_2 = cls.setup_other_company()
 
         cls.bank_journal_1 = cls.company_data['default_journal_bank']
         cls.bank_journal_2 = cls.bank_journal_1.copy()
         cls.bank_journal_3 = cls.bank_journal_2.copy()
-        cls.currency_1 = cls.company_data['currency']
-        cls.currency_2 = cls.currency_data['currency']
-        cls.currency_3 = cls.currency_data_2['currency']
-        cls.currency_4 = cls.currency_data_3['currency']
 
         cls.statement = cls.env['account.bank.statement'].create({
             'name': 'test_statement',
@@ -191,7 +178,7 @@ class TestAccountBankStatementLine(AccountTestInvoicingCommon):
         }])
 
         # Check the account.bank.statement.line is still correct after editing the account.move.
-        statement_line.move_id.write({'line_ids': [
+        statement_line.move_id.with_context(skip_readonly_check=True).write({'line_ids': [
             (1, liquidity_lines.id, {
                 'debit': expected_liquidity_values.get('debit', 0.0),
                 'credit': expected_liquidity_values.get('credit', 0.0),
@@ -355,7 +342,7 @@ class TestAccountBankStatementLine(AccountTestInvoicingCommon):
 
     def test_constraints(self):
         def assertStatementLineConstraint(statement_line_vals):
-            with self.assertRaises(Exception), self.cr.savepoint():
+            with self.assertRaises(Exception):
                 self.env['account.bank.statement.line'].create(statement_line_vals)
 
         statement_line_vals = {
@@ -401,12 +388,12 @@ class TestAccountBankStatementLine(AccountTestInvoicingCommon):
                 'move_id': st_line.move_id.id,
             },
         ]
-        with self.assertRaises(UserError), self.cr.savepoint():
+        with self.assertRaises(UserError):
             st_line.move_id.write({
                 'line_ids': [(0, 0, vals) for vals in addition_lines_to_create]
             })
 
-        with self.assertRaises(UserError), self.cr.savepoint():
+        with self.assertRaises(UserError):
             st_line.line_ids.create(addition_lines_to_create)
 
     def test_statement_line_move_onchange_1(self):
@@ -540,8 +527,6 @@ class TestAccountBankStatementLine(AccountTestInvoicingCommon):
 
     def test_zero_amount_statement_line(self):
         ''' Ensure the statement line is directly marked as reconciled when having an amount of zero. '''
-        self.company_data['company'].account_journal_suspense_account_id.reconcile = False
-
         statement = self.env['account.bank.statement'].with_context(skip_check_amounts_currencies=True).create({
             'name': 'test_statement',
             'line_ids': [
@@ -701,6 +686,18 @@ class TestAccountBankStatementLine(AccountTestInvoicingCommon):
             {'is_valid': True, 'balance_start': False, 'balance_end_real': 100, 'date': False},
             {'is_valid': True, 'balance_start': -5, 'balance_end_real': -15,
              'date': fields.Date.from_string('2020-01-13')},
+        ])
+
+        # computing validity of non-consecutive statement shouldn't affect validity
+        line5 = self.create_bank_transaction(-10, '2020-01-13')
+        statement4 = self.env['account.bank.statement'].create({
+            'line_ids': [Command.set(line5.ids)],
+            'balance_start': -15,
+        })
+        (statement1 + statement4).invalidate_recordset(['is_valid'])
+        self.assertRecordValues(statement1 + statement4, [
+            {'is_valid': True},
+            {'is_valid': True},
         ])
 
         # adding a statement to the first line should make statement1 invalid
@@ -1401,11 +1398,25 @@ class TestAccountBankStatementLine(AccountTestInvoicingCommon):
             'is_complete': True,
         }])
 
+        # create the third statement using multi edit with canceled line in between
+        lines[2].move_id.button_cancel()
+        context = {
+            'active_ids': [lines[1].id, lines[3].id],
+            'st_line_id': lines[3].id,
+        }
+        st3 = self.env['account.bank.statement'].with_context(context).create({'name': 'Statement 3'})
+        self.assertRecordValues(st3, [{
+            'balance_start': 10.0,
+            'balance_end_real': 55.0,
+            'is_valid': True,
+            'is_complete': True,
+        }])
+
     def test_statement_attachments(self):
         ''' Ensure that attachments are properly linked to bank statements '''
 
         attachment_vals = {
-            'datas': base64.b64encode(b'My attachment'),
+            'raw': b'My attachment',
             'name': 'doc.txt',
         }
 
@@ -1447,3 +1458,13 @@ class TestAccountBankStatementLine(AccountTestInvoicingCommon):
         reversed_move = self.env['account.move'].browse(reversal['res_id'])
 
         self.assertEqual(reversed_move.partner_id, partner)
+
+    def test_bank_transaction_creation_with_default_journal_entry_date(self):
+        invoice_date_field = self.env['ir.model.fields'].search([('model', '=', 'account.move'), ('name', '=', 'invoice_date')], limit=1)
+        self.env['ir.default'].create({
+            'field_id': invoice_date_field.id,
+            'json_value': '"2023-10-16"',
+        })
+
+        transaction = self.create_bank_transaction(1, '2020-01-10', journal=self.bank_journal_1)
+        assert transaction.date == transaction.move_id.date == fields.Date.from_string('2020-01-10')

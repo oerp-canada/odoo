@@ -15,14 +15,14 @@ class MailThread(models.AbstractModel):
 
     @api.model
     def _message_route_process(self, message, message_dict, routes):
-        """ Override to update the parent mailing traces. The parent is found
-        by using the References header of the incoming message and looking for
-        matching message_id in mailing.trace. """
+        # Override to update the parent mailing traces. The parent is found
+        # by using the References header of the incoming message and looking for
+        # matching message_id in mailing.trace.
         if routes:
             # even if 'reply_to' in ref (cfr mail/mail_thread) that indicates a new thread redirection
             # (aka bypass alias configuration in gateway) consider it as a reply for statistics purpose
             thread_references = message_dict['references'] or message_dict['in_reply_to']
-            msg_references = tools.mail_header_msgid_re.findall(thread_references)
+            msg_references = tools.mail.mail_header_msgid_re.findall(thread_references)
             if msg_references:
                 self.env['mailing.trace'].set_opened(domain=[('message_id', 'in', msg_references)])
                 self.env['mailing.trace'].set_replied(domain=[('message_id', 'in', msg_references)])
@@ -32,7 +32,7 @@ class MailThread(models.AbstractModel):
         # avoid having message send through `message_post*` methods being implicitly considered as
         # mass-mailing
         return super(MailThread, self.with_context(
-            default_mass_mailing_name=False,
+            default_mass_mailing_create=False,
             default_mass_mailing_id=False,
         )).message_mail_with_source(source_ref, **kwargs)
 
@@ -40,20 +40,20 @@ class MailThread(models.AbstractModel):
         # avoid having message send through `message_post*` methods being implicitly considered as
         # mass-mailing
         return super(MailThread, self.with_context(
-            default_mass_mailing_name=False,
+            default_mass_mailing_create=False,
             default_mass_mailing_id=False,
         )).message_post_with_source(source_ref, **kwargs)
 
     @api.model
     def _routing_handle_bounce(self, email_message, message_dict):
-        """ In addition, an auto blacklist rule check if the email can be blacklisted
-        to avoid sending mails indefinitely to this email address.
-        This rule checks if the email bounced too much. If this is the case,
-        the email address is added to the blacklist in order to avoid continuing
-        to send mass_mail to that email address. If it bounced too much times
-        in the last month and the bounced are at least separated by one week,
-        to avoid blacklist someone because of a temporary mail server error,
-        then the email is considered as invalid and is blacklisted."""
+        # In addition, an auto blacklist rule check if the email can be blacklisted
+        # to avoid sending mails indefinitely to this email address.
+        # This rule checks if the email bounced too much. If this is the case,
+        # the email address is added to the blacklist in order to avoid continuing
+        # to send mass_mail to that email address. If it bounced too much times
+        # in the last month and the bounced are at least separated by one week,
+        # to avoid blacklist someone because of a temporary mail server error,
+        # then the email is considered as invalid and is blacklisted.
         super(MailThread, self)._routing_handle_bounce(email_message, message_dict)
 
         bounced_email = message_dict['bounced_email']
@@ -76,21 +76,19 @@ class MailThread(models.AbstractModel):
 
     @api.model
     def message_new(self, msg_dict, custom_values=None):
-        """ Overrides mail_thread message_new that is called by the mailgateway
-            through message_process.
-            This override updates the document according to the email.
-        """
         defaults = {}
 
-        if issubclass(type(self), self.pool['utm.mixin']):
+        if isinstance(self, self.pool['utm.mixin']):
             thread_references = msg_dict.get('references', '') or msg_dict.get('in_reply_to', '')
-            msg_references = tools.mail_header_msgid_re.findall(thread_references)
+            msg_references = tools.mail.mail_header_msgid_re.findall(thread_references)
             if msg_references:
                 traces = self.env['mailing.trace'].search([('message_id', 'in', msg_references)], limit=1)
                 if traces:
+                    mailing = traces.mass_mailing_id
                     defaults['campaign_id'] = traces.campaign_id.id
-                    defaults['source_id'] = traces.mass_mailing_id.source_id.id
-                    defaults['medium_id'] = traces.mass_mailing_id.medium_id.id
+                    defaults['medium_id'] = mailing.medium_id.id
+                    defaults['source_id'] = mailing.source_id.id
+                    defaults['utm_reference'] = f'{mailing._name},{mailing.id}'
 
         if custom_values:
             defaults.update(custom_values)

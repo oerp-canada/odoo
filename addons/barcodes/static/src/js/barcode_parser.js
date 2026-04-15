@@ -1,5 +1,3 @@
-/** @odoo-module **/
-
 export class BarcodeParser {
     static barcodeNomenclatureFields = ["name", "rule_ids", "upc_ean_conv"];
     static barcodeRuleFields = ["name", "sequence", "type", "encoding", "pattern", "alias"];
@@ -158,9 +156,9 @@ export class BarcodeParser {
             match.base_code = base_code.join('');
         }
 
-        if (base_pattern[0] !== '^') {
-            base_pattern = "^" + base_pattern;
-        }
+        base_pattern = base_pattern.split('|')
+            .map(part => part.startsWith('^') ? part : '^' + part)
+            .join('|');
         match.match = match.base_code.match(base_pattern);
 
         return match;
@@ -177,7 +175,14 @@ export class BarcodeParser {
      *      - base_code: the barcode with all the encoding parts set to zero; the one put on the product in the backend
      */
     parse_barcode(barcode) {
-        var parsed_result = {
+        if (barcode.match(/^urn:/)) {
+            return this.parseURI(barcode);
+        }
+        return this.parseBarcodeNomenclature(barcode);
+    }
+
+    parseBarcodeNomenclature(barcode) {
+        const parsed_result = {
             encoding: '',
             type:'error',
             code:barcode,
@@ -201,7 +206,7 @@ export class BarcodeParser {
             } else if (rule.encoding === 'upca' &&
                     this.check_encoding(barcode,'ean13') &&
                     barcode[0] === '0' &&
-                    this.upc_ean_conv in {'ean2upc':'','always':''} ){
+                    this.nomenclature.upc_ean_conv in {'ean2upc':'','always':''} ){
                 cur_barcode = cur_barcode.substr(1,12);
             }
 
@@ -232,5 +237,70 @@ export class BarcodeParser {
             }
         }
         return parsed_result;
+    }
+
+    // URI methods
+    /**
+     * Parse an URI into an object with either the product and its lot/serial
+     * number, either the package.
+     * @param {String} barcode
+     * @returns {Object}
+     */
+    parseURI(barcode) {
+        const uriParts = barcode.split(":").map(v => v.trim());
+        // URI should be formatted like that (number is the index once split):
+        // 0: urn, 1: epc, 2: id/tag, 3: identifier, 4: data
+        const identifier = uriParts[3];
+        const data = uriParts[4].split(".");
+        if (identifier === "lgtin" || identifier === "sgtin") {
+            return this.convertURIGTINDataIntoProductAndTrackingNumber(barcode, data);
+        } else if (identifier === "sgtin-96" || identifier === "sgtin-198") {
+            // Same compute then SGTIN but we have to remove the filter.
+            return this.convertURIGTINDataIntoProductAndTrackingNumber(barcode, data.slice(1));
+        } else if (identifier === "sscc") {
+            return this.convertURISSCCDataIntoPackage(barcode, data);
+        } else if (identifier === "sscc-96") {
+            // Same compute then SSCC but we have to remove the filter.
+            return this.convertURISSCCDataIntoPackage(barcode, data.slice(1));
+        }
+        return barcode;
+    }
+
+    convertURIGTINDataIntoProductAndTrackingNumber(base_code, data) {
+        const [gs1CompanyPrefix, itemRefAndIndicator, trackingNumber] = data;
+        const indicator = itemRefAndIndicator[0];
+        const itemRef = itemRefAndIndicator.slice(1);
+        let productBarcode = indicator + gs1CompanyPrefix + itemRef;
+        productBarcode += this.get_barcode_check_digit(productBarcode + "0");
+        return [
+            {
+                base_code,
+                code: productBarcode,
+                string_value: productBarcode,
+                type: "product",
+                value: productBarcode,
+            }, {
+                base_code,
+                code: trackingNumber,
+                string_value: trackingNumber,
+                type: "lot",
+                value: trackingNumber,
+            }
+        ];
+    }
+
+    convertURISSCCDataIntoPackage(base_code, data) {
+        const [gs1CompanyPrefix, serialReference] = data;
+        const extension = serialReference[0];
+        const serialRef = serialReference.slice(1);
+        let sscc = extension + gs1CompanyPrefix + serialRef;
+        sscc += this.get_barcode_check_digit(sscc + "0");
+        return [{
+            base_code,
+            code: sscc,
+            string_value: sscc,
+            type: "package",
+            value: sscc,
+        }];
     }
 }

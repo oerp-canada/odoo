@@ -1,132 +1,141 @@
-# -*- coding: utf-8 -*-
 # Part of Odoo. See LICENSE file for full copyright and licensing details.
 
-from odoo import api, models, fields, _
+from odoo import api, fields, models
 
 
 class ResConfigSettings(models.TransientModel):
-    _inherit = 'res.config.settings'
+    _inherit = "res.config.settings"
 
-    salesperson_id = fields.Many2one('res.users', related='website_id.salesperson_id', string='Salesperson', readonly=False, domain="[('share', '=', False)]")
-    salesteam_id = fields.Many2one('crm.team', related='website_id.salesteam_id', string='Sales Team', readonly=False)
-    group_delivery_invoice_address = fields.Boolean(string="Shipping Address", implied_group='account.group_delivery_invoice_address', group='base.group_portal,base.group_user,base.group_public')
-    group_show_uom_price = fields.Boolean(default=False, string="Base Unit Price", implied_group="website_sale.group_show_uom_price", group='base.group_portal,base.group_user,base.group_public')
+    # Groups
     group_product_price_comparison = fields.Boolean(
         string="Comparison Price",
         implied_group="website_sale.group_product_price_comparison",
-        group='base.group_portal,base.group_user,base.group_public')
-
-    module_website_sale_digital = fields.Boolean("Digital Content")
-    module_website_sale_wishlist = fields.Boolean("Wishlists")
-    module_website_sale_comparison = fields.Boolean("Product Comparison Tool")
-    module_website_sale_autocomplete = fields.Boolean('Address Autocomplete')
-
-    module_account = fields.Boolean("Invoicing")
-    module_website_sale_picking = fields.Boolean('On Site Payments & Picking')
-
-    cart_recovery_mail_template = fields.Many2one('mail.template', string='Cart Recovery Email', domain="[('model', '=', 'sale.order')]",
-                                                  related='website_id.cart_recovery_mail_template_id', readonly=False)
-    cart_abandoned_delay = fields.Float(string="Send After", related='website_id.cart_abandoned_delay', readonly=False)
-    send_abandoned_cart_email = fields.Boolean('Abandoned Email', related='website_id.send_abandoned_cart_email', readonly=False)
-    add_to_cart_action = fields.Selection(related='website_id.add_to_cart_action', readonly=False)
-    terms_url = fields.Char(compute='_compute_terms_url', string="URL", help="A preview will be available at this URL.")
-
-    module_delivery_mondialrelay = fields.Boolean("Mondial Relay Connector")
-    group_product_pricelist = fields.Boolean(
-        compute='_compute_group_product_pricelist', store=True, readonly=False)
-
-    enabled_extra_checkout_step = fields.Boolean(string="Extra Step During Checkout")
-    enabled_buy_now_button = fields.Boolean(string="Buy Now")
-
-    account_on_checkout = fields.Selection(
-        string="Customer Accounts",
-        selection=[
-            ("optional", "Optional"),
-            ("disabled", "Disabled (buy as guest)"),
-            ("mandatory", "Mandatory (no guest checkout)"),
-        ],
-        compute="_compute_account_on_checkout",
-        inverse="_inverse_account_on_checkout",
-        readonly=False, required=True)
-    website_sale_prevent_zero_price_sale = fields.Boolean(string="Prevent Sale of Zero Priced Product", related='website_id.prevent_zero_price_sale', readonly=False)
-    website_sale_contact_us_button_url = fields.Char(string="Button URL", related='website_id.contact_us_button_url', readonly=False)
-    website_sale_enabled_portal_reorder_button = fields.Boolean(string="Re-order From Portal", related='website_id.enabled_portal_reorder_button', readonly=False)
-    show_line_subtotals_tax_selection = fields.Selection(
-        readonly=False,
-        related='website_id.show_line_subtotals_tax_selection',
+        group="base.group_user",
+        help="Add a strikethrough price to your /shop and product pages for comparison purposes."
+        "It will not be displayed if pricelists apply.",
+    )
+    group_gmc_feed = fields.Boolean(
+        string="Google Merchant Center",
+        implied_group="website_sale.group_product_feed",
+        group="base.group_user",
     )
 
-    @api.depends('website_id')
-    def _compute_terms_url(self):
-        for record in self:
-            record.terms_url = '%s/terms' % record.website_id.get_base_url()
+    # Modules
+    module_website_sale_autocomplete = fields.Boolean("Address Autocomplete")
+    module_website_sale_collect = fields.Boolean("Click & Collect")
 
-    @api.model
-    def get_values(self):
-        res = super(ResConfigSettings, self).get_values()
-        res.update(
-            enabled_extra_checkout_step=self.env.ref('website_sale.extra_info_option').active,
-            enabled_buy_now_button=self.env.ref('website_sale.product_buy_now').active,
-        )
-        return res
+    # Website-dependent settings
+    add_to_cart_action = fields.Selection(related="website_id.add_to_cart_action", readonly=False)
+    cart_recovery_mail_template = fields.Many2one(
+        related="website_id.cart_recovery_mail_template_id", readonly=False
+    )
+    cart_abandoned_delay = fields.Float(related="website_id.cart_abandoned_delay", readonly=False)
+    send_abandoned_cart_email = fields.Boolean(
+        string="Abandoned Email", related="website_id.send_abandoned_cart_email", readonly=False
+    )
+    salesperson_id = fields.Many2one(related="website_id.salesperson_id", readonly=False)
+    salesteam_id = fields.Many2one(related="website_id.salesteam_id", readonly=False)
+    prevent_sale = fields.Boolean(related="website_id.prevent_sale", readonly=False)
+    prevent_sale_for = fields.Selection(related="website_id.prevent_sale_for", readonly=False)
+    prevent_sale_for_categories = fields.Many2many(
+        related="website_id.prevent_sale_for_categories", readonly=False
+    )
+    contact_us_link_url = fields.Char(related="website_id.contact_us_link_url", readonly=False)
+    show_line_subtotals_tax_selection = fields.Selection(
+        related="website_id.show_line_subtotals_tax_selection", readonly=False
+    )
+    confirmation_email_template_id = fields.Many2one(
+        related="website_id.confirmation_email_template_id", readonly=False
+    )
+    send_order_rating_emails = fields.Boolean(
+        related="website_id.send_order_rating_emails", readonly=False
+    )
+    rating_email_delay = fields.Integer(related="website_id.rating_email_delay", readonly=False)
+    rating_email_template_id = fields.Many2one(
+        related="website_id.rating_email_template_id", readonly=False
+    )
 
-    def set_values(self):
-        super().set_values()
-        extra_step_view = self.env.ref('website_sale.extra_info_option')
-        if extra_step_view.active != self.enabled_extra_checkout_step:
-            extra_step_view.active = self.enabled_extra_checkout_step
-        buy_now_view = self.env.ref('website_sale.product_buy_now')
-        if buy_now_view.active != self.enabled_buy_now_button:
-            buy_now_view.active = self.enabled_buy_now_button
+    # Additional settings
+    account_on_checkout = fields.Selection(
+        string="Customer Accounts",
+        selection=[("optional", "Optional"), ("disabled", "Disabled"), ("mandatory", "Mandatory")],
+        compute="_compute_account_on_checkout",
+        inverse="_inverse_account_on_checkout",
+        readonly=False,
+        required=True,
+    )
+    ecommerce_access = fields.Selection(related="website_id.ecommerce_access", readonly=False)
 
-    @api.depends('group_discount_per_so_line')
-    def _compute_group_product_pricelist(self):
-        self.filtered(lambda w: w.group_discount_per_so_line).update({
-            'group_product_pricelist': True,
-        })
+    # === COMPUTE METHODS === #
 
-    @api.depends('website_id.account_on_checkout')
+    @api.depends("website_id.account_on_checkout")
     def _compute_account_on_checkout(self):
         for record in self:
-            record.account_on_checkout = record.website_id.account_on_checkout or 'disabled'
+            record.account_on_checkout = record.website_id.account_on_checkout or "disabled"
 
     def _inverse_account_on_checkout(self):
         for record in self:
             if not record.website_id:
                 continue
-            record.website_id.account_on_checkout = record.account_on_checkout
             # account_on_checkout implies different values for `auth_signup_uninvited`
-            if record.account_on_checkout in ['optional', 'mandatory']:
-                record.website_id.auth_signup_uninvited = 'b2c'
-            else:
-                record.website_id.auth_signup_uninvited = 'b2b'
+            if record.website_id.account_on_checkout != record.account_on_checkout:
+                if self.account_on_checkout in ["optional", "mandatory"]:
+                    record.website_id.auth_signup_uninvited = "b2c"
+                else:
+                    record.website_id.auth_signup_uninvited = "b2b"
+            record.website_id.account_on_checkout = record.account_on_checkout
 
-    def action_update_terms(self):
-        self.ensure_one()
-        return self.env["website"].get_client_action('/terms', True)
+    # === CRUD METHODS === #
 
-    def action_open_extra_info(self):
-        self.ensure_one()
-        # Add the "edit" parameter in the url to tell the controller
-        # that we want to edit even if we are not in a payment flow
-        return self.env["website"].get_client_action('/shop/extra_info?open_editor=true', True, self.website_id.id)
+    def set_values(self):
+        super().set_values()
+        if self.website_id:
+            website = self.with_context(website_id=self.website_id.id).website_id
 
-    def action_open_sale_mail_templates(self):
-        return {
-            'name': _('Customize Email Templates'),
-            'type': 'ir.actions.act_window',
-            'domain': [('model', '=', 'sale.order')],
-            'res_model': 'mail.template',
-            'view_id': False,
-            'view_mode': 'tree,form',
-        }
+            # Pre-populate the website product feeds if none already exist (company-independent).
+            if self.group_gmc_feed and not self.env["product.feed"].sudo().search([], limit=1):
+                website._populate_product_feeds()
+        # if Request ratings option is enabled activate Customer Reviews view
+        if self.send_order_rating_emails:
+            view = self.env.ref("website_sale.product_comment", raise_if_not_found=False)
+            if view and not view.active:
+                view.active = True
 
+    # === ACTION METHODS === #
+
+    @api.readonly
     def action_open_abandoned_cart_mail_template(self):
         return {
-            'name': _('Customize Email Templates'),
-            'type': 'ir.actions.act_window',
-            'res_model': 'mail.template',
-            'view_id': False,
-            'view_mode': 'form',
-            'res_id': self.env['ir.model.data']._xmlid_to_res_id("website_sale.mail_template_sale_cart_recovery"),
+            "name": self.env._("Customize Email Templates"),
+            "type": "ir.actions.act_window",
+            "res_model": "mail.template",
+            "view_id": False,
+            "view_mode": "form",
+            "res_id": self.env["ir.model.data"]._xmlid_to_res_id(
+                "website_sale.mail_template_sale_cart_recovery"
+            ),
+        }
+
+    @api.readonly
+    def action_open_sale_mail_templates(self):
+        return {
+            "name": self.env._("Customize Email Templates"),
+            "type": "ir.actions.act_window",
+            "domain": [("model", "=", "sale.order")],
+            "res_model": "mail.template",
+            "view_id": False,
+            "view_mode": "list,form",
+        }
+
+    @api.readonly
+    def action_open_product_feeds(self):
+        """Open the list view to manage the feed specific to the current website."""
+        self.ensure_one()
+        return {
+            "name": self.env._("Product Feeds"),
+            "type": "ir.actions.act_window",
+            "res_model": "product.feed",
+            "views": [(False, "list")],
+            "context": {"default_website_id": self.website_id.id, "hide_website_column": True},
+            "domain": [("website_id", "=", self.website_id.id)],
         }

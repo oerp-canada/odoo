@@ -6,11 +6,12 @@ from lxml import etree
 import logging
 
 from odoo import exceptions, Command
-from odoo.tests.common import Form, TransactionCase, tagged
+from odoo.tests import Form, TransactionCase, tagged
 
 _logger = logging.getLogger(__name__)
 
 
+@tagged('at_install', '-post_install')  # LEGACY at_install
 class TestResConfig(TransactionCase):
 
     def setUp(self):
@@ -175,8 +176,14 @@ class TestResConfigExecute(TransactionCase):
         settings_only_user = ResUsers.create({
             'name': 'Sleepy Joe',
             'login': 'sleepy',
-            'groups_id': [Command.link(group_system.id)],
+            'group_ids': [Command.link(group_system.id)],
         })
+
+        # If not enabled (like in demo data), landing on res.config will try
+        # to disable module_sale_quotation_builder and raise an issue
+        group_order_template = self.env.ref('sale_management.group_sale_order_template', raise_if_not_found=False)
+        if group_order_template:
+            self.env.ref('base.group_user').write({"implied_ids": [(4, group_order_template.id)]})
 
         _logger.info("Testing settings access for group %s", group_system.full_name)
         forbidden_models = self._test_user_settings_fields_access(settings_only_user)
@@ -184,38 +191,6 @@ class TestResConfigExecute(TransactionCase):
 
         for model in forbidden_models:
             _logger.warning("Settings user doesn\'t have read access to the model %s", model)
-
-        settings_view_conditional_groups = self.env['ir.ui.view'].search([
-            ('model', '=', 'res.config.settings'),
-        ]).groups_id
-
-        # Semi hack to recover part of the coverage lost when the groups_id
-        # were moved from the views records to the view nodes (with groups attributes)
-        groups_data = self.env['res.groups'].get_groups_by_application()
-        for group_data in groups_data:
-            if group_data[1] == 'selection' and group_data[3] != (100, 'Other'):
-                manager_group = group_data[2][-1]
-                settings_view_conditional_groups += manager_group
-        settings_view_conditional_groups -= group_system  # Already tested above
-
-        for group in settings_view_conditional_groups:
-            group_name = group.full_name
-            _logger.info("Testing settings access for group %s", group_name)
-            create_values = {
-                'name': f'Test {group_name}',
-                'login': group_name,
-                'groups_id': [Command.link(group_system.id), Command.link(group.id)]
-            }
-            user = ResUsers.create(create_values)
-            self._test_user_settings_view_save(user)
-            forbidden_models_fields = self._test_user_settings_fields_access(user)
-
-            for model, fields in forbidden_models_fields.items():
-                _logger.warning(
-                    "Settings + %s user doesn\'t have read access to the model %s"
-                    "linked to settings records by the field(s) %s",
-                    group_name, model, ", ".join(str(field) for field in fields)
-                )
 
     def _test_user_settings_fields_access(self, user):
         """Verify that settings user are able to create & save settings."""
@@ -245,8 +220,7 @@ class TestResConfigExecute(TransactionCase):
 
         forbidden_models_fields = defaultdict(set)
         for model in models_to_check:
-            has_read_access = self.env[model].with_user(user).check_access_rights(
-                'read', raise_exception=False)
+            has_read_access = self.env[model].with_user(user).has_access('read')
             if not has_read_access:
                 forbidden_models_fields[model] = models_to_check[model]
 

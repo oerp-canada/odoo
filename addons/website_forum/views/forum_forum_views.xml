@@ -3,10 +3,10 @@
     <data>
         <!-- FORUM VIEWS -->
         <record id="forum_forum_view_tree" model="ir.ui.view">
-            <field name="name">forum.forum.view.tree</field>
+            <field name="name">forum.forum.view.list</field>
             <field name="model">forum.forum</field>
             <field name="arch" type="xml">
-                <tree string="Forums">
+                <list string="Forums">
                     <field name="sequence" widget="handle"/>
                     <field name="name"/>
                     <field name="website_id" groups="website.group_multi_website"/>
@@ -14,8 +14,7 @@
                     <field name="total_views" sum="Total Views"/>
                     <field name="total_answers" optional="hide"/>
                     <field name="total_favorites" optional="hide"/>
-                    <field name="active" invisible="1"/>
-                </tree>
+                </list>
             </field>
         </record>
 
@@ -48,8 +47,7 @@
                                 </div>
                             </button>
                         </div>
-                        <field name="active" invisible="1"/>
-                        <widget name="web_ribbon" title="Archived" bg_color="text-bg-danger" attrs="{'invisible': [('active', '=', True)]}"/>
+                        <widget name="web_ribbon" title="Archived" bg_color="text-bg-danger" invisible="active"/>
                         <field name="image_1920" widget="image" options="{'preview_image': 'image_128'}" class="oe_avatar"/>
                         <div class="oe_title">
                             <label for="name"/>
@@ -68,10 +66,10 @@
                                 <group>
                                     <group string="Order and Visibility" name="group_order">
                                         <field name="default_order" string="Default Sort"/>
-                                        <field name="privacy" widget="radio" attrs="{'required': True}"/>
-                                        <field name="authorized_group_id" options="{'no_create': True}" attrs="{'invisible': [('privacy', '!=', 'private')], 'required': [('privacy', '=', 'private')]}"/>
-                                        <label for="relevancy_post_vote" string="Relevance Computation" groups="base.group_no_one" attrs="{'invisible':[('default_order','!=','relevancy desc')]}"/>
-                                        <div groups="base.group_no_one" class="o_row" attrs="{'invisible':[('default_order','!=','relevancy desc')]}">
+                                        <field name="privacy" widget="radio" required="True"/>
+                                        <field name="authorized_group_id" options="{'no_create': True}" invisible="privacy != 'private'" required="privacy == 'private'"/>
+                                        <label for="relevancy_post_vote" string="Relevance Computation" groups="base.group_no_one" invisible="default_order != 'relevancy desc'"/>
+                                        <div groups="base.group_no_one" class="o_row" invisible="default_order != 'relevancy desc'">
                                             (votes - 1) ** <field name="relevancy_post_vote"/> / (days + 2) ** <field name="relevancy_time_decay"/>
                                         </div>
                                     </group>
@@ -129,10 +127,7 @@
                             </page>
                         </notebook>
                     </sheet>
-                    <div class="oe_chatter">
-                        <field name="message_follower_ids" groups="base.group_user"/>
-                        <field name="message_ids"/>
-                    </div>
+                    <chatter/>
                 </form>
             </field>
         </record>
@@ -145,8 +140,8 @@
                     <group>
                         <field name="name" placeholder="e.g. Technical Assistance" string="Forum Name"/>
                         <field name="mode" widget="radio" required="True" string="Forum Mode"/>
-                        <field name="privacy" widget="radio" attrs="{'required': True}"/>
-                        <field name="authorized_group_id" options="{'no_create': True}" attrs="{'invisible': [('privacy', '!=', 'private')], 'required': [('privacy', '=', 'private')]}"/>
+                        <field name="privacy" widget="radio" required="True"/>
+                        <field name="authorized_group_id" options="{'no_create': True}" invisible="privacy != 'private'" required="privacy == 'private'"/>
                     </group>
                 </form>
             </field>
@@ -166,7 +161,8 @@
         <record id="forum_forum_action" model="ir.actions.act_window">
             <field name="name">Forums</field>
             <field name="res_model">forum.forum</field>
-            <field name="view_mode">tree,form</field>
+            <field name="path">forums</field>
+            <field name="view_mode">list,form</field>
         </record>
 
         <record id="forum_forum_action_add" model="ir.actions.act_window">

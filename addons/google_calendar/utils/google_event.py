@@ -1,11 +1,12 @@
-# -*- coding: utf-8 -*-
 # Part of Odoo. See LICENSE file for full copyright and licensing details.
+import json
+import logging
+import re
+from collections import abc
+from typing import Iterator, Mapping
 
 from odoo.tools import email_normalize
-import logging
-from typing import Iterator, Mapping
-from collections import abc
-import re
+from odoo.tools.misc import frozendict
 
 _logger = logging.getLogger(__name__)
 
@@ -24,17 +25,29 @@ class GoogleEvent(abc.Set):
     """
 
     def __init__(self, iterable=()):
-        self._events = {}
+        _events = {}
         for item in iterable:
             if isinstance(item, self.__class__):
-                self._events[item.id] = item._events[item.id]
+                _events[item.id] = item._events[item.id]
             elif isinstance(item, Mapping):
-                self._events[item.get('id')] = item
+                _events[item.get('id')] = item
             else:
                 raise ValueError("Only %s or iterable of dict are supported" % self.__class__.__name__)
+        self._events = frozendict(_events)
 
     def __iter__(self) ->  Iterator['GoogleEvent']:
         return iter(GoogleEvent([vals]) for vals in self._events.values())
+
+    def __add__(self, other):
+        if not isinstance(other, GoogleEvent):
+            raise TypeError("Both instances must be of type GoogleEvent.")
+        # Fast path for empty sets, as event sets are immutable.
+        if not self:
+            return other
+        if not other:
+            return self
+        # Merge the underlying dictionaries directly.
+        return GoogleEvent({**self._events, **other._events})
 
     def __contains__(self, google_event):
         return google_event.id in self._events
@@ -52,7 +65,9 @@ class GoogleEvent(abc.Set):
         except ValueError:
             raise ValueError("Expected singleton: %s" % self)
         event_id = list(self._events.keys())[0]
-        return self._events[event_id].get(name)
+        value = self._events[event_id].get(name)
+        json.dumps(value)
+        return value
 
     def __repr__(self):
         return '%s%s' % (self.__class__.__name__, self.ids)
@@ -63,10 +78,8 @@ class GoogleEvent(abc.Set):
 
     @property
     def rrule(self):
-        if self.recurrence:
-            # Find the rrule in the list
-            rrule = next(rr for rr in self.recurrence if 'RRULE:' in rr)
-            return rrule[6:] # skip "RRULE:" in the rrule string
+        if self.recurrence and any('RRULE' in item for item in self.recurrence):
+            return next(item for item in self.recurrence if 'RRULE' in item)
 
     def odoo_id(self, env):
         self.odoo_ids(env)  # load ids
@@ -91,7 +104,8 @@ class GoogleEvent(abc.Set):
         if unsure:
             unsure._load_odoo_ids_from_metadata(env, model)
 
-        return tuple(e._odoo_id for e in self)
+        # skip unmatched ids because we browse the result
+        return tuple(e._odoo_id for e in self if e._odoo_id)
 
     def _load_odoo_ids_from_metadata(self, env, model):
         unsure_odoo_ids = tuple(e._meta_odoo_id(env.cr.dbname) for e in self)
@@ -194,9 +208,17 @@ class GoogleEvent(abc.Set):
         recurringEventId_value = re.match(r'(\w+_)', self.recurringEventId)
         if not id_value or not recurringEventId_value or id_value.group(1) != recurringEventId_value.group(1):
             return None
-        ID_RANGE = re.search(r'\w+_R\d+T\d+', self.recurringEventId).group()
-        TIMESTAMP = re.search(r'\d+T\d+Z', self.id).group()
-        return f"{ID_RANGE}_{TIMESTAMP}"
+        rec_pattern = re.search(r'(\w+_R\d+(?:T\d+)?(?:Z)?)', self.recurringEventId)
+        if not rec_pattern:
+            return None
+        id_range = rec_pattern.group()
+
+        ts_pattern = re.search(r'(\d{8}(?:T\d+Z?)?)$', self.id)
+        if not ts_pattern:
+            return None
+        timestamp = ts_pattern.group()
+
+        return f"{id_range}_{timestamp}"
 
     def cancelled(self):
         return self.filter(lambda e: e.status == 'cancelled')
@@ -225,8 +247,14 @@ class GoogleEvent(abc.Set):
     def get_meeting_url(self):
         if not self.conferenceData:
             return False
-        video_meeting = list(filter(lambda entryPoints: entryPoints['entryPointType'] == 'video', self.conferenceData['entryPoints']))
-        return video_meeting[0]['uri'] if video_meeting else False
+        video_meeting = list(filter(lambda entryPoints: entryPoints.get('entryPointType') == 'video', self.conferenceData.get('entryPoints', [])))
+        return video_meeting[0].get('uri') if video_meeting else False
 
     def is_available(self):
         return self.transparency == 'transparent'
+
+    def get_odoo_event(self, env):
+        if self._get_model(env)._name == 'calendar.event':
+            return env['calendar.event'].browse(self.odoo_id(self.env))
+        else:
+            return env['calendar.recurrence'].browse(self.odoo_id(self.env)).base_event_id

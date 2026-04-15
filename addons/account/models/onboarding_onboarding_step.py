@@ -3,18 +3,19 @@
 from odoo import _, api, models
 
 
-class OnboardingStep(models.Model):
+class OnboardingOnboardingStep(models.Model):
     _inherit = 'onboarding.onboarding.step'
 
     # COMMON STEPS
     @api.model
     def action_open_step_company_data(self):
         """Set company's basic information."""
+        company = self.env['account.journal'].browse(self.env.context.get('journal_id', None)).company_id or self.env.company
         action = {
             'type': 'ir.actions.act_window',
             'name': _('Set your company data'),
             'res_model': 'res.company',
-            'res_id': self.env.company.id,
+            'res_id': company.id,
             'views': [(self.env.ref('account.res_company_form_view_onboarding').id, "form")],
             'target': 'new',
         }
@@ -29,6 +30,7 @@ class OnboardingStep(models.Model):
             'res_model': 'base.document.layout',
             'target': 'new',
             'views': [(view_id, 'form')],
+            'context': {"dialog_size": "extra-large"},
         }
 
     @api.model
@@ -57,9 +59,7 @@ class OnboardingStep(models.Model):
     # DASHBOARD ONBOARDING
     @api.model
     def action_open_step_fiscal_year(self):
-        company = self.env.company
-        company.create_op_move_if_non_existant()
-        new_wizard = self.env['account.financial.year.op'].create({'company_id': company.id})
+        company = self.env['account.journal'].browse(self.env.context.get('journal_id', None)).company_id or self.env.company
         view_id = self.env.ref('account.setup_financial_year_opening_form').id
 
         return {
@@ -68,53 +68,40 @@ class OnboardingStep(models.Model):
             'view_mode': 'form',
             'res_model': 'account.financial.year.op',
             'target': 'new',
-            'res_id': new_wizard.id,
             'views': [[view_id, 'form']],
-        }
-
-    @api.model
-    def action_open_step_default_taxes(self):
-        """ Called by the 'Taxes' button of the setup bar."""
-        self.action_validate_step('account.onboarding_onboarding_step_default_taxes')
-
-        view_id_list = self.env.ref('account.view_onboarding_tax_tree').id
-        view_id_form = self.env.ref('account.view_tax_form').id
-
-        return {
-            'type': 'ir.actions.act_window',
-            'name': _('Taxes'),
-            'res_model': 'account.tax',
-            'target': 'current',
-            'views': [[view_id_list, 'list'], [view_id_form, 'form']],
-            'context': {'search_default_sale': True, 'search_default_purchase': True, 'active_test': False},
+            'context': {
+                'dialog_size': 'medium',
+                'default_company_id': company.id,
+            }
         }
 
     @api.model
     def action_open_step_chart_of_accounts(self):
         """ Called by the 'Chart of Accounts' button of the dashboard onboarding panel."""
-        company = self.env.company
-        self.sudo().action_validate_step('account.onboarding_onboarding_step_chart_of_accounts')
+        company = self.env['account.journal'].browse(self.env.context.get('journal_id', None)).company_id or self.env.company
+        self.sudo().with_company(company).action_validate_step('account.onboarding_onboarding_step_chart_of_accounts')
 
-        # If an opening move has already been posted, we open the tree view showing all the accounts
+        # If an opening move has already been posted, we open the list view showing all the accounts
         if company.opening_move_posted():
             return 'account.action_account_form'
 
-        # Otherwise, we create the opening move
-        company.create_op_move_if_non_existant()
-
-        # Then, we open will open a custom tree view allowing to edit opening balances of the account
+        # Then, we open will open a custom list view allowing to edit opening balances of the account
         view_id = self.env.ref('account.init_accounts_tree').id
         # Hide the current year earnings account as it is automatically computed
-        domain = [('account_type', '!=', 'equity_unaffected'), ('company_id', '=', company.id)]
+        domain = [
+            *self.env['account.account']._check_company_domain(company),
+            ('account_type', '!=', 'equity_unaffected'),
+        ]
         return {
             'type': 'ir.actions.act_window',
             'name': _('Chart of Accounts'),
             'res_model': 'account.account',
-            'view_mode': 'tree',
+            'view_mode': 'list',
             'limit': 99999999,
             'search_view_id': [self.env.ref('account.view_account_search').id],
-            'views': [[view_id, 'list']],
+            'views': [[view_id, 'list'], [False, 'form']],
             'domain': domain,
+            'context': {'company_id': company.id},
         }
 
     # STEPS WITHOUT PANEL

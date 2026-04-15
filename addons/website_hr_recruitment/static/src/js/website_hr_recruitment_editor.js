@@ -1,37 +1,33 @@
-/** @odoo-module **/
+import { _t } from "@web/core/l10n/translation";
+import { registry } from '@web/core/registry';
 
-import core from "web.core";
-import FormEditorRegistry from "website.form_editor_registry";
-
-var _t = core._t;
-
-FormEditorRegistry.add('apply_job', {
+registry.category("website.form_editor_actions").add('apply_job', {
     formFields: [{
         type: 'char',
         modelRequired: true,
         name: 'partner_name',
         fillWith: 'name',
-        string: 'Your Name',
+        string: _t('Your Name'),
     }, {
         type: 'email',
         required: true,
         fillWith: 'email',
         name: 'email_from',
-        string: 'Your Email',
+        string: _t('Your Email'),
     }, {
         type: 'char',
         required: true,
         fillWith: 'phone',
-        name: 'partner_mobile',
-        string: 'Phone Number',
+        name: 'partner_phone',
+        string: _t('Phone Number'),
     }, {
         type: 'char',
         name: 'linkedin_profile',
-        string: 'LinkedIn Profile',
+        string: _t('LinkedIn Profile'),
     }, {
         type: 'text',
-        name: 'description',
-        string: 'Short Introduction',
+        name: 'applicant_notes',
+        string: _t('Short Introduction'),
     }, {
         type: 'binary',
         custom: true,

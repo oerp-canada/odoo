@@ -1,85 +1,72 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <templates id="template" xml:space="preserve">
 
-    <t t-name="point_of_sale.PartnerListScreen" owl="1">
-        <div class="partnerlist-screen screen">
-            <div class="screen-content">
-                <div class="top-content">
-                    <div class="button highlight" t-if="state.detailIsShown" t-on-click="() => this.partnerEditor.save()">
-                        <i t-if="ui.isSmall" class="fa fa-floppy-o"/>
-                        <t t-else="">
-                            <span> Save</span>
+    <t t-name="point_of_sale.PartnerList">
+        <Dialog bodyClass="'partner-list p-0 mt-3'" modalRef="this.modalRef" contentClass="'h-100'">
+            <t t-set-slot="header">
+                <button t-if="!this.ui.isSmall and this.pos.cashier._role !== 'minimal'" class="btn btn-primary btn-lg lh-lg me-2" role="img" aria-label="Add a customer"
+                        t-on-click="() => this.editPartner()"
+                        title="Add a customer">
+                Create 
+                </button>
+                <h4 class="modal-title fs-4">Choose Customer</h4>
+                <Input tModel="[this.state, 'query']"
+                    class="'ms-auto'"
+                    isSmall="this.ui.isSmall"
+                    placeholder.translate="Search Customers..."
+                    icon="{type: 'fa', value: 'fa-search'}"
+                    t-on-enter="() => this.searchPartner()"
+                    autofocus="true"
+                    debounceMillis="100" />
+            </t>
+            <t t-set="initialPartners" t-value="this.getPartners(this.state.initialPartners)"/>
+            <t t-set="loadedPartners" t-value="this.getPartners(this.state.loadedPartners)"/>
+            <t t-set="nbrPartners" t-value="initialPartners.length + loadedPartners.length"/>
+            <div class="h-100" t-att-class="{'d-flex justify-content-center align-items-center text-center': !nbrPartners}">
+                <table t-if="nbrPartners" class="table table-hover">
+                    <tbody class="h-100">
+                        <t t-foreach="initialPartners" t-as="partner" t-key="partner.id">
+                            <PartnerLine
+                                close="this.props.close"
+                                partner="partner"
+                                isSelected="this.props.partner?.id === partner.id"
+                                isBalanceDisplayed="this.isBalanceDisplayed"
+                                onClickEdit.bind="(p) => this.editPartner(p)"
+                                onClickUnselect.bind="() => this.clickPartner()"
+                                onClickOrders.bind="(p) => this.goToOrders(p)"
+                                onClickPartner.bind="this.clickPartner"/>
                         </t>
-                    </div>
-                    <div t-if="!state.detailIsShown" class="button new-customer highlight" role="img" aria-label="Add a customer"
-                            t-on-click="createPartner"
-                            title="Add a customer">
-                        <i t-if="ui.isSmall" class="fa fa-plus"/>
-                        <t t-else=""> Create</t>
-                    </div>
-                    <div class="button back" t-on-click="back">
-                        <i t-if="ui.isSmall" class="fa fa-angle-double-left"/>
-                        <t t-else=""> Discard</t>
-                    </div>
-                    <div class="top-right-buttons">
-                    <div t-if="state.detailIsShown and state.editModeProps.partner.id" class="button more-info" t-on-click="goToOrders">
-                        <span> Orders</span>
-                    </div>
-                    <a t-if="state.detailIsShown &amp;&amp; state.editModeProps.partner.id" class="button more-info" t-att-href="partnerLink" target="_blank"> More info</a>
-                    <div class="search-bar-container sb-partner" t-if="!state.detailIsShown">
-                        <div class="pos-search-bar">
-                            <i class="fa fa-search" t-on-click="_onPressEnterKey"/>
-                            <input t-ref="search-word-input-partner" placeholder="Search Customers..." size="1" t-on-keyup="updatePartnerList" />
-                            <i class="fa fa-times" t-on-click="_clearSearch"/>
-                        </div>
-                    </div>
+                        <t t-foreach="loadedPartners" t-as="partner" t-key="partner.id">
+                            <PartnerLine
+                                close="this.props.close"
+                                partner="partner"
+                                isSelected="this.props.partner?.id === partner.id"
+                                isBalanceDisplayed="this.isBalanceDisplayed"
+                                onClickEdit.bind="(p) => this.editPartner(p)"
+                                onClickUnselect.bind="() => this.clickPartner()"
+                                onClickOrders.bind="(p) => this.goToOrders(p)"
+                                onClickPartner.bind="this.clickPartner"/>
+                        </t>
+                    </tbody>
+                </table>
+                <div t-else="" t-att-class="{'p-4': this.ui.isSmall}">
+                    <div class="text-muted">
+                        <i class="fa fa-users fa-3x"></i>
+                        <p class="mt-3 fs-4 text-dark">No customers found, press <strong>Enter</strong> to load more.</p>
                     </div>
                 </div>
-                <section class="full-content">
-                    <div class="partner-window">
-                        <section class="subwindow collapsed">
-                            <div class="subwindow-container collapsed">
-                                <div t-if="state.detailIsShown" class="partner-details-contents subwindow-container-fix">
-                                    <PartnerDetailsEdit t-props="state.editModeProps" saveChanges.bind="saveChanges" imperativeHandle="partnerEditor" />
-                                </div>
-                            </div>
-                        </section>
-                        <section class="subwindow list">
-                            <div class="subwindow-container">
-                                <div t-if="!state.detailIsShown" class="subwindow-container-fix scrollable-y">
-                                    <table class="partner-list">
-                                        <thead>
-                                            <tr>
-                                                <th>Name</th>
-                                                <th>Address</th>
-                                                <th class="partner-line-email">Contact</th>
-                                                <th class="pos-right-align" t-if="isBalanceDisplayed">Balance</th>
-                                                <th class="partner-line-details"></th>
-                                                <th class="partner-line-last-column-placeholder oe_invisible"></th>
-                                            </tr>
-                                        </thead>
-                                        <tbody class="partner-list-contents">
-                                            <t t-foreach="partners" t-as="partner"
-                                               t-key="partner.id">
-                                                <PartnerLine partner="partner"
-                                                            selectedPartner="state.selectedPartner"
-                                                            detailIsShown="state.detailIsShown"
-                                                            isBalanceDisplayed="isBalanceDisplayed"
-                                                            onClickEdit.bind="editPartner"
-                                                            onClickPartner.bind="clickPartner"/>
-                                            </t>
-                                        </tbody>
-                                    </table>
-                                    <div t-if="state.query" class="search-more-button">
-                                        <div class="button" t-on-click="_onPressEnterKey">Search more</div>
-                                    </div>
-                                </div>
-                            </div>
-                        </section>
-                    </div>
-                </section>
             </div>
-        </div>
+            <t t-set-slot="footer">
+                <div class="d-flex flex-row gap-2 w-100">
+                    <button t-if="this.ui.isSmall and this.pos.cashier._role !== 'minimal'" class="btn btn-primary btn-lg lh-lg flex-fill" role="img" aria-label="Add a customer"
+                        t-on-click="() => this.editPartner()"
+                        title="Add a customer">
+                    New 
+                    </button>
+                    <button class="btn btn-secondary btn-lg lh-lg flex-fill" t-on-click="() => this.clickPartner(this.props.partner)">Discard</button>
+                </div>
+            </t>
+        </Dialog>
     </t>
 
 </templates>

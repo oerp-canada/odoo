@@ -1,15 +1,20 @@
-/** @odoo-module **/
-
-import { makeEnv, startServices } from "./env";
-import { legacySetupProm } from "./legacy/legacy_setup";
-import { mapLegacyEnvToWowlEnv } from "./legacy/utils";
+import { mountComponent } from "./env";
 import { localization } from "@web/core/l10n/localization";
 import { session } from "@web/session";
-import { renderToString } from "./core/utils/render";
-import { setLoadXmlDefaultApp, templates } from "@web/core/assets";
 import { hasTouch } from "@web/core/browser/feature_detection";
+import { user } from "@web/core/user";
+import { Component, whenReady } from "@odoo/owl";
+import { rpc } from "./core/network/rpc";
+import { RPCCache } from "./core/network/rpc_cache";
+import { _t } from "./core/l10n/translation";
 
-import { App, whenReady } from "@odoo/owl";
+// Chrome iOS wraps some text nodes (like measures, email...)
+// with a `<chrome_annotation>` tag, which breaks OWL rendering.
+// This meta tag allows to disable this behavior.
+const chromeMetaTag = document.createElement("meta");
+chromeMetaTag.setAttribute("name", "chrome");
+chromeMetaTag.setAttribute("content", "nointentdetection");
+document.head.appendChild(chromeMetaTag);
 
 /**
  * Function to start a webclient.
@@ -28,31 +33,28 @@ export async function startWebClient(Webclient) {
     };
     odoo.isReady = false;
 
-    // setup environment
-    const env = makeEnv();
-    await startServices(env);
+    if (window.isSecureContext && session.browser_cache_secret) {
+        rpc.setCache(new RPCCache("rpc", session.registry_hash, session.browser_cache_secret));
+    }
 
-    // start web client
     await whenReady();
-    const legacyEnv = await legacySetupProm;
-    mapLegacyEnvToWowlEnv(legacyEnv, env);
-    const app = new App(Webclient, {
-        name: "Odoo Web Client",
-        env,
-        templates,
-        dev: env.debug,
-        warnIfNoStaticProps: true,
-        translatableAttributes: ["data-tooltip"],
-        translateFn: env._t,
-    });
-    renderToString.app = app;
-    setLoadXmlDefaultApp(app);
-    const root = await app.mount(document.body);
+    const app = await mountComponent(Webclient, document.body, { name: "Odoo Web Client" });
+    const { env } = app;
+    Component.env = env;
+
+    if (!window.isSecureContext) {
+        console.error(
+            _t(
+                "You are currently using a non-secure context. As a result, some Odoo features may be unavailable or function improperly. For more information, please visit: https://developer.mozilla.org/en-US/docs/Web/Security/Defenses/Secure_Contexts"
+            )
+        );
+    }
+
     const classList = document.body.classList;
     if (localization.direction === "rtl") {
         classList.add("o_rtl");
     }
-    if (env.services.user.userId === 1) {
+    if (user.userId === 1) {
         classList.add("o_is_superuser");
     }
     if (env.debug) {
@@ -62,6 +64,5 @@ export async function startWebClient(Webclient) {
         classList.add("o_touch_device");
     }
     // delete odoo.debug; // FIXME: some legacy code rely on this
-    odoo.__WOWL_DEBUG__ = { root };
     odoo.isReady = true;
 }

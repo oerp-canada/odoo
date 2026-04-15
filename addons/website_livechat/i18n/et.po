@@ -1,6 +1,6 @@
 # Translation of Odoo Server.
 # This file contains the translation of the following modules:
-# 	* website_livechat
+# * website_livechat
 #
 # Translators:
 # Maidu Targama <m.targama@gmail.com>, 2022
@@ -17,20 +17,23 @@
 # JanaAvalah, 2022
 # Anna, 2023
 # Patrick-Jordan Kiudorv, 2023
-#
+# Weblate <noreply-mt-weblate@weblate.org>, 2025.
+# Odoo Translation Bot <c3p@odoo.com>, 2026.
 msgid ""
 msgstr ""
 "Project-Id-Version: Odoo Server 15.5alpha1\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2022-09-20 09:02+0000\n"
-"PO-Revision-Date: 2022-09-22 05:56+0000\n"
-"Last-Translator: Patrick-Jordan Kiudorv, 2023\n"
-"Language-Team: Estonian (https://app.transifex.com/odoo/teams/41243/et/)\n"
+"POT-Creation-Date: 2026-02-20 09:02+0000\n"
+"PO-Revision-Date: 2026-01-16 06:59+0000\n"
+"Last-Translator: Odoo Translation Bot <c3p@odoo.com>\n"
+"Language-Team: Estonian <https://translate.odoo.com/projects/odoo-s19-1/"
+"website_livechat/et/>\n"
 "Language: et\n"
 "MIME-Version: 1.0\n"
 "Content-Type: text/plain; charset=UTF-8\n"
 "Content-Transfer-Encoding: \n"
-"Plural-Forms: nplurals=2; plural=(n != 1);\n"
+"Plural-Forms: nplurals=2; plural=n != 1;\n"
+"X-Generator: Weblate 5.14.3\n"
 
 #. module: website_livechat
 #: model:ir.model.fields,field_description:website_livechat.field_website_visitor__session_count
@@ -38,52 +41,9 @@ msgid "# Sessions"
 msgstr "# Sessioonid"
 
 #. module: website_livechat
-#: code:addons/website_livechat/models/mail_channel.py:0
-#, python-format
-msgid "%s has left the conversation."
-msgstr "%s lahkus vestlusest."
-
-#. module: website_livechat
-#: code:addons/website_livechat/models/mail_channel.py:0
-#, python-format
-msgid ""
-"%s has started a conversation with %s. \n"
-"                        The chat request has been canceled."
-msgstr ""
-"%s alustas vestlust kasutajaga %s. \n"
-"                        Live-vestluse taotlus on tühistatud. "
-
-#. module: website_livechat
-#: model_terms:ir.ui.view,arch_db:website_livechat.channel_page
-msgid "<small>%</small>"
-msgstr "<small>%</small>"
-
-#. module: website_livechat
-#: model_terms:ir.ui.view,arch_db:website_livechat.channel_page
-msgid "<span>Livechat Channel</span>"
-msgstr "<span>Online vestluse kanal</span>"
-
-#. module: website_livechat
 #: model_terms:ir.ui.view,arch_db:website_livechat.website_visitor_view_search
 msgid "Available"
 msgstr "Saadaval"
-
-#. module: website_livechat
-#. openerp-web
-#: code:addons/website_livechat/static/src/components/visitor_banner/visitor_banner.xml:0
-#, python-format
-msgid "Avatar"
-msgstr "Avatar"
-
-#. module: website_livechat
-#: model_terms:ir.ui.view,arch_db:website_livechat.channel_page
-msgid "Bad"
-msgstr "Halb"
-
-#. module: website_livechat
-#: model:ir.model.fields,field_description:website_livechat.field_im_livechat_channel__can_publish
-msgid "Can Publish"
-msgstr "Võib avalikustada"
 
 #. module: website_livechat
 #: model_terms:ir.ui.view,arch_db:website_livechat.res_config_settings_view_form
@@ -91,9 +51,20 @@ msgid "Channel"
 msgstr "Allikas"
 
 #. module: website_livechat
+#: model:ir.model,name:website_livechat.model_discuss_channel_member
+msgid "Channel Member"
+msgstr ""
+
+#. module: website_livechat
 #: model_terms:ir.ui.view,arch_db:website_livechat.im_livechat_channel_view_form_add
 msgid "Channel Name"
 msgstr "Kanali nimi"
+
+#. module: website_livechat
+#. odoo-python
+#: code:addons/website_livechat/models/im_livechat_channel.py:0
+msgid "Channel created: %(name)s"
+msgstr ""
 
 #. module: website_livechat
 #: model_terms:ir.ui.view,arch_db:website_livechat.website_visitor_view_kanban
@@ -123,19 +94,29 @@ msgid "Config Settings"
 msgstr "Seadistused"
 
 #. module: website_livechat
-#: model:ir.model.fields,help:website_livechat.field_im_livechat_channel__website_description
-msgid "Description of the channel displayed on the website page"
-msgstr "Kanali kirjeldust kuvatakse veebilehel. "
+#. odoo-javascript
+#: code:addons/website_livechat/static/src/core/web/livechat_channel_info_list_patch.xml:0
+msgid "Conversation ongoing"
+msgstr ""
 
 #. module: website_livechat
-#: model:ir.model,name:website_livechat.model_mail_channel
+#: model:ir.model,name:website_livechat.model_discuss_channel
 msgid "Discussion Channel"
 msgstr "Sõnumite kanal"
 
 #. module: website_livechat
-#: model_terms:ir.ui.view,arch_db:website_livechat.channel_page
-msgid "Great"
-msgstr "Suurepärane"
+#: model:ir.model.fields,field_description:website_livechat.field_chatbot_script__display_name
+#: model:ir.model.fields,field_description:website_livechat.field_chatbot_script_step__display_name
+#: model:ir.model.fields,field_description:website_livechat.field_discuss_channel__display_name
+#: model:ir.model.fields,field_description:website_livechat.field_discuss_channel_member__display_name
+#: model:ir.model.fields,field_description:website_livechat.field_im_livechat_channel__display_name
+#: model:ir.model.fields,field_description:website_livechat.field_ir_http__display_name
+#: model:ir.model.fields,field_description:website_livechat.field_res_config_settings__display_name
+#: model:ir.model.fields,field_description:website_livechat.field_website__display_name
+#: model:ir.model.fields,field_description:website_livechat.field_website_page__display_name
+#: model:ir.model.fields,field_description:website_livechat.field_website_visitor__display_name
+msgid "Display Name"
+msgstr "Kuvatav nimi"
 
 #. module: website_livechat
 #: model:ir.model,name:website_livechat.model_ir_http
@@ -143,16 +124,18 @@ msgid "HTTP Routing"
 msgstr "HTTP Routing"
 
 #. module: website_livechat
-#: model_terms:ir.ui.view,arch_db:website_livechat.channel_page
-msgid "Happy face"
-msgstr "Õnnelik nägu"
-
-#. module: website_livechat
-#. openerp-web
-#: code:addons/website_livechat/static/src/components/visitor_banner/visitor_banner.xml:0
-#, python-format
-msgid "History"
-msgstr "Ajalugu"
+#: model:ir.model.fields,field_description:website_livechat.field_chatbot_script__id
+#: model:ir.model.fields,field_description:website_livechat.field_chatbot_script_step__id
+#: model:ir.model.fields,field_description:website_livechat.field_discuss_channel__id
+#: model:ir.model.fields,field_description:website_livechat.field_discuss_channel_member__id
+#: model:ir.model.fields,field_description:website_livechat.field_im_livechat_channel__id
+#: model:ir.model.fields,field_description:website_livechat.field_ir_http__id
+#: model:ir.model.fields,field_description:website_livechat.field_res_config_settings__id
+#: model:ir.model.fields,field_description:website_livechat.field_website__id
+#: model:ir.model.fields,field_description:website_livechat.field_website_page__id
+#: model:ir.model.fields,field_description:website_livechat.field_website_visitor__id
+msgid "ID"
+msgstr "ID"
 
 #. module: website_livechat
 #: model_terms:ir.ui.view,arch_db:website_livechat.website_visitor_view_search
@@ -160,22 +143,12 @@ msgid "In Conversation"
 msgstr "vestluses"
 
 #. module: website_livechat
-#: model:ir.model.fields,field_description:website_livechat.field_im_livechat_channel__is_published
-msgid "Is Published"
-msgstr "On avalikustatud"
-
-#. module: website_livechat
-#. openerp-web
-#: code:addons/website_livechat/static/src/components/visitor_banner/visitor_banner.xml:0
-#, python-format
-msgid "Lang"
-msgstr "Keel"
-
-#. module: website_livechat
-#: code:addons/website_livechat/models/website.py:0
-#, python-format
-msgid "Live Support"
-msgstr "Online tugi"
+#. odoo-python
+#: code:addons/website_livechat/models/discuss_channel.py:0
+msgid ""
+"Live chat conversation closed automatically: the visitor started a new "
+"conversation with another agent."
+msgstr ""
 
 #. module: website_livechat
 #: model:ir.model,name:website_livechat.model_im_livechat_channel
@@ -183,42 +156,16 @@ msgid "Livechat Channel"
 msgstr "Online vestluse kanal"
 
 #. module: website_livechat
-#: model_terms:ir.ui.view,arch_db:website_livechat.channel_list_page
-msgid "Livechat Support Channels"
-msgstr "Live klienditoe kanalid"
-
-#. module: website_livechat
-#: model_terms:ir.ui.view,arch_db:website_livechat.channel_page
-msgid "Neutral face"
-msgstr "Neutraalne nägu"
-
-#. module: website_livechat
 #: model:ir.actions.act_window,name:website_livechat.im_livechat_channel_action_add
 msgid "New Channel"
 msgstr "Uus kanal"
 
 #. module: website_livechat
+#. odoo-python
 #: code:addons/website_livechat/models/website_visitor.py:0
-#, python-format
 msgid "No Livechat Channel allows you to send a chat request for website %s."
-msgstr "Ükski Livechat kanal ei luba sul saata vestluspäringuid veebilehe jaoks %s."
-
-#. module: website_livechat
-#: model_terms:ir.ui.view,arch_db:website_livechat.channel_page
-msgid "Not rated yet"
-msgstr "Hinnang puudub"
-
-#. module: website_livechat
-#: model_terms:ir.ui.view,arch_db:website_livechat.channel_page
-msgid "Okay"
-msgstr "Korras"
-
-#. module: website_livechat
-#. openerp-web
-#: code:addons/website_livechat/static/src/components/visitor_banner/visitor_banner.xml:0
-#, python-format
-msgid "Online"
-msgstr "Online"
+msgstr ""
+"Ükski Livechat kanal ei luba sul saata vestluspäringuid veebilehe jaoks %s."
 
 #. module: website_livechat
 #: model_terms:ir.ui.view,arch_db:website_livechat.website_visitor_view_kanban
@@ -226,20 +173,31 @@ msgid "Operator Avatar"
 msgstr "Operaatori pilt"
 
 #. module: website_livechat
-#: model:ir.model.fields,field_description:website_livechat.field_website_visitor__livechat_operator_name
-msgid "Operator Name"
-msgstr "Operaatori nimi"
+#: model:ir.model,name:website_livechat.model_website_page
+msgid "Page"
+msgstr "Lehekülg"
 
 #. module: website_livechat
+#. odoo-javascript
+#: code:addons/website_livechat/static/src/core/web/livechat_channel_info_list_patch.xml:0
+msgid "Recent conversations"
+msgstr ""
+
+#. module: website_livechat
+#. odoo-javascript
+#: code:addons/website_livechat/static/src/core/web/livechat_channel_info_list_patch.xml:0
+msgid "Recent page views"
+msgstr ""
+
+#. module: website_livechat
+#. odoo-python
 #: code:addons/website_livechat/models/website_visitor.py:0
-#, python-format
-msgid "Recipients are not available. Please refresh the page to get latest visitors status."
-msgstr "Adressaadid pole saadaval. Palun värskendage lehte, et näha viimast külastajate staatust."
-
-#. module: website_livechat
-#: model_terms:ir.ui.view,arch_db:website_livechat.channel_page
-msgid "Sad face"
-msgstr "Kurb nägu"
+msgid ""
+"Recipients are not available. Please refresh the page to get latest visitors "
+"status."
+msgstr ""
+"Adressaadid pole saadaval. Palun värskendage lehte, et näha viimast "
+"külastajate staatust."
 
 #. module: website_livechat
 #: model:ir.actions.server,name:website_livechat.website_livechat_send_chat_request_action_server
@@ -257,14 +215,9 @@ msgid "Speaking With"
 msgstr "Suhtlete"
 
 #. module: website_livechat
-#: model:ir.model.fields,field_description:website_livechat.field_website_visitor__livechat_operator_id
+#: model:ir.model.fields,field_description:website_livechat.field_website_visitor__current_livechat_agent_ids
 msgid "Speaking with"
 msgstr "Suhtlete"
-
-#. module: website_livechat
-#: model_terms:ir.ui.view,arch_db:website_livechat.channel_page
-msgid "Statistics"
-msgstr "Statistika"
 
 #. module: website_livechat
 #: model_terms:ir.ui.view,arch_db:website_livechat.chatbot_script_view_form
@@ -272,52 +225,34 @@ msgid "Test"
 msgstr "Test"
 
 #. module: website_livechat
-#: model_terms:ir.ui.view,arch_db:website_livechat.channel_page
-msgid "The"
-msgstr "The"
+#. odoo-python
+#: code:addons/website_livechat/controllers/chatbot.py:0
+msgid "Test %s"
+msgstr ""
 
 #. module: website_livechat
-#: model_terms:ir.ui.view,arch_db:website_livechat.channel_page
-msgid "The Team"
-msgstr "Tiim"
-
-#. module: website_livechat
-#: model:ir.model.fields,help:website_livechat.field_im_livechat_channel__website_url
-msgid "The full URL to access the document through the website."
-msgstr "Dokumendile veebisaidi kaudu juurdepääsuks täielik URL."
-
-#. module: website_livechat
-#: code:addons/website_livechat/models/mail_channel.py:0
-#, python-format
-msgid "The visitor"
-msgstr "Külastaja"
-
-#. module: website_livechat
-#: model_terms:ir.ui.view,arch_db:website_livechat.channel_list_page
-msgid "There are no public livechat channels to show."
-msgstr "Hetkel ei leidu avalikke livechat kanaleid, mida näidata."
-
-#. module: website_livechat
-#: model_terms:ir.ui.view,arch_db:website_livechat.channel_page
-msgid "There are no ratings for this channel for now."
-msgstr "Antud kanalil hinnanguid pole. "
-
-#. module: website_livechat
-#: model:ir.model.fields,field_description:website_livechat.field_im_livechat_channel__website_published
-msgid "Visible on current website"
-msgstr "Nähtav praegusel veebilehel"
-
-#. module: website_livechat
-#: model:ir.model.fields,field_description:website_livechat.field_mail_channel__livechat_visitor_id
+#: model:ir.model.fields,field_description:website_livechat.field_discuss_channel__livechat_visitor_id
 msgid "Visitor"
 msgstr "Külastaja"
 
 #. module: website_livechat
-#. openerp-web
-#: code:addons/website_livechat/static/src/components/visitor_banner/visitor_banner.xml:0
-#, python-format
-msgid "Visitor is online"
-msgstr "Külastaja on online"
+#. odoo-python
+#: code:addons/website_livechat/models/discuss_channel.py:0
+msgid "Visitor #%(id)d left the conversation."
+msgstr ""
+
+#. module: website_livechat
+#. odoo-python
+#: code:addons/website_livechat/controllers/main.py:0
+#: code:addons/website_livechat/models/website_visitor.py:0
+msgid "Visitor #%d"
+msgstr "Külastaja #%d"
+
+#. module: website_livechat
+#. odoo-python
+#: code:addons/website_livechat/models/discuss_channel.py:0
+msgid "Visitor left the conversation."
+msgstr "Külastaja lahkus vestlusest."
 
 #. module: website_livechat
 #: model:ir.actions.act_window,name:website_livechat.website_visitor_livechat_session_action
@@ -325,7 +260,7 @@ msgid "Visitor's Sessions"
 msgstr "Külastajate sessioonid"
 
 #. module: website_livechat
-#: model:ir.model.fields,field_description:website_livechat.field_website_visitor__mail_channel_ids
+#: model:ir.model.fields,field_description:website_livechat.field_website_visitor__discuss_channel_ids
 msgid "Visitor's livechat channels"
 msgstr "Külastajate online vestluse kanalid"
 
@@ -335,10 +270,9 @@ msgid "Visitors"
 msgstr "Külastajad"
 
 #. module: website_livechat
-#. openerp-web
-#: code:addons/website_livechat/static/src/components/visitor_banner/visitor_banner.xml:0
+#. odoo-javascript
+#: code:addons/website_livechat/static/src/core/web/livechat_channel_info_list_patch.xml:0
 #: model:ir.model,name:website_livechat.model_website
-#, python-format
 msgid "Website"
 msgstr "Veebileht"
 
@@ -353,29 +287,15 @@ msgid "Website Live Chat Channel"
 msgstr "Veebilehe online vestluse kanal"
 
 #. module: website_livechat
-#: model:ir.model.fields,field_description:website_livechat.field_im_livechat_channel__website_url
-msgid "Website URL"
-msgstr "Veebilehe URL"
-
-#. module: website_livechat
+#. odoo-python
 #: code:addons/website_livechat/tests/test_livechat_basic_flow.py:0
 #: model:ir.model,name:website_livechat.model_website_visitor
-#, python-format
 msgid "Website Visitor"
 msgstr "Veebilehe Külastaja"
 
 #. module: website_livechat
-#: model:ir.model.fields,field_description:website_livechat.field_im_livechat_channel__website_description
-msgid "Website description"
-msgstr "Internetilehe kirjeldus"
-
-#. module: website_livechat
-#: code:addons/website_livechat/models/mail_channel.py:0
-#, python-format
-msgid "an operator"
-msgstr "operaator"
-
-#. module: website_livechat
-#: model_terms:ir.ui.view,arch_db:website_livechat.channel_page
-msgid "last feedbacks"
-msgstr "viimane tagasiside"
+#: model:ir.model.fields,field_description:website_livechat.field_discuss_channel__is_pending_chat_request
+msgid ""
+"When created from an operator, whether the channel is yet to be opened on "
+"the visitor side."
+msgstr ""

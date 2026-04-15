@@ -7,8 +7,9 @@ from odoo.tests import tagged
 class TestUBLAU(TestUBLCommon):
 
     @classmethod
-    def setUpClass(cls, chart_template_ref="au"):
-        super().setUpClass(chart_template_ref=chart_template_ref)
+    @TestUBLCommon.setup_country('au')
+    def setUpClass(cls):
+        super().setUpClass()
 
         cls.partner_1 = cls.env['res.partner'].create({
             'name': "partner_1",
@@ -19,8 +20,9 @@ class TestUBLAU(TestUBLCommon):
             'phone': '+31 180 6 225789',
             'email': 'info@outlook.au',
             'country_id': cls.env.ref('base.au').id,
-            'bank_ids': [(0, 0, {'acc_number': '000099998B57'})],
+            'bank_ids': [(0, 0, {'account_number': '000099998B57', 'allow_out_payment': True})],
             'ref': 'ref_partner_1',
+            'invoice_edi_format': 'ubl_a_nz',
         })
 
         cls.partner_2 = cls.env['res.partner'].create({
@@ -30,8 +32,9 @@ class TestUBLAU(TestUBLCommon):
             'city': "Canberra",
             'vat': '53 930 548 027',
             'country_id': cls.env.ref('base.au').id,
-            'bank_ids': [(0, 0, {'acc_number': '93999574162167'})],
+            'bank_ids': [(0, 0, {'account_number': '93999574162167', 'allow_out_payment': True})],
             'ref': 'ref_partner_2',
+            'invoice_edi_format': 'ubl_a_nz',
         })
 
         cls.tax_10 = cls.env['account.tax'].create({
@@ -41,16 +44,6 @@ class TestUBLAU(TestUBLCommon):
             'type_tax_use': 'sale',
             'country_id': cls.env.ref('base.au').id,
         })
-
-    @classmethod
-    def setup_company_data(cls, company_name, chart_template):
-        # OVERRIDE
-        res = super().setup_company_data(
-            company_name,
-            chart_template=chart_template,
-            country_id=cls.env.ref("base.au").id,
-        )
-        return res
 
     ####################################################
     # Test export - import
@@ -90,26 +83,26 @@ class TestUBLAU(TestUBLCommon):
             invoice.ubl_cii_xml_id,
             xpaths=f'''
                 <xpath expr="./*[local-name()='ID']" position="replace">
-                    <ID>___ignore___</ID>
+                    <cbc:ID xmlns:cbc="urn:oasis:names:specification:ubl:schema:xsd:CommonBasicComponents-2">___ignore___</cbc:ID>
                 </xpath>
                 <xpath expr=".//*[local-name()='InvoiceLine'][1]/*[local-name()='ID']" position="replace">
-                    <ID>___ignore___</ID>
+                    <cbc:ID xmlns:cbc="urn:oasis:names:specification:ubl:schema:xsd:CommonBasicComponents-2">___ignore___</cbc:ID>
                 </xpath>
                 <xpath expr=".//*[local-name()='InvoiceLine'][2]/*[local-name()='ID']" position="replace">
-                    <ID>___ignore___</ID>
+                    <cbc:ID xmlns:cbc="urn:oasis:names:specification:ubl:schema:xsd:CommonBasicComponents-2">___ignore___</cbc:ID>
                 </xpath>
                 <xpath expr=".//*[local-name()='InvoiceLine'][3]/*[local-name()='ID']" position="replace">
-                    <ID>___ignore___</ID>
+                    <cbc:ID xmlns:cbc="urn:oasis:names:specification:ubl:schema:xsd:CommonBasicComponents-2">___ignore___</cbc:ID>
                 </xpath>
                 <xpath expr=".//*[local-name()='PaymentMeans']/*[local-name()='PaymentID']" position="replace">
-                    <PaymentID>___ignore___</PaymentID>
+                    <cbc:PaymentID xmlns:cbc="urn:oasis:names:specification:ubl:schema:xsd:CommonBasicComponents-2">___ignore___</cbc:PaymentID>
                 </xpath>
                 <xpath expr=".//*[local-name()='AdditionalDocumentReference']/*[local-name()='Attachment']/*[local-name()='EmbeddedDocumentBinaryObject']" position="attributes">
                     <attribute name="mimeCode">application/pdf</attribute>
                     <attribute name="filename">{invoice.invoice_pdf_report_id.name}</attribute>
                 </xpath>
             ''',
-            expected_file='from_odoo/a_nz_out_invoice.xml',
+            expected_file_path='from_odoo/a_nz_out_invoice.xml',
         )
         self.assertEqual(attachment.name[-8:], "a_nz.xml")
         self._assert_imported_invoice_from_etree(invoice, attachment)
@@ -148,26 +141,26 @@ class TestUBLAU(TestUBLCommon):
             refund.ubl_cii_xml_id,
             xpaths=f'''
                 <xpath expr="./*[local-name()='ID']" position="replace">
-                    <ID>___ignore___</ID>
+                    <cbc:ID xmlns:cbc="urn:oasis:names:specification:ubl:schema:xsd:CommonBasicComponents-2">___ignore___</cbc:ID>
                 </xpath>
                 <xpath expr=".//*[local-name()='CreditNoteLine'][1]/*[local-name()='ID']" position="replace">
-                    <ID>___ignore___</ID>
+                    <cbc:ID xmlns:cbc="urn:oasis:names:specification:ubl:schema:xsd:CommonBasicComponents-2">___ignore___</cbc:ID>
                 </xpath>
                 <xpath expr=".//*[local-name()='CreditNoteLine'][2]/*[local-name()='ID']" position="replace">
-                    <ID>___ignore___</ID>
+                    <cbc:ID xmlns:cbc="urn:oasis:names:specification:ubl:schema:xsd:CommonBasicComponents-2">___ignore___</cbc:ID>
                 </xpath>
                 <xpath expr=".//*[local-name()='CreditNoteLine'][3]/*[local-name()='ID']" position="replace">
-                    <ID>___ignore___</ID>
+                    <cbc:ID xmlns:cbc="urn:oasis:names:specification:ubl:schema:xsd:CommonBasicComponents-2">___ignore___</cbc:ID>
                 </xpath>
                 <xpath expr=".//*[local-name()='PaymentMeans']/*[local-name()='PaymentID']" position="replace">
-                    <PaymentID>___ignore___</PaymentID>
+                    <cbc:PaymentID xmlns:cbc="urn:oasis:names:specification:ubl:schema:xsd:CommonBasicComponents-2">___ignore___</cbc:PaymentID>
                 </xpath>
                 <xpath expr=".//*[local-name()='AdditionalDocumentReference']/*[local-name()='Attachment']/*[local-name()='EmbeddedDocumentBinaryObject']" position="attributes">
                     <attribute name="mimeCode">application/pdf</attribute>
                     <attribute name="filename">{refund.invoice_pdf_report_id.name}</attribute>
                 </xpath>
             ''',
-            expected_file='from_odoo/a_nz_out_refund.xml',
+            expected_file_path='from_odoo/a_nz_out_refund.xml',
         )
         self.assertEqual(attachment.name[-8:], "a_nz.xml")
         self._assert_imported_invoice_from_etree(refund, attachment)
@@ -180,8 +173,10 @@ class TestUBLAU(TestUBLCommon):
         self._assert_imported_invoice_from_file(
             subfolder='tests/test_files/from_odoo',
             filename='a_nz_out_invoice.xml',
-            amount_total=2950.2,
-            amount_tax=268.2,
-            list_line_subtotals=[1782, 1000, -100],
-            currency_id=self.currency_data['currency'].id
+            invoice_vals={
+                'currency_id': self.other_currency.id,
+                'amount_total': 2950.2,
+                'amount_tax': 268.2,
+                'invoice_lines': [{'price_subtotal': x} for x in (1782, 1000, -100)]
+            },
         )

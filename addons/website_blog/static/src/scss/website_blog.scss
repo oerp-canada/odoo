@@ -45,17 +45,6 @@ $o-wblog-loader-size: 50px;
 // Website Blog
 //------------------------------------------------------------------------------
 .website_blog {
-    .css_website_mail {
-        .o_has_error {
-            border-color: red;
-        }
-        .css_nav_month {
-            display: none;
-            &:first-of-type {
-                display: block;
-            }
-        }
-    }
 
     .o_wblog_page_cards_bg {
         // To be applied to the main container when 'card design' option is
@@ -74,7 +63,7 @@ $o-wblog-loader-size: 50px;
     // menu. The aim is to be able to write simple articles on the fly,
     // achieving a good design without being forced to use snippets.
     .o_wblog_read_text {
-        font-size: 18px;
+        @include font-size(18px);
         font-weight: 300;
     }
 
@@ -98,7 +87,7 @@ $o-wblog-loader-size: 50px;
         width: 3em;
         height: 3em;
         > i {
-            font-size: 1.3em;
+            @include font-size(1.3em);
         }
     }
 
@@ -115,6 +104,20 @@ $o-wblog-loader-size: 50px;
         }
     }
 
+    #o_wblog_post_content, .blog_header {
+        // Remove the '/' separators from breadcrumbs on small devices, as only
+        // the blog category is displayed on small screens.
+        @include media-breakpoint-down(lg) {
+            > nav.breadcrumb .breadcrumb-item {
+                padding-left: 0;
+
+                &::before {
+                    content: "";
+                }
+            }
+        }
+    }
+
     #o_wblog_post_comments {
         .o_portal_chatter > hr {
             display: none;
@@ -124,6 +127,10 @@ $o-wblog-loader-size: 50px;
     // Blog Post Page Cover
     // ==============================================
     .o_wblog_post_page_cover {
+        // "Latest Blog" Tag
+        .o_wblog_post_title > .h4 {
+            color: var(--o-cc3-btn-secondary-text);
+        }
 
         // Cover sizes
         // ==============================================
@@ -176,14 +183,14 @@ $o-wblog-loader-size: 50px;
     // Blog Post Specific
     // ==============================================
     .o_wblog_post_title {
-        #o_wblog_post_name {
+        .o_wblog_post_name {
             font-weight: $display-font-weight;
             line-height: $display-line-height;
             // Default font-size.
             @include font-size(map-get($display-font-sizes, 4));
         }
 
-        #o_wblog_post_subtitle {
+        .o_wblog_post_subtitle {
             font-weight: $lead-font-weight;
             // Default font-size.
             @include font-size($lead-font-size);
@@ -191,7 +198,7 @@ $o-wblog-loader-size: 50px;
     }
 
     // Refine multi-lines titles when using 'regular' cover
-    .o_wblog_regular_cover_container #o_wblog_post_name {
+    .o_wblog_regular_cover_container .o_wblog_post_name {
         line-height: 1;
         padding-bottom: 0.5rem;
     }
@@ -205,6 +212,10 @@ $o-wblog-loader-size: 50px;
     #o_wblog_next_container {
         background-color: $body-bg;
         cursor: pointer;
+
+        .o_wblog_next_button:focus-visible {
+            outline: revert;
+        }
 
         .o_wblog_next_loader {
             transform: translateZ(1px);
@@ -234,7 +245,7 @@ $o-wblog-loader-size: 50px;
 
             padding-top: 33%;
             height: auto!important;
-            // This is mandatory as we do not want the CoverProperties 
+            // This is mandatory as we do not want the CoverProperties
             // sizing classes to be applied here
             min-height: auto!important;
 
@@ -245,7 +256,7 @@ $o-wblog-loader-size: 50px;
 
         .o_wblog_normalize_font {
             // normalize fonts
-            font-size: 13px;
+            @include font-size(13px);
             line-height: 1.45;
         }
 
@@ -260,8 +271,24 @@ $o-wblog-loader-size: 50px;
             .o_wblog_post_cover_nocard .o_record_cover_container {
                 padding-top: 33%;
             }
+
+            @include media-breakpoint-down(md) {
+                > .row {
+                    margin-left: 0;
+                    margin-right: 0;
+                }
+            }
         }
 
+    }
+
+    > nav > .container {
+        // If the navbar contains at least 10 items (random choice), the search
+        // input is placed at the top to avoid being centered in a multi-line
+        // navbar, which wouldn’t look good.
+        &:has(> ul.navbar-nav .nav-item:nth-child(10)) .o_searchbar_form {
+            align-self: start;
+        }
     }
 
     //  Editor Helpers
@@ -272,7 +299,7 @@ $o-wblog-loader-size: 50px;
             padding: 30px 0;
         }
 
-        // Hide the big "DRAG BUILDING BLOCKS HERE" box when inside a sidebar.
+        // Hide the big "Drag blocks here" box when inside a sidebar.
         // The purple lines are enough to help the user dropping snippets.
         #o_wblog_sidebar .oe_structure:empty {
             display: none;

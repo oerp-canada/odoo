@@ -1,53 +1,54 @@
+# Part of Odoo. See LICENSE file for full copyright and licensing details.
+
+import re
+
 from odoo import models
-from odoo.http import request
-from odoo.addons.bus.websocket import wsrequest
+from odoo.tools.misc import verify_limited_field_access_token
 
 
 class IrWebsocket(models.AbstractModel):
+    """Override to handle discuss specific features (channel in particular)."""
+
     _inherit = "ir.websocket"
 
-    def _get_im_status(self, data):
-        im_status = super()._get_im_status(data)
-        if "mail.guest" in data:
-            im_status["Guest"] = (
-                self.env["mail.guest"]
-                .sudo()
-                .with_context(active_test=False)
-                .search_read([("id", "in", data["mail.guest"])], ["im_status"])
-            )
-        return im_status
-
     def _build_bus_channel_list(self, channels):
-        #  This method can either be called due to an http or a
-        #  websocket request. The request itself is necessary to
-        #  retrieve the current guest. Let's retrieve the proper
-        #  request.
-        req = request or wsrequest
         channels = list(channels)  # do not alter original list
-        guest_sudo = self.env["mail.guest"]._get_guest_from_request(req).sudo()
-        discuss_channels = self.env["discuss.channel"]
-        if req.session.uid:
-            discuss_channels = self.env.user.partner_id.channel_ids
-        elif guest_sudo:
-            discuss_channels = guest_sudo.channel_ids
-            channels.append(guest_sudo)
-        for discuss_channel in discuss_channels:
-            channels.append(discuss_channel)
-        return super()._build_bus_channel_list(channels)
-
-    def _update_bus_presence(self, inactivity_period, im_status_ids_by_model):
-        super()._update_bus_presence(inactivity_period, im_status_ids_by_model)
-        if not self.env.user or self.env.user._is_public():
-            #  This method can either be called due to an http or a
-            #  websocket request. The request itself is necessary to
-            #  retrieve the current guest. Let's retrieve the proper
-            #  request.
-            req = request or wsrequest
-            guest_sudo = self.env["mail.guest"]._get_guest_from_request(req).sudo()
-            if not guest_sudo:
-                return
-            guest_sudo.env["bus.presence"].update_presence(
-                inactivity_period,
-                identity_field="guest_id",
-                identity_value=guest_sudo.id,
+        discuss_channel_ids = list()
+        discuss_category_id_token_map = {}
+        for channel in list(channels):
+            if isinstance(channel, str) and channel.startswith("mail.guest_"):
+                channels.remove(channel)
+                guest = self.env["mail.guest"]._get_guest_from_token(channel.split("_")[1])
+                if guest:
+                    self = self.with_context(guest=guest)
+            if isinstance(channel, str) and channel.startswith("discuss.category_"):
+                channels.remove(channel)
+                split_str = channel.rsplit("_", 2)
+                cid, token = int(split_str[1]), split_str[2] if len(split_str) == 3 else None
+                if token or not discuss_category_id_token_map.get(cid):
+                    discuss_category_id_token_map[cid] = token
+            if isinstance(channel, str):
+                match = re.findall(r'discuss\.channel_(\d+)', channel)
+                if match:
+                    channels.remove(channel)
+                    discuss_channel_ids.append(int(match[0]))
+        guest = self.env["mail.guest"]._get_guest_from_context()
+        if guest:
+            channels.append(guest)
+        domain = ["|", ("is_member", "=", True), ("id", "in", discuss_channel_ids)]
+        all_user_channels = self.env["discuss.channel"].search(domain)
+        internal_specific_channels = [
+            (c, "internal_users")
+            for c in all_user_channels
+            if not self.env.user.share
+        ]
+        channels.extend([*all_user_channels, *internal_specific_channels])
+        discuss_categories = self.env["discuss.category"].browse(discuss_category_id_token_map.keys())
+        allowed_discuss_categories = discuss_categories.filtered(
+            lambda category: verify_limited_field_access_token(
+                category, "id", discuss_category_id_token_map[category.id], scope="bus.channel"
             )
+            or category.has_access("read"),
+        )
+        channels.extend(allowed_discuss_categories)
+        return super()._build_bus_channel_list(channels)

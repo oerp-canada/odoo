@@ -1,6 +1,4 @@
-/** @odoo-module **/
-
-import { _lt } from "@web/core/l10n/translation";
+import { _t } from "@web/core/l10n/translation";
 import { registry } from "@web/core/registry";
 import { GraphArchParser } from "./graph_arch_parser";
 import { GraphModel } from "./graph_model";
@@ -12,15 +10,12 @@ const viewRegistry = registry.category("views");
 
 export const graphView = {
     type: "graph",
-    display_name: _lt("Graph"),
-    icon: "fa fa-area-chart",
-    multiRecord: true,
     Controller: GraphController,
     Renderer: GraphRenderer,
     Model: GraphModel,
     ArchParser: GraphArchParser,
     SearchModel: GraphSearchModel,
-    searchMenuTypes: ["filter", "groupBy", "comparison", "favorite"],
+    searchMenuTypes: ["filter", "groupBy", "favorite"],
     buttonTemplate: "web.GraphView.Buttons",
 
     props: (genericProps, view) => {
@@ -37,13 +32,14 @@ export const graphView = {
                 fields: fields,
                 groupBy: archInfo.groupBy,
                 measure: archInfo.measure || "__count",
+                viewMeasures: archInfo.measures,
                 mode: archInfo.mode || "bar",
                 order: archInfo.order || null,
                 resModel: resModel,
                 stacked: "stacked" in archInfo ? archInfo.stacked : true,
                 cumulated: archInfo.cumulated || false,
                 cumulatedStart: archInfo.cumulatedStart || false,
-                title: archInfo.title || _lt("Untitled"),
+                title: archInfo.title || _t("Untitled"),
             };
         }
 

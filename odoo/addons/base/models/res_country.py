@@ -1,13 +1,11 @@
-# -*- coding: utf-8 -*-
 # Part of Odoo. See LICENSE file for full copyright and licensing details.
 
 import re
 import logging
 from odoo import api, fields, models, tools
-from odoo.osv import expression
 from odoo.exceptions import UserError
-from psycopg2 import IntegrityError
-from odoo.tools.translate import _
+from odoo.fields import Domain
+
 _logger = logging.getLogger(__name__)
 
 
@@ -21,6 +19,7 @@ FLAG_MAPPING = {
     "RE": "fr",
     "MF": "fr",
     "UM": "us",
+    "XI": "uk",
 }
 
 NO_FLAG_COUNTRIES = [
@@ -29,10 +28,13 @@ NO_FLAG_COUNTRIES = [
 ]
 
 
-class Country(models.Model):
+class ResCountry(models.CachedModel):
     _name = 'res.country'
     _description = 'Country'
-    _order = 'name'
+    _explanation = "Represents a nation or territory. Used for addressing, tax rules (fiscal positions), and localization settings."
+    _order = 'name, id'
+    _rec_names_search = ['name', 'code']
+    _cached_data_fields = ('code', 'currency_id', 'phone_code')
 
     name = fields.Char(
         string='Country Name', required=True, translate=True)
@@ -64,6 +66,7 @@ class Country(models.Model):
     phone_code = fields.Integer(string='Country Calling Code')
     country_group_ids = fields.Many2many('res.country.group', 'res_country_res_country_group_rel',
                          'res_country_id', 'res_country_group_id', string='Country Groups')
+    country_group_codes = fields.Json(compute="_compute_country_group_codes")
     state_ids = fields.One2many('res.country.state', 'country_id', string='States')
     name_position = fields.Selection([
             ('before', 'Before Address'),
@@ -75,51 +78,56 @@ class Country(models.Model):
     state_required = fields.Boolean(default=False)
     zip_required = fields.Boolean(default=True)
 
-    _sql_constraints = [
-        ('name_uniq', 'unique (name)',
-            'The name of the country must be unique!'),
-        ('code_uniq', 'unique (code)',
-            'The code of the country must be unique!')
-    ]
-
-    def _name_search(self, name, domain=None, operator='ilike', limit=None, order=None):
-        if domain is None:
-            domain = []
-
-        ids = []
-        if len(name) == 2:
-            ids = list(self._search([('code', 'ilike', name)] + domain, limit=limit, order=order))
-
-        search_domain = [('name', operator, name)]
-        if ids:
-            search_domain.append(('id', 'not in', ids))
-        ids += list(self._search(search_domain + domain, limit=limit, order=order))
-
-        return ids
+    _name_uniq = models.Constraint(
+        'unique (name)',
+        "The name of the country must be unique!",
+    )
+    _code_uniq = models.Constraint(
+        'unique (code)',
+        "The code of the country must be unique!",
+    )
 
     @api.model
-    @tools.ormcache('code')
+    def name_search(self, name='', domain=None, operator='ilike', limit=100):
+        result = []
+        domain = Domain(domain or Domain.TRUE)
+        # first search by code
+        if not operator in Domain.NEGATIVE_OPERATORS and name and len(name) == 2:
+            countries = self.search_fetch(domain & Domain('code', operator, name), ['display_name'], limit=limit)
+            result.extend((country.id, country.display_name) for country in countries.sudo())
+            domain &= Domain('id', 'not in', countries.ids)
+            if limit is not None:
+                limit -= len(countries)
+                if limit <= 0:
+                    return result
+        # normal search
+        result.extend(super().name_search(name, domain, operator, limit))
+        return result
+
+    @api.model
+    @tools.ormcache('code', cache='stable')
     def _phone_code_for(self, code):
-        return self.search([('code', '=', code)]).phone_code
+        data = self._cached_data()
+        for country_code, phone_code in zip(data['code'], data['phone_code']):
+            if country_code == code:
+                return phone_code
+        return False
 
     @api.model_create_multi
     def create(self, vals_list):
         for vals in vals_list:
             if vals.get('code'):
                 vals['code'] = vals['code'].upper()
-        return super(Country, self).create(vals_list)
+        return super().create(vals_list)
 
     def write(self, vals):
         if vals.get('code'):
             vals['code'] = vals['code'].upper()
         res = super().write(vals)
-        if ('code' in vals or 'phone_code' in vals):
-            # Intentionally simplified by not clearing the cache in create and unlink.
-            self.clear_caches()
         if 'address_view_id' in vals:
             # Changing the address view of the company must invalidate the view cached for res.partner
             # because of _view_get_address
-            self.env['res.partner'].clear_caches()
+            self.env.registry.clear_cache('templates')
         return res
 
     def get_address_fields(self):
@@ -139,61 +147,121 @@ class Country(models.Model):
     def _check_address_format(self):
         for record in self:
             if record.address_format:
-                address_fields = self.env['res.partner']._formatting_address_fields() + ['state_code', 'state_name', 'country_code', 'country_name', 'company_name']
+                address_fields = self.env['res.partner']._formatting_address_fields() + ['state_code', 'state_name', 'country_code', 'country_name', 'parent_name']
                 try:
                     record.address_format % {i: 1 for i in address_fields}
                 except (ValueError, KeyError):
-                    raise UserError(_('The layout contains an invalid format key'))
+                    raise UserError(self.env._('The layout contains an invalid format key'))
 
-class CountryGroup(models.Model):
-    _description = "Country Group"
+    @api.depends('country_group_ids')
+    def _compute_country_group_codes(self):
+        '''If a country has no associated country groups, assign [''] to country_group_codes.
+        This prevents storing [] as False, which helps avoid iteration over a False value and
+        maintains a valid structure.
+        '''
+        for country in self:
+            country.country_group_codes = [g.code for g in country.country_group_ids if g.code] or ['']
+
+
+class ResCountryGroup(models.Model):
     _name = 'res.country.group'
+    _description = "Country Group"
 
     name = fields.Char(required=True, translate=True)
+    code = fields.Char(string="Code")
     country_ids = fields.Many2many('res.country', 'res_country_res_country_group_rel',
                                    'res_country_group_id', 'res_country_id', string='Countries')
 
+    _check_code_uniq = models.Constraint(
+        'unique(code)',
+        'The country group code must be unique!',
+    )
 
-class CountryState(models.Model):
-    _description = "Country state"
+    def _sanitize_vals(self, vals):
+        if code := vals.get('code'):
+            vals['code'] = code.upper()
+        return vals
+
+    @api.model_create_multi
+    def create(self, vals_list):
+        return super().create([self._sanitize_vals(vals) for vals in vals_list])
+
+    def write(self, vals):
+        return super().write(self._sanitize_vals(vals))
+
+
+class ResCountryState(models.Model):
     _name = 'res.country.state'
-    _order = 'code'
+    _description = "Country state"
+    _explanation = "Represents a sub-division of a country, such as a state, province, or region."
+    _order = 'code, id'
+    _rec_names_search = ['name', 'code']
 
-    country_id = fields.Many2one('res.country', string='Country', required=True)
+    country_id = fields.Many2one('res.country', string='Country', required=True, index=True)
     name = fields.Char(string='State Name', required=True,
-               help='Administrative divisions of a country. E.g. Fed. State, Departement, Canton')
+               help='Administrative divisions of a country. E.g. Fed. State, Department, Canton')
     code = fields.Char(string='State Code', help='The state code.', required=True)
 
-    _sql_constraints = [
-        ('name_code_uniq', 'unique(country_id, code)', 'The code of the state must be unique by country!')
-    ]
+    _name_code_uniq = models.Constraint(
+        'unique(country_id, code)',
+        "The code of the state must be unique by country!",
+    )
 
     @api.model
-    def _name_search(self, name, domain=None, operator='ilike', limit=None, order=None):
-        domain = domain or []
-        if self.env.context.get('country_id'):
-            domain = expression.AND([domain, [('country_id', '=', self.env.context.get('country_id'))]])
+    def name_search(self, name='', domain=None, operator='ilike', limit=100):
+        result = []
+        domain = Domain(domain or Domain.TRUE)
+        # accepting 'in' as operator (see odoo/addons/base/tests/test_res_country.py)
+        if operator == 'in':
+            if limit is None:
+                limit = 100  # force a limit
+            for item in name:
+                result.extend(self.name_search(item, domain, operator='=', limit=limit - len(result)))
+                if len(result) == limit:
+                    break
+            return result
+        # first search by code (with =ilike)
+        if not operator in Domain.NEGATIVE_OPERATORS and name:
+            states = self.search_fetch(domain & Domain('code', '=like', name), ['display_name'], limit=limit)
+            result.extend((state.id, state.display_name) for state in states.sudo())
+            domain &= Domain('id', 'not in', states.ids)
+            if limit is not None:
+                limit -= len(states)
+                if limit <= 0:
+                    return result
+        # normal search
+        result.extend(super().name_search(name, domain, operator, limit))
+        return result
 
-        if operator == 'ilike' and not (name or '').strip():
-            domain1 = []
-            domain2 = []
-        else:
-            domain1 = [('code', '=ilike', name)]
-            domain2 = [('name', operator, name)]
+    @api.model
+    def _search_display_name(self, operator, value):
+        domain = super()._search_display_name(operator, value)
+        if value and not operator in Domain.NEGATIVE_OPERATORS:
+            if operator in ('ilike', '='):
+                domain |= self._get_name_search_domain(value, operator)
+            elif operator == 'in':
+                domain |= Domain.OR(
+                    self._get_name_search_domain(name, '=') for name in value
+                )
+        if country_id := self.env.context.get('country_id'):
+            domain &= Domain('country_id', '=', country_id)
+        return domain
 
-        first_state_ids = []
-        if domain1:
-            first_state_ids = list(self._search(
-                expression.AND([domain1, domain]), limit=limit, order=order,
-            ))
-        return first_state_ids + [
-            state_id
-            for state_id in self._search(expression.AND([domain2, domain]),
-                                         limit=limit, order=order)
-            if state_id not in first_state_ids
-        ]
+    def _get_name_search_domain(self, name, operator):
+        m = re.fullmatch(r"(?P<name>.+)\((?P<country>.+)\)", name)
+        if m:
+            return Domain([
+                ('name', operator, m['name'].strip()),
+                '|', ('country_id.name', 'ilike', m['country'].strip()),
+                ('country_id.code', '=', m['country'].strip()),
+            ])
+        return Domain.FALSE
 
     @api.depends('country_id')
+    @api.depends_context('formatted_display_name')
     def _compute_display_name(self):
         for record in self:
-            record.display_name = f"{record.name} ({record.country_id.code})"
+            if self.env.context.get('formatted_display_name'):
+                record.display_name = f"{record.name} \t --{record.country_id.code}--"
+            else:
+                record.display_name = f"{record.name} ({record.country_id.code})"

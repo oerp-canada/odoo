@@ -1,17 +1,18 @@
-# -*- coding: utf-8 -*-
 # Part of Odoo. See LICENSE file for full copyright and licensing details.
 
-from datetime import datetime, time
+from datetime import datetime, time, UTC
+from zoneinfo import ZoneInfo
+
 from dateutil.relativedelta import relativedelta
 
-import pytz
-
-from odoo import Command
 from odoo import tests
+from odoo.tests import tagged
+
 from odoo.addons.mail.tests.common import MailCommon
 
 
 @tests.tagged('mail_activity_mixin')
+@tagged('at_install', '-post_install')  # LEGACY at_install
 class TestMailActivityMixin(MailCommon):
 
     @classmethod
@@ -44,21 +45,19 @@ class TestMailActivityMixin(MailCommon):
             })
 
         def schedule_meeting_activity(record, date_deadline, calendar_event=False):
-            meeting = record.activity_schedule('calendar.calendar_activity_test_default', date_deadline=date_deadline)
+            meeting = record.activity_schedule('calendar.calendar_activity_test_default', date_deadline=date_deadline, user_id=self.env.uid)
             meeting.calendar_event_id = calendar_event
             return meeting
 
-        group_partner_manager = self.env['ir.model.data']._xmlid_to_res_id('base.group_partner_manager')
         self.user_employee.write({
             'tz': self.user_admin.tz,
-            'groups_id': [Command.link(group_partner_manager)]
         })
         with self.with_user('employee'):
             test_record = self.env['res.partner'].browse(self.test_record.id)
             self.assertEqual(test_record.activity_ids, self.env['mail.activity'])
 
-            now_utc = datetime.now(pytz.UTC)
-            now_user = now_utc.astimezone(pytz.timezone(self.env.user.tz or 'UTC'))
+            now_utc = datetime.now(UTC)
+            now_user = now_utc.astimezone(ZoneInfo(self.env.user.tz or 'UTC'))
             today_user = now_user.date()
 
             date1 = today_user + relativedelta(days=1)
@@ -75,3 +74,8 @@ class TestMailActivityMixin(MailCommon):
             act1.calendar_event_id = ev1
 
             self.assertEqual(test_record.activity_calendar_event_id.name, ev1.name, "This should be the calendar event of the next activity")
+
+            act1._action_done(feedback="Mark activity as done with text")
+
+            self.assertFalse(act1.active, "activity marked as done should be archived")
+            self.assertTrue(ev1.exists(), "event of done activity must not be deleted")

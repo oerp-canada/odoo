@@ -1,21 +1,21 @@
-/** @odoo-module **/
-
-import { AccordionItem } from "@web/core/dropdown/accordion_item";
-
-import { Component, useState } from "@odoo/owl";
+import { Component } from "@odoo/owl";
 
 export class CustomGroupByItem extends Component {
-    setup() {
-        this.state = useState({});
-        if (this.props.fields.length) {
-            this.state.fieldName = this.props.fields[0].name;
+    static template = "web.CustomGroupByItem";
+    static props = {
+        fields: Array,
+        onAddCustomGroup: Function,
+    };
+
+    get choices() {
+        return this.props.fields.map((f) => ({ label: f.string, value: f.name }));
+    }
+
+    onSelected(ev) {
+        if (ev.target.value) {
+            this.props.onAddCustomGroup(ev.target.value);
+            // reset the placeholder
+            ev.target.value = "";
         }
     }
 }
-
-CustomGroupByItem.template = "web.CustomGroupByItem";
-CustomGroupByItem.components = { AccordionItem };
-CustomGroupByItem.props = {
-    fields: Array,
-    onAddCustomGroup: Function,
-};

@@ -6,8 +6,9 @@ import os
 import re
 import shutil
 
-import odoo
-from odoo.tools.config import config
+import odoo.modules
+from odoo import api
+from .config import config
 
 VERSION = 1
 DEFAULT_EXCLUDE = [
@@ -20,10 +21,11 @@ DEFAULT_EXCLUDE = [
     "upgrades/**/*",
 ]
 
-STANDARD_MODULES = ['web', 'web_enterprise', 'theme_common', 'base']
+STANDARD_MODULES = ['web', 'web_enterprise', 'test_themes', 'base']
 MAX_FILE_SIZE = 25 * 2**20 # 25 MB
 MAX_LINE_SIZE = 100000
 VALID_EXTENSION = ['.py', '.js', '.xml', '.css', '.scss']
+
 
 class Cloc(object):
     def __init__(self):
@@ -137,7 +139,7 @@ class Cloc(object):
 
         module_name = os.path.basename(path)
         self.book(module_name)
-        for root, dirs, files in os.walk(path):
+        for root, _dirs, files in os.walk(path):
             for file_name in files:
                 file_path = os.path.join(root, file_name)
 
@@ -160,8 +162,10 @@ class Cloc(object):
 
     def count_modules(self, env):
         # Exclude standard addons paths
-        exclude_heuristic = [odoo.modules.get_module_path(m, display_warning=False) for m in STANDARD_MODULES]
-        exclude_path = set([os.path.dirname(os.path.realpath(m)) for m in exclude_heuristic if m])
+        exclude_path = {
+            m.addons_path for name in STANDARD_MODULES
+            if (m := odoo.modules.Manifest.for_addon(name, display_warning=False))
+        }
 
         domain = [('state', '=', 'installed')]
         # if base_import_module is present
@@ -170,11 +174,9 @@ class Cloc(object):
         module_list = env['ir.module.module'].search(domain).mapped('name')
 
         for module_name in module_list:
-            module_path = os.path.realpath(odoo.modules.get_module_path(module_name))
-            if module_path:
-                if any(module_path.startswith(i) for i in exclude_path):
-                    continue
-                self.count_path(module_path)
+            manifest = odoo.modules.Manifest.for_addon(module_name)
+            if manifest and manifest.addons_path not in exclude_path:
+                self.count_path(manifest.path)
 
     def count_customization(self, env):
         imported_module_sa = ""
@@ -195,7 +197,7 @@ class Cloc(object):
         for a in env['ir.actions.server'].browse(data.keys()):
             self.book(
                 data[a.id][0] or "odoo/studio",
-                "ir.actions.server/%s: %s" % (a.id, a.name),
+                ("ir.actions.server", a.id, a.name),
                 self.parse_py(a.code),
                 '__cloc_exclude__' in data[a.id][1]
             )
@@ -221,7 +223,7 @@ class Cloc(object):
         for f in env['ir.model.fields'].browse(data.keys()):
             self.book(
                 data[f.id][0] or "odoo/studio",
-                "ir.model.fields/%s: %s" % (f.id, f.name),
+                ("ir.model.fields", f.id, f.name),
                 self.parse_py(f.compute),
                 '__cloc_exclude__' in data[f.id][1]
             )
@@ -245,7 +247,7 @@ class Cloc(object):
             module_name = custom_views[view.id][0]
             self.book(
                 module_name,
-                "/%s/views/%s.xml" % (module_name, view.name),
+                ("ir.ui.view", view.id, view.name),
                 self.parse_xml(view.arch_base),
                 '__cloc_exclude__' in custom_views[view.id][1]
             )
@@ -268,16 +270,16 @@ class Cloc(object):
             if ext not in VALID_EXTENSION:
                 continue
 
-            if len(attach.datas) > MAX_FILE_SIZE:
-                self.book(module_name, attach.url, (-1, "Max file size exceeded"))
+            if attach.raw.size > MAX_FILE_SIZE:
+                self.book(module_name, ("ir.attachment", attach.id, attach.url), (-1, "Max file size exceeded"))
                 continue
 
             # Decode using latin1 to avoid error that may raise by decoding with utf8
             # The chars not correctly decoded in latin1 have no impact on how many lines will be counted
-            content = attach.raw.decode('latin1')
+            content = attach.raw.content.decode('latin1')
             self.book(
                 module_name,
-                attach.url,
+                ("ir.attachment", attach.id, attach.url),
                 self.parse(content, ext),
                 '__cloc_exclude__' in uploaded_file[attach.id][1],
             )
@@ -287,10 +289,10 @@ class Cloc(object):
         self.count_customization(env)
 
     def count_database(self, database):
-        registry = odoo.registry(config['db_name'])
+        registry = odoo.modules.registry.Registry(database)
         with registry.cursor() as cr:
-            uid = odoo.SUPERUSER_ID
-            env = odoo.api.Environment(cr, uid, {})
+            uid = api.SUPERUSER_ID
+            env = api.Environment(cr, uid, {})
             self.count_env(env)
 
     #------------------------------------------------------
@@ -298,6 +300,15 @@ class Cloc(object):
     #------------------------------------------------------
     # pylint: disable=W0141
     def report(self, verbose=False, width=None):
+        def format_item(item, module):
+            if isinstance(item, tuple):
+                if item[0] == "ir.ui.view":
+                    return f"{module}/views/{item[2]}.xml"
+                elif item[0] == "ir.attachment":
+                    return item[2]
+                else:
+                    return f"{item[0]}/{item[1]}: {item[2]}"
+            return item
         # Prepare format
         if not width:
             width = min(self.max_width, shutil.get_terminal_size()[0] - 24)
@@ -312,7 +323,7 @@ class Cloc(object):
             if verbose:
                 for i in sorted(self.modules[m], key=lambda i: self.modules[m][i][0], reverse=True):
                     code, total = self.modules[m][i]
-                    s += fmt.format(k='    ' + i, lines=total, other=total - code, code=code)
+                    s += fmt.format(k='    ' + format_item(i, m), lines=total, other=total - code, code=code)
         s += hr
         total = sum(self.total.values())
         code = sum(self.code.values())
@@ -325,7 +336,7 @@ class Cloc(object):
             for m in sorted(self.excluded):
                 for i in sorted(self.excluded[m], key=lambda i: self.excluded[m][i][0], reverse=True):
                     code, total = self.excluded[m][i]
-                    ex += fmt.format(k='    ' + i, lines=total, other=total - code, code=code)
+                    ex += fmt.format(k='    ' + format_item(i, m), lines=total, other=total - code, code=code)
             ex += hr
             print(ex)
 
@@ -334,5 +345,27 @@ class Cloc(object):
             for m in sorted(self.errors):
                 e += "{}\n".format(m)
                 for i in sorted(self.errors[m]):
-                    e += fmt.format(k='    ' + i, lines=self.errors[m][i], other='', code='')
+                    e += fmt.format(k='    ' + format_item(i, m), lines=self.errors[m][i], other='', code='')
             print(e)
+
+    def report_as_dict(self):
+        records = []
+        for billable, modules in [(True, self.modules), (False, self.excluded)]:
+            for module, pseudo_records in modules.items():
+                for pseudo_record, counts in pseudo_records.items():
+                    records.append(record := {
+                        "module": module,
+                        "display_name": pseudo_record,
+                        "code_lines": counts[0],
+                        "all_lines": counts[1],
+                        "billable": billable,
+                    })
+                    if isinstance(pseudo_record, tuple):
+                        record['model'] = pseudo_record[0]
+                        record['id'] = pseudo_record[1]
+                        record['display_name'] = pseudo_record[2]
+        return {
+            "records": records,
+            "total_billable": sum(self.code.values()),
+            "total_lines": sum(self.total.values()),
+        }

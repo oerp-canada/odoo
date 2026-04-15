@@ -9,14 +9,6 @@ class AccountChartTemplate(models.AbstractModel):
     @template('pe')
     def _get_pe_template_data(self):
         return {
-            'property_account_receivable_id': 'chart1213',
-            'property_account_payable_id': 'chart4212',
-            'property_account_expense_categ_id': 'chart6329',
-            'property_account_expense_id': 'chart6011',
-            'property_account_income_categ_id': 'chart70121',
-            'property_stock_account_input_categ_id': 'chart6111',
-            'property_stock_account_output_categ_id': 'chart69111',
-            'property_stock_valuation_account_id': 'chart20111',
             'code_digits': '7',
         }
 
@@ -33,5 +25,21 @@ class AccountChartTemplate(models.AbstractModel):
                 'expense_currency_exchange_account_id': 'chart676',
                 'account_journal_early_pay_discount_loss_account_id': 'chart675',
                 'account_journal_early_pay_discount_gain_account_id': 'chart775',
+                'account_sale_tax_id': 'sale_tax_igv_18',
+                'account_purchase_tax_id': 'purchase_tax_igv_18',
+                'expense_account_id': 'chart6329',
+                'income_account_id': 'chart70121',
+                'receivable_account_id': 'chart1213',
+                'payable_account_id': 'chart4212',
+                'account_stock_valuation_id': 'chart20111',
+            },
+        }
+
+    @template('pe', 'account.account')
+    def _get_pe_account_account(self):
+        return {
+            'chart20111': {
+                'account_stock_expense_id': 'chart6111',
+                'account_stock_variation_id': 'chart69121',
             },
         }

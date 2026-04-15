@@ -5,12 +5,15 @@ import babel.dates
 import werkzeug
 
 from odoo import http, fields, tools, models
-from odoo.addons.http_routing.models.ir_http import slug
 from odoo.addons.portal.controllers.portal import pager as portal_pager
 from odoo.exceptions import AccessError
-from odoo.http import request
-from odoo.osv import expression
+from odoo.fields import Domain
+from odoo.http import request, Response
+from odoo.tools import consteq
+from odoo.tools.translate import LazyTranslate
 from odoo.tools.misc import get_lang
+
+_lt = LazyTranslate(__name__)
 
 
 class PortalMailGroup(http.Controller):
@@ -24,7 +27,7 @@ class PortalMailGroup(http.Controller):
 
     def _get_archives(self, group_id):
         """Return the different date range and message count for the group messages."""
-        domain = expression.AND([self._get_website_domain(), [('mail_group_id', '=', group_id)]])
+        domain = Domain.AND([self._get_website_domain(), [('mail_group_id', '=', group_id)]])
         results = request.env['mail.group.message']._read_group(
             domain,
             groupby=['create_date:month'],
@@ -45,7 +48,7 @@ class PortalMailGroup(http.Controller):
                 'messages_count': count,
             })
 
-        thread_domain = expression.AND([domain, [('group_message_parent_id', '=', False)]])
+        thread_domain = Domain.AND([domain, [('group_message_parent_id', '=', False)]])
         threads_count = request.env['mail.group.message'].search_count(thread_domain)
 
         return {
@@ -57,7 +60,7 @@ class PortalMailGroup(http.Controller):
     # MAIN PAGE
     # ------------------------------------------------------------
 
-    @http.route('/groups', type='http', auth='public', sitemap=True, website=True)
+    @http.route('/groups', type='http', auth='public', sitemap=True, website=True, list_as_website_content=_lt("Groups"))
     def groups_index(self, email='', **kw):
         """View of the group lists. Allow the users to subscribe and unsubscribe."""
         if kw.get('group_id') and kw.get('token'):
@@ -105,12 +108,12 @@ class PortalMailGroup(http.Controller):
     def group_view_messages(self, group, page=1, mode='thread', date_begin=None, date_end=None, **post):
         GroupMessage = request.env['mail.group.message']
 
-        domain = expression.AND([self._get_website_domain(), [('mail_group_id', '=', group.id)]])
+        domain = Domain.AND([self._get_website_domain(), [('mail_group_id', '=', group.id)]])
         if mode == 'thread':
-            domain = expression.AND([domain, [('group_message_parent_id', '=', False)]])
+            domain &= Domain('group_message_parent_id', '=', False)
 
         if date_begin and date_end:
-            domain = expression.AND([domain, [('create_date', '>', date_begin), ('create_date', '<=', date_end)]])
+            domain &= Domain('create_date', '>', date_begin) & Domain('create_date', '<=', date_end)
 
         # SUDO after the search to apply access rules but be able to read attachments
         messages_sudo = GroupMessage.search(
@@ -118,7 +121,7 @@ class PortalMailGroup(http.Controller):
             offset=(page - 1) * self._thread_per_page).sudo()
 
         pager = portal_pager(
-            url=f'/groups/{slug(group)}',
+            url=f'/groups/{request.env["ir.http"]._slug(group)}',
             total=GroupMessage.search_count(domain),
             page=page,
             step=self._thread_per_page,
@@ -141,23 +144,23 @@ class PortalMailGroup(http.Controller):
         })
 
     @http.route('/groups/<model("mail.group"):group>/<model("mail.group.message"):message>',
-                type='http', auth='public', sitemap=True, website=True)
+                type='http', auth='public', sitemap=False, website=True)
     def group_view_message(self, group, message, mode='thread', date_begin=None, date_end=None, **post):
         if group != message.mail_group_id:
             raise werkzeug.exceptions.NotFound()
 
         GroupMessage = request.env['mail.group.message']
-        base_domain = expression.AND([
+        base_domain = Domain.AND([
             self._get_website_domain(),
             [('mail_group_id', '=', group.id),
              ('group_message_parent_id', '=', message.group_message_parent_id.id)],
         ])
 
         next_message = GroupMessage.search(
-            expression.AND([base_domain, [('id', '>', message.id)]]),
+            base_domain & Domain('id', '>', message.id),
             order='id ASC', limit=1)
         prev_message = GroupMessage.search(
-            expression.AND([base_domain, [('id', '<', message.id)]]),
+            base_domain & Domain('id', '<', message.id),
             order='id DESC', limit=1)
 
         message_sudo = message.sudo()
@@ -178,12 +181,12 @@ class PortalMailGroup(http.Controller):
         return request.render('mail_group.group_message', values)
 
     @http.route('/groups/<model("mail.group"):group>/<model("mail.group.message"):message>/get_replies',
-                type='json', auth='public', methods=['POST'], website=True)
+                type='jsonrpc', auth='public', methods=['POST'], website=True)
     def group_message_get_replies(self, group, message, last_displayed_id, **post):
         if group != message.mail_group_id:
             raise werkzeug.exceptions.NotFound()
 
-        replies_domain = expression.AND([
+        replies_domain = Domain.AND([
             self._get_website_domain(),
             [('id', '>', int(last_displayed_id)), ('group_message_parent_id', '=', message.id)],
         ])
@@ -211,7 +214,32 @@ class PortalMailGroup(http.Controller):
     # SUBSCRIPTION
     # ------------------------------------------------------------
 
-    @http.route('/group/subscribe', type='json', auth='public', website=True)
+    # csrf is disabled here because it will be called by the MUA with unpredictable session at that time
+    @http.route('/group/<int:group_id>/unsubscribe_oneclick', website=True, type='http', auth='public',
+           methods=['POST'], csrf=False)
+    def group_unsubscribe_oneclick(self, group_id, token, email):
+        """ Unsubscribe a given user from a given group. One-click unsubscribe
+        allow mail user agent to propose a one click button to the user to
+        unsubscribe as defined in rfc8058. Only POST method is allowed preventing
+        the risk that anti-spam trigger unwanted unsubscribe (scenario explained
+        in the same rfc).
+
+        :param int group_id: group ID from which user wants to unsubscribe;
+        :param str token: optional access token ensuring security;
+        :param email: email to unsubscribe;
+        """
+        group_sudo = request.env['mail.group'].sudo().browse(group_id).exists()
+        # new route parameters
+        if group_sudo and token and email:
+            correct_token = group_sudo._generate_email_access_token(email)
+            if not consteq(correct_token, token):
+                raise werkzeug.exceptions.NotFound()
+            group_sudo._leave_group(email)
+        else:
+            raise werkzeug.exceptions.NotFound()
+        return Response(status=200)
+
+    @http.route('/group/subscribe', type='jsonrpc', auth='public', website=True)
     def group_subscribe(self, group_id=0, email=None, token=None, **kw):
         """Subscribe the current logged user or the given email address to the mailing list.
 
@@ -245,7 +273,7 @@ class PortalMailGroup(http.Controller):
         group_sudo._send_subscribe_confirmation_email(email)
         return 'email_sent'
 
-    @http.route('/group/unsubscribe', type='json', auth='public', website=True)
+    @http.route('/group/unsubscribe', type='jsonrpc', auth='public', website=True)
     def group_unsubscribe(self, group_id=0, email=None, token=None, **kw):
         """Unsubscribe the current logged user or the given email address to the mailing list.
 
@@ -301,8 +329,7 @@ class PortalMailGroup(http.Controller):
         elif not token:
             try:
                 # Check that the current user has access to the group
-                group.check_access_rights('read')
-                group.check_access_rule('read')
+                group.check_access('read')
             except AccessError:
                 raise werkzeug.exceptions.NotFound()
 
@@ -321,9 +348,8 @@ class PortalMailGroup(http.Controller):
         if not group:
             return request.render('mail_group.invalid_token_subscription')
 
-        partners = request.env['mail.thread'].sudo()._mail_find_partner_from_emails([email])
-        partner_id = partners[0].id if partners else None
-        group._join_group(email, partner_id)
+        partner = request.env['mail.thread'].sudo()._partner_find_from_emails_single([email], no_create=True)
+        group._join_group(email, partner.id)
 
         return request.render('mail_group.confirmation_subscription', {
             'group': group,

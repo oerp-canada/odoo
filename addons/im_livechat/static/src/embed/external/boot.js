@@ -1,57 +1,34 @@
-/* @odoo-module */
-
-import { LivechatButton } from "@im_livechat/embed/core_ui/livechat_button";
-import { makeShadow, makeRoot } from "@im_livechat/embed/boot_helpers";
-import { serverUrl } from "@im_livechat/embed/livechat_data";
-
-import { ChatWindowContainer } from "@mail/core/common/chat_window_container";
+import { makeRoot, makeShadow } from "@im_livechat/embed/common/boot_helpers";
+import { canLoadLivechat } from "@im_livechat/embed/common/misc";
 
 import { mount, whenReady } from "@odoo/owl";
 
-import { templates } from "@web/core/assets";
-import { browser } from "@web/core/browser/browser";
+import { loadBundle } from "@web/core/assets";
+import { appTranslateFn } from "@web/core/l10n/translation";
 import { MainComponentsContainer } from "@web/core/main_components_container";
-import { jsonrpc } from "@web/core/network/rpc_service";
-import { registry } from "@web/core/registry";
+import { getTemplate } from "@web/core/templates";
 import { makeEnv, startServices } from "@web/env";
 import { session } from "@web/session";
 
 (async function boot() {
-    session.origin = serverUrl;
-    const { fetch } = browser;
-    browser.fetch = function (url, ...args) {
-        if (!url.match(/^(?:https?:)?\/\//)) {
-            url = session.origin + url;
-        }
-        return fetch(url, ...args);
-    };
-    registry.category("services").add(
-        "rpc",
-        {
-            async: true,
-            start(env) {
-                let rpcId = 0;
-                return function rpc(route, params = {}, settings) {
-                    if (!route.match(/^(?:https?:)?\/\//)) {
-                        route = session.origin + route;
-                    }
-                    return jsonrpc(env, rpcId++, route, params, settings);
-                };
-            },
-        },
-        { force: true }
-    );
+    if (!canLoadLivechat()) {
+        return;
+    }
+    session.origin = session.livechatData.serverUrl;
     await whenReady();
-    const mainComponentsRegistry = registry.category("main_components");
-    mainComponentsRegistry.add("LivechatRoot", { Component: LivechatButton });
-    mainComponentsRegistry.add("ChatWindowContainer", { Component: ChatWindowContainer });
+    if (session.test_mode) {
+        await loadBundle("im_livechat.assets_livechat_support_tours");
+    }
     const env = makeEnv();
     await startServices(env);
     odoo.isReady = true;
     const target = await makeShadow(makeRoot(document.body));
+    env.services["discuss.rtc"].rootEl = target;
     await mount(MainComponentsContainer, target, {
         env,
-        templates,
+        getTemplate,
+        translatableAttributes: ["data-tooltip"],
+        translateFn: appTranslateFn,
         dev: env.debug,
     });
 })();

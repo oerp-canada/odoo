@@ -1,25 +1,24 @@
-# -*- coding: utf-8 -*-
 # Part of Odoo. See LICENSE file for full copyright and licensing details.
 
 {
     'name': 'Saudi Arabia - E-invoicing',
+    'author': 'Odoo S.A.',
     'countries': ['sa'],
-    'version': '0.1',
+    'version': '0.3',
     'depends': [
+        'account_edi',
         'account_edi_ubl_cii',
-        'account_debit_note',
         'l10n_sa',
-        'base_vat'
+        'base_vat',
+        'certificate',
     ],
-    'author': 'Odoo',
-    'summary': """
-        E-Invoicing, Universal Business Language
-    """,
+    'summary': "E-Invoicing, Universal Business Language",
     'description': """
-        E-invoice implementation for the Kingdom of Saudi Arabia
+E-invoice implementation for Saudi Arabia; Integration with ZATCA
     """,
     'category': 'Accounting/Localizations/EDI',
     'license': 'LGPL-3',
+    'post_init_hook': '_l10n_sa_edi_post_init',
     'data': [
         'security/ir.model.access.csv',
         'data/account_edi_format.xml',
@@ -32,9 +31,6 @@
         'views/res_company_views.xml',
         'views/res_config_settings_view.xml',
         'views/report_invoice.xml',
-    ],
-    'demo': [
-        'demo/demo_company.xml',
     ],
     'assets': {
         'web.assets_backend': [

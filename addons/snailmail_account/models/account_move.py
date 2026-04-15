@@ -1,14 +1,13 @@
-# -*- coding: utf-8 -*-
-# Part of Odoo. See LICENSE file for full copyright and licensing details.
-
-from odoo import models
+from odoo import api, models
 
 
 class AccountMove(models.Model):
     _inherit = "account.move"
 
-    def _get_pdf_and_send_invoice_vals(self, template):
-        # EXTENDS account
-        vals = super()._get_pdf_and_send_invoice_vals(template)
-        vals['checkbox_send_by_post'] = False
-        return vals
+    @api.ondelete(at_uninstall=False)
+    def unlink_snailmail_letters(self):
+        snailmail_letters = self.env['snailmail.letter'].search([
+            ('model', '=', 'account.move'),
+            ('res_id', 'in', self.ids),
+        ])
+        snailmail_letters.unlink()

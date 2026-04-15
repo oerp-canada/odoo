@@ -1,36 +1,40 @@
-/* @odoo-module */
-
-import { ImStatus } from "@mail/core/common/im_status";
+import { useExternalListener, useLayoutEffect, useRef, useState } from "@web/owl2/utils";
+import { DiscussAvatar } from "@mail/core/common/discuss_avatar";
 import { onExternalClick } from "@mail/utils/common/hooks";
 import { markEventHandled, isEventHandled } from "@web/core/utils/misc";
 
-import { Component, useEffect, useExternalListener, useRef, useState } from "@odoo/owl";
+import { Component } from "@odoo/owl";
 
 import { getActiveHotkey } from "@web/core/hotkeys/hotkey_service";
-import { usePosition } from "@web/core/position_hook";
+import { usePosition } from "@web/core/position/position_hook";
 import { useService } from "@web/core/utils/hooks";
 
 export class NavigableList extends Component {
-    static components = { ImStatus };
+    static components = { DiscussAvatar };
     static template = "mail.NavigableList";
     static props = {
-        anchorRef: {},
+        anchorRef: { optional: true },
         class: { type: String, optional: true },
         onSelect: { type: Function },
-        options: { type: [Array, Promise] },
+        options: { type: Array },
         optionTemplate: { type: String, optional: true },
-        placeholder: { type: String, optional: true },
         position: { type: String, optional: true },
+        closeOnSelect: { type: Boolean, optional: true },
+        isLoading: { type: Boolean, optional: true },
     };
-    static defaultProps = { position: "bottom" };
+    static defaultProps = {
+        position: "bottom",
+        closeOnSelect: true,
+        isLoading: false,
+    };
 
     setup() {
+        super.setup();
         this.rootRef = useRef("root");
         this.state = useState({
-            activeOption: null,
-            isLoading: false,
+            activeIndex: null,
             open: false,
-            options: [],
+            showLoading: false,
         });
         this.hotkey = useService("hotkey");
         this.hotkeysToRemove = [];
@@ -39,73 +43,58 @@ export class NavigableList extends Component {
         onExternalClick("root", async (ev) => {
             // Let event be handled by bubbling handlers first.
             await new Promise(setTimeout);
-            if (
-                isEventHandled(ev, "composer.onClickTextarea") ||
-                isEventHandled(ev, "channelSelector.onClickInput")
-            ) {
+            if (isEventHandled(ev, "composer.onClickTextarea")) {
                 return;
             }
             this.close();
         });
         // position and size
-        usePosition(() => this.props.anchorRef, {
-            popper: "root",
-            position: this.props.position,
-        });
-        useEffect(
+        usePosition("root", () => this.props.anchorRef, { position: this.props.position });
+        useLayoutEffect(
             () => {
                 this.open();
             },
             () => [this.props]
         );
+        useLayoutEffect(
+            () => {
+                if (!this.props.isLoading) {
+                    clearTimeout(this.loadingTimeoutId);
+                    this.state.showLoading = false;
+                } else if (!this.loadingTimeoutId) {
+                    this.loadingTimeoutId = setTimeout(() => (this.state.showLoading = true), 2000);
+                }
+            },
+            () => [this.props.isLoading]
+        );
     }
 
     get show() {
-        return Boolean(this.state.open && (this.state.isLoading || this.state.options.length));
+        return Boolean(this.state.open && (this.props.isLoading || this.props.options.length));
+    }
+
+    get sortedOptions() {
+        return this.props.options.sort((o1, o2) => (o1.group ?? 0) - (o2.group ?? 0));
     }
 
     open() {
-        if (this.state.isLoading) {
-            return;
-        }
-        this.load().then(() => {
-            this.state.open = true;
-            this.navigate("first");
-        });
+        this.state.open = true;
+        this.state.activeIndex = null;
+        this.navigate("first");
     }
 
     close() {
-        this.state.open = false;
-        this.state.activeOption = null;
-    }
-
-    async load() {
-        this.state.options = [];
-        const makeOption = (opt) => {
-            return Object.assign(Object.create(opt), {
-                id: this.state.options.length,
-            });
-        };
-        if (this.props.options instanceof Promise) {
-            this.state.isLoading = true;
-            return this.props.options.then((opts) => {
-                opts.forEach((opt) => this.state.options.push(makeOption(opt)));
-                this.state.isLoading = false;
-            });
-        }
-        if (this.props.options instanceof Array) {
-            if (this.props.options.length === 0) {
-                return;
-            }
-            this.props.options.forEach((opt) => this.state.options.push(makeOption(opt)));
+        if (this.props.closeOnSelect) {
+            this.state.open = false;
+            this.state.activeIndex = null;
         }
     }
 
-    isActiveOption(option) {
-        return this.state.activeOption?.id === option.id;
-    }
-
-    selectOption(ev, option, params = {}) {
+    selectOption(ev, index, params = {}) {
+        const option = this.props.options[index];
+        if (!option) {
+            return;
+        }
         if (option.unselectable) {
             this.close();
             return;
@@ -117,14 +106,17 @@ export class NavigableList extends Component {
     }
 
     navigate(direction) {
-        const activeOptionId = this.state.activeOption ? this.state.activeOption.id : -1;
+        if (this.props.options.length === 0) {
+            return;
+        }
+        const activeOptionId = this.state.activeIndex !== null ? this.state.activeIndex : 0;
         let targetId = undefined;
         switch (direction) {
             case "first":
                 targetId = 0;
                 break;
             case "last":
-                targetId = this.state.options.length - 1;
+                targetId = this.props.options.length - 1;
                 break;
             case "previous":
                 targetId = activeOptionId - 1;
@@ -135,7 +127,7 @@ export class NavigableList extends Component {
                 break;
             case "next":
                 targetId = activeOptionId + 1;
-                if (targetId > this.state.options.length - 1) {
+                if (targetId > this.props.options.length - 1) {
                     this.navigate("first");
                     return;
                 }
@@ -143,7 +135,7 @@ export class NavigableList extends Component {
             default:
                 return;
         }
-        this.state.activeOption = this.state.options.find((o) => o.id === targetId);
+        this.state.activeIndex = targetId;
     }
 
     onKeydown(ev) {
@@ -153,32 +145,34 @@ export class NavigableList extends Component {
         const hotkey = getActiveHotkey(ev);
         switch (hotkey) {
             case "enter":
-                if (!this.show || !this.state.activeOption) {
+                markEventHandled(ev, "NavigableList.select");
+                if (this.state.activeIndex === null) {
+                    this.close();
                     return;
                 }
-                markEventHandled(ev, "NavigableList.select");
-                this.selectOption(ev, this.state.activeOption);
+                this.selectOption(ev, this.state.activeIndex);
                 break;
             case "escape":
                 markEventHandled(ev, "NavigableList.close");
                 this.close();
                 break;
             case "tab":
-                this.navigate("next");
+                this.navigate(this.state.activeIndex === null ? "first" : "next");
                 break;
             case "arrowup":
-                this.navigate("previous");
+                this.navigate(this.state.activeIndex === null ? "first" : "previous");
                 break;
             case "arrowdown":
-                this.navigate("next");
+                this.navigate(this.state.activeIndex === null ? "first" : "next");
                 break;
             default:
                 return;
         }
+        if (this.props.options.length !== 0) {
+            ev.stopPropagation();
+        }
         ev.preventDefault();
     }
 
-    onOptionMouseEnter(option) {
-        this.state.activeOption = option;
-    }
+    onOptionMouseEnter(index) {}
 }

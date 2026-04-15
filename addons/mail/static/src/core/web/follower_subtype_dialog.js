@@ -1,23 +1,15 @@
-/* @odoo-module */
-
-import { Component, onWillStart, useState } from "@odoo/owl";
+import { useState } from "@web/owl2/utils";
+import { rpc } from "@web/core/network/rpc";
+import { Component, onWillStart } from "@odoo/owl";
 
 import { Dialog } from "@web/core/dialog/dialog";
 import { _t } from "@web/core/l10n/translation";
 import { useService } from "@web/core/utils/hooks";
-import { sprintf } from "@web/core/utils/strings";
-
-/**
- * @typedef {Object} SubtypeData
- * @property {boolean} followed
- * @property {number} id
- * @property {string} name
- */
 
 /**
  * @typedef {Object} Props
  * @property {function} close
- * @property {import("@mail/core/common/follower_model").Follower} follower
+ * @property {import("models").Follower} follower
  * @property {function} onFollowerChanged
  * @extends {Component<Props, Env>}
  */
@@ -27,15 +19,20 @@ export class FollowerSubtypeDialog extends Component {
     static template = "mail.FollowerSubtypeDialog";
 
     setup() {
-        this.rpc = useService("rpc");
+        super.setup();
+        this.store = useService("mail.store");
         this.state = useState({
-            /** @type {SubtypeData[]} */
+            /** @type {import("models").MailMessageSubtype[]} */
             subtypes: [],
         });
         onWillStart(async () => {
-            this.state.subtypes = await this.rpc("/mail/read_subscription_data", {
+            const { store_data, subtype_ids } = await rpc("/mail/read_subscription_data", {
                 follower_id: this.props.follower.id,
             });
+            this.store.insert(store_data);
+            this.state.subtypes = subtype_ids.map((id) =>
+                this.store["mail.message.subtype"].get(id)
+            );
         });
     }
 
@@ -44,23 +41,32 @@ export class FollowerSubtypeDialog extends Component {
      * @param {SubtypeData} subtype
      */
     onChangeCheckbox(ev, subtype) {
-        subtype.followed = ev.target.checked;
+        if (ev.target.checked) {
+            this.props.follower.subtype_ids.add(subtype);
+        } else {
+            this.props.follower.subtype_ids.delete(subtype);
+        }
     }
 
     async onClickApply() {
-        const selectedSubtypes = this.state.subtypes.filter((s) => s.followed);
+        const selectedSubtypes = this.state.subtypes.filter((s) =>
+            s.in(this.props.follower.subtype_ids)
+        );
         if (selectedSubtypes.length === 0) {
-            await this.env.services["mail.thread"].removeFollower(this.props.follower);
+            await this.props.follower.remove();
         } else {
             await this.env.services.orm.call(
-                this.props.follower.followedThread.model,
+                this.props.follower.thread.model,
                 "message_subscribe",
-                [[this.props.follower.followedThread.id]],
+                [[this.props.follower.thread.id]],
                 {
-                    partner_ids: [this.props.follower.partner.id],
+                    partner_ids: [this.props.follower.partner_id.id],
                     subtype_ids: selectedSubtypes.map((subtype) => subtype.id),
                 }
             );
+            if (this.store.mt_comment.notIn(selectedSubtypes)) {
+                this.props.follower.removeRecipient();
+            }
             this.env.services.notification.add(
                 _t("The subscription preferences were successfully applied."),
                 { type: "success" }
@@ -71,8 +77,6 @@ export class FollowerSubtypeDialog extends Component {
     }
 
     get title() {
-        return sprintf(_t("Edit Subscription of %(name)s"), {
-            name: this.props.follower.partner.name,
-        });
+        return _t("Edit Subscription of %(name)s", { name: this.props.follower.displayName });
     }
 }

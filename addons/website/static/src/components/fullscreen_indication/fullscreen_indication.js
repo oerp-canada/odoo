@@ -1,17 +1,23 @@
-/** @odoo-module **/
-
-const { EventBus, Component, xml, useState } = owl;
+import { useState } from "@web/owl2/utils";
+import { useBus } from "@web/core/utils/hooks";
+import { EventBus, Component, markup } from "@odoo/owl";
+import { _t } from "@web/core/l10n/translation";
 
 export class FullscreenIndication extends Component {
+    static props = {
+        bus: EventBus,
+    };
+    static template = "website.FullscreenIndication";
+
     setup() {
         this.state = useState({ isVisible: false });
-        this.props.bus.on('FULLSCREEN-INDICATION-SHOW', this, this.show);
-        this.props.bus.on('FULLSCREEN-INDICATION-HIDE', this, this.hide);
+        useBus(this.props.bus, "FULLSCREEN-INDICATION-SHOW", this.show.bind(this));
+        useBus(this.props.bus, "FULLSCREEN-INDICATION-HIDE", this.hide.bind(this));
     }
 
     show() {
-        setTimeout(() => this.state.isVisible = true);
-        this.autofade = setTimeout(() => this.state.isVisible = false, 2000);
+        setTimeout(() => (this.state.isVisible = true));
+        this.autofade = setTimeout(() => (this.state.isVisible = false), 2000);
     }
 
     hide() {
@@ -20,11 +26,8 @@ export class FullscreenIndication extends Component {
             clearTimeout(this.autofade);
         }
     }
+
+    get fullScreenIndicationText() {
+        return _t("Press %(key)s to exit full screen", { key: markup`<span>esc</span>` });
+    }
 }
-FullscreenIndication.props = {
-    bus: EventBus,
-};
-FullscreenIndication.template = xml`
-<div class="o_fullscreen_indication" t-att-class="{ o_visible: state.isVisible }">
-    <p>Press <span>esc</span> to exit full screen</p>
-</div>`;

@@ -7,15 +7,19 @@
 // world !' message in a popup:
 //
 /*
-import Dialog from 'web.Dialog';
-import publicWidget from 'web.public.widget';
+import { ConfirmationDialog } from '@web/core/confirmation_dialog/confirmation_dialog';
+import { Interaction } from "@web/public/interaction";
+import { registry } from "@web/core/registry";
 
-publicWidget.registry.HelloWorldPopup = publicWidget.Widget.extend({
-    selector: '#wrapwrap',
+class HelloWorldPopup extends Interaction {
+    static selector = "#wrapwrap";
 
-    start: function () {
-        Dialog.alert(this, "Hello, world!");
-        return this._super.apply(this, arguments);
-    },
-});
+    start() {
+        this.services.dialog.add(ConfirmationDialog, { body: "hello world"});
+    }
+}
+
+registry
+    .category("public.interactions")
+    .add("website.hello_world_popup", HelloWorldPopup);
 */

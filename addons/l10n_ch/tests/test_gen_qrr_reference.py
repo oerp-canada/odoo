@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 # Part of Odoo. See LICENSE file for full copyright and licensing details.
+from odoo import Command
 
 from odoo.addons.account.tests.common import AccountTestInvoicingCommon
 from odoo.tests import tagged
@@ -12,28 +13,23 @@ class TestGenQRRReference(AccountTestInvoicingCommon):
     """Check condition of generation of and content of the structured ref"""
 
     @classmethod
-    def setUpClass(cls, chart_template_ref="ch"):
-        super().setUpClass(chart_template_ref=chart_template_ref)
-        cls.env = cls.env(context=dict(cls.env.context, tracking_disable=True))
-        cls.bank = cls.env["res.bank"].create(
-            {
-                "name": "Alternative Bank Schweiz AG",
-                "bic": "ALSWCH21XXX",
-            }
-        )
+    @AccountTestInvoicingCommon.setup_country('ch')
+    def setUpClass(cls):
+        super().setUpClass()
         cls.partner = cls.env['res.partner'].create({
             'name': 'Bobby',
             'country_id': cls.env.ref('base.ch').id,
         })
         cls.bank_acc_qriban = cls.env["res.partner.bank"].create(
             {
-                "acc_number": QR_IBAN,
-                "bank_id": cls.bank.id,
+                "account_number": QR_IBAN,
+                "bank_name": "Alternative Bank Schweiz AG",
+                "bank_bic": "ALSWCH21XXX",
                 "partner_id": cls.partner.id,
             }
         )
         cls.qr_bank_account = cls.env['res.partner.bank'].create({
-            'acc_number': "CH4431999123000889012",
+            'account_number': "CH4431999123000889012",
             'partner_id': cls.partner.id,
         })
 
@@ -46,7 +42,7 @@ class TestGenQRRReference(AccountTestInvoicingCommon):
             'partner_bank_id': self.bank_acc_qriban.id,
             'currency_id': self.env.ref('base.EUR').id,
             'invoice_date': '2019-01-01',
-            'invoice_line_ids': [(0, 0, {'product_id': self.product_a.id})],
+            'invoice_line_ids': [Command.create({'product_id': self.product_a.id})],
         })
         test_invoice.name = "INV/01234567890"
         expected_qrr = "000000000000000012345678903"
@@ -59,7 +55,7 @@ class TestGenQRRReference(AccountTestInvoicingCommon):
             'partner_bank_id': self.bank_acc_qriban.id,
             'currency_id': self.env.ref('base.EUR').id,
             'invoice_date': '2019-01-01',
-            'invoice_line_ids': [(0, 0, {'product_id': self.product_a.id})],
+            'invoice_line_ids': [Command.create({'product_id': self.product_a.id})],
         })
         test_invoice.name = "INV/123456789012345678901234567890"
         expected_qrr = "567890123456789012345678901"

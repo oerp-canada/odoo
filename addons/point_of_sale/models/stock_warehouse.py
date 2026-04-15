@@ -3,16 +3,16 @@
 from odoo import models, fields, api, _
 
 
-class Warehouse(models.Model):
+class StockWarehouse(models.Model):
     _inherit = "stock.warehouse"
 
-    pos_type_id = fields.Many2one('stock.picking.type', string="Point of Sale Operation Type")
+    pos_type_id = fields.Many2one('stock.picking.type', string="Point of Sale Operation Type", copy=False)
 
     def _get_sequence_values(self, name=False, code=False):
-        sequence_values = super(Warehouse, self)._get_sequence_values(name=name, code=code)
+        sequence_values = super()._get_sequence_values(name=name, code=code)
         sequence_values.update({
             'pos_type_id': {
-                'name': self.name + ' ' + _('Picking POS'),
+                'name': _('%(name)s Picking POS', name=self.name),
                 'prefix': self.code + '/POS/',
                 'padding': 5,
                 'company_id': self.company_id.id,
@@ -21,14 +21,14 @@ class Warehouse(models.Model):
         return sequence_values
 
     def _get_picking_type_update_values(self):
-        picking_type_update_values = super(Warehouse, self)._get_picking_type_update_values()
+        picking_type_update_values = super()._get_picking_type_update_values()
         picking_type_update_values.update({
             'pos_type_id': {'default_location_src_id': self.lot_stock_id.id}
         })
         return picking_type_update_values
 
     def _get_picking_type_create_values(self, max_sequence):
-        picking_type_create_values, max_sequence = super(Warehouse, self)._get_picking_type_create_values(max_sequence)
+        picking_type_create_values, max_sequence = super()._get_picking_type_create_values(max_sequence)
         picking_type_create_values.update({
             'pos_type_id': {
                 'name': _('PoS Orders'),
@@ -36,9 +36,7 @@ class Warehouse(models.Model):
                 'default_location_src_id': self.lot_stock_id.id,
                 'default_location_dest_id': self.env.ref('stock.stock_location_customers').id,
                 'sequence': max_sequence + 1,
-                'sequence_code': 'POS',
                 'company_id': self.company_id.id,
-                'show_operations': False,
             }
         })
         return picking_type_create_values, max_sequence + 2

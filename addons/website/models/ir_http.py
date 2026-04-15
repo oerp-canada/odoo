@@ -1,27 +1,22 @@
 # Part of Odoo. See LICENSE file for full copyright and licensing details.
 import contextlib
+import functools
 import logging
-from lxml import etree
-import os
 import unittest
+from zoneinfo import ZoneInfoNotFoundError, ZoneInfo
 
-import pytz
 import werkzeug
-import werkzeug.routing
-import werkzeug.utils
-
-from functools import partial
+from lxml import etree
 
 import odoo
-from odoo import api, models
+from odoo import api, models, tools
 from odoo import SUPERUSER_ID
 from odoo.exceptions import AccessError
+from odoo.fields import Domain
 from odoo.http import request
 from odoo.tools.json import scriptsafe as json_scriptsafe
 from odoo.tools.safe_eval import safe_eval
-from odoo.osv.expression import FALSE_DOMAIN
 from odoo.addons.http_routing.models import ir_http
-from odoo.addons.http_routing.models.ir_http import _guess_mimetype
 from odoo.addons.portal.controllers.portal import _build_url_w_params
 
 logger = logging.getLogger(__name__)
@@ -29,17 +24,16 @@ logger = logging.getLogger(__name__)
 
 def sitemap_qs2dom(qs, route, field='name'):
     """ Convert a query_string (can contains a path) to a domain"""
-    dom = []
     if qs and qs.lower() not in route:
         needles = qs.strip('/').split('/')
         # needles will be altered and keep only element which one is not in route
         # diff(from=['shop', 'product'], to=['shop', 'product', 'product']) => to=['product']
         unittest.util.unorderable_list_difference(route.strip('/').split('/'), needles)
         if len(needles) == 1:
-            dom = [(field, 'ilike', needles[0])]
+            return Domain(field, 'ilike', needles[0])
         else:
-            dom = FALSE_DOMAIN
-    return dom
+            return Domain.FALSE
+    return Domain.TRUE
 
 
 def get_request_website():
@@ -59,19 +53,22 @@ def get_request_website():
     return request and getattr(request, 'website', False) or False
 
 
-class Http(models.AbstractModel):
+class IrHttp(models.AbstractModel):
     _inherit = 'ir.http'
 
-    @classmethod
-    def routing_map(cls, key=None):
+    def routing_map(self, key=None):
         if not key and request:
             key = request.website_routing
-        return super(Http, cls).routing_map(key=key)
+        return super().routing_map(key=key)
 
     @classmethod
-    def clear_caches(cls):
-        super()._clear_routing_map()
-        return super().clear_caches()
+    def _slug(cls, value: models.BaseModel | tuple[int, str]) -> str:
+        try:
+            if value.id and value.seo_name:
+                return super()._slug((value.id, value.seo_name))
+        except AttributeError:
+            pass
+        return super()._slug(value)
 
     @classmethod
     def _slug_matching(cls, adapter, endpoint, **kw):
@@ -82,21 +79,71 @@ class Http(models.AbstractModel):
         return adapter.build(endpoint, kw) + (qs and '?%s' % qs or '')
 
     @classmethod
-    def _generate_routing_rules(cls, modules, converters):
+    def _url_for(cls, url_from: str, lang_code: str | None = None) -> str:
+        ''' Return the url with the rewriting applied.
+            Nothing will be done for absolute URL, invalid URL, or short URL from 1 char.
+
+            :param url_from: The URL to convert.
+            :param lang_code: Must be the lang `code`. It could also be something
+                              else, such as `'[lang]'` (used for url_return).
+        '''
+        path, sep, qs = (url_from or '').partition('?')
+
+        if not qs:
+            path, sep, qs = (url_from or '').partition('#')
+
+        if (
+            path
+            # don't try to match route if we know that no rewrite has been loaded.
+            and request.env['ir.http']._rewrite_len(request.website_routing)
+            and (
+                len(path) > 1
+                and path.startswith('/')
+                and '/static/' not in path
+                and not path.startswith('/web/')
+            )
+        ):
+            url_from, _ = request.env['ir.http'].url_rewrite(path)
+            url_from = url_from if not qs else f"{url_from}{sep}{qs}"
+
+        return super()._url_for(url_from, lang_code)
+
+    @tools.ormcache('website_id', cache='routing')
+    def _rewrite_len(self, website_id: int) -> int:
+        rewrites = self._get_rewrites(website_id)
+        return len(rewrites)
+
+    def _get_rewrites(self, website_id):
+        domain = (
+            Domain('redirect_type', 'in', ('308', '404'))
+            & Domain('website_id', 'in', [False, website_id])
+        )
+        cache = self.env.cr.cache.setdefault('website_rewrites_cache', {})
+        rewrites = cache.get(website_id)
+        if rewrites is None:
+            rewrites = {
+                rewrite.url_from: rewrite.sudo(False)
+                for rewrite in self.env['website.rewrite'].sudo().search(domain)
+            }
+            cache[website_id] = rewrites
+        return rewrites
+
+    def _generate_routing_rules(self, modules, converters):
         if not request:
             yield from super()._generate_routing_rules(modules, converters)
             return
-
         website_id = request.website_routing
         logger.debug("_generate_routing_rules for website: %s", website_id)
-        domain = [('redirect_type', 'in', ('308', '404')), '|', ('website_id', '=', False), ('website_id', '=', website_id)]
+        rewrites = self._get_rewrites(website_id)
+        self._rewrite_len.__cache__.add_value(self, website_id, cache_value=len(rewrites))
 
-        rewrites = dict([(x.url_from, x) for x in request.env['website.rewrite'].sudo().search(domain)])
-        cls._rewrite_len[website_id] = len(rewrites)
+        if not rewrites:
+            yield from super()._generate_routing_rules(modules, converters)
+            return
 
         for url, endpoint in super()._generate_routing_rules(modules, converters):
-            if url in rewrites:
-                rewrite = rewrites[url]
+            rewrite = rewrites.get(url)
+            if rewrite:
                 url_to = rewrite.url_to
                 if rewrite.redirect_type == '308':
                     logger.debug('Add rule %s for %s' % (url_to, website_id))
@@ -104,9 +151,12 @@ class Http(models.AbstractModel):
 
                     if url != url_to:
                         logger.debug('Redirect from %s to %s for website %s' % (url, url_to, website_id))
-                        _slug_matching = partial(cls._slug_matching, endpoint=endpoint)
-                        endpoint.routing['redirect_to'] = _slug_matching
-                        yield url, endpoint  # yield original redirected to new url
+                        # duplicate the endpoint to only register the redirect_to for this specific url
+                        redirect_endpoint = functools.partial(endpoint)
+                        functools.update_wrapper(redirect_endpoint, endpoint)
+                        _slug_matching = functools.partial(self._slug_matching, endpoint=endpoint)
+                        redirect_endpoint.routing = dict(endpoint.routing, redirect_to=_slug_matching)
+                        yield url, redirect_endpoint  # yield original redirected to new url
                 elif rewrite.redirect_type == '404':
                     logger.debug('Return 404 for %s for website %s' % (url, website_id))
                     continue
@@ -114,7 +164,7 @@ class Http(models.AbstractModel):
                 yield url, endpoint
 
     @classmethod
-    def _get_converters(cls):
+    def _get_converters(cls) -> dict[str, type]:
         """ Get the converters list for custom url pattern werkzeug need to
             match Rule. This override adds the website ones.
         """
@@ -126,9 +176,9 @@ class Http(models.AbstractModel):
     @classmethod
     def _get_public_users(cls):
         public_users = super()._get_public_users()
-        website = request.env(user=SUPERUSER_ID)['website'].get_current_website()  # sudo
+        website = request.env(user=SUPERUSER_ID)['website'].with_context(lang='en_US').get_current_website()  # sudo
         if website:
-            public_users.append(website._get_cached('user_id'))
+            public_users.append(website.user_id.id)
         return public_users
 
     @classmethod
@@ -137,11 +187,11 @@ class Http(models.AbstractModel):
             public user as request uid.
         """
         if not request.session.uid:
-            website = request.env(user=SUPERUSER_ID)['website'].get_current_website()  # sudo
+            website = request.env(user=SUPERUSER_ID)['website'].with_context(lang='en_US').get_current_website()  # sudo
             if website:
-                request.update_env(user=website._get_cached('user_id'))
+                request.update_env(user=website.user_id.id)
 
-        if not request.uid:
+        if not request.env.uid:
             super()._auth_method_public()
 
     @classmethod
@@ -150,17 +200,17 @@ class Http(models.AbstractModel):
             return False
         if getattr(response, 'status_code', 0) != 200 or request.httprequest.headers.get('X-Disable-Tracking') == '1':
             return False
-
         template = False
         if hasattr(response, '_cached_page'):
-            website_page, template = response._cached_page, response._cached_template
+            website_page, template = response._cached_page, response._cached_view_id
         elif hasattr(response, 'qcontext'):  # classic response
             main_object = response.qcontext.get('main_object')
             website_page = getattr(main_object, '_name', False) == 'website.page' and main_object
             template = response.qcontext.get('response_template')
+            if isinstance(template, str) and '.' not in template:
+                template = 'website.%s' % template
 
-        view = template and request.env['website'].get_template(template)
-        if view and view.track:
+        if template and not request.env.cr.readonly and request.env['ir.ui.view']._get_cached_template_info(template)['track']:
             request.env['website.visitor']._handle_webpage_dispatch(website_page)
 
         return False
@@ -168,7 +218,7 @@ class Http(models.AbstractModel):
     @classmethod
     def _match(cls, path):
         if not hasattr(request, 'website_routing'):
-            website = request.env['website'].get_current_website()
+            website = request.env['website'].with_context(lang=None).get_current_website()
             request.website_routing = website.id
 
         return super()._match(path)
@@ -190,8 +240,8 @@ class Http(models.AbstractModel):
                     raise werkzeug.exceptions.Forbidden()
 
     @classmethod
-    def _get_web_editor_context(cls):
-        ctx = super()._get_web_editor_context()
+    def _get_editor_context(cls):
+        ctx = super()._get_editor_context()
         if request.is_frontend_multilang and request.lang == cls._get_default_lang():
             ctx['edit_translations'] = False
         return ctx
@@ -200,9 +250,9 @@ class Http(models.AbstractModel):
     def _frontend_pre_dispatch(cls):
         super()._frontend_pre_dispatch()
 
-        if not request.context.get('tz'):
-            with contextlib.suppress(pytz.UnknownTimeZoneError):
-                request.update_context(tz=pytz.timezone(request.geoip.location.time_zone).zone)
+        if not request.env.context.get('tz') and (tz := request.geoip.location.time_zone):
+            with contextlib.suppress(ZoneInfoNotFoundError):
+                request.update_context(tz=ZoneInfo(tz).key)
 
         website = request.env['website'].get_current_website()
         user = request.env.user
@@ -212,8 +262,8 @@ class Http(models.AbstractModel):
         # propagate to the global context of the tab. If the company of
         # the website is not in the allowed companies of the user, set
         # the main company of the user.
-        website_company_id = website._get_cached('company_id')
-        if user.id == website._get_cached('user_id'):
+        website_company_id = website.company_id.id
+        if user == website.user_id:
             # avoid a read on res_company_user_rel in case of public user
             allowed_company_ids = [website_company_id]
         elif website_company_id in user._get_company_ids():
@@ -224,64 +274,54 @@ class Http(models.AbstractModel):
         request.update_context(
             allowed_company_ids=allowed_company_ids,
             website_id=website.id,
-            **cls._get_web_editor_context(),
+            **cls._get_editor_context(),
         )
 
-        request.website = website.with_context(request.context)
+        request.website = website.with_context(request.env.context)
 
     @classmethod
-    def _dispatch(cls, endpoint):
-        response = super()._dispatch(endpoint)
+    def _post_dispatch(cls, response):
+        super()._post_dispatch(response)
         cls._register_website_track(response)
-        return response
 
-    @classmethod
-    def _get_frontend_langs(cls):
-        # _get_frontend_langs() is used by @http_routing:IrHttp._match
+    @api.model
+    def get_nearest_lang(self, lang_code):
+        # get_nearest_lang() is used by @http_routing:IrHttp._match
         # where is_frontend is not yet set and when no backend endpoint
         # matched. We have to assume we are going to match a frontend
         # route, hence the default True. Elsewhere, request.is_frontend
         # is set.
+        website_id = False
         if getattr(request, 'is_frontend', True):
-            website_id = request.env.get('website_id', request.website_routing)
-            res_lang = request.env['res.lang'].with_context(website_id=website_id)
-            return [code for code, *_ in res_lang.get_available()]
-        else:
-            return super()._get_frontend_langs()
+            website_id = self.env.get('website_id', request.website_routing)
+        return super(IrHttp, self.with_context(website_id=website_id)).get_nearest_lang(lang_code)
 
     @classmethod
     def _get_default_lang(cls):
         if getattr(request, 'is_frontend', True):
             website = request.env['website'].sudo().get_current_website()
-            return request.env['res.lang'].browse([website._get_cached('default_lang_id')])
+            return request.env['res.lang']._get_data(id=website.default_lang_id.id)
         return super()._get_default_lang()
 
     @classmethod
     def _get_translation_frontend_modules_name(cls):
         mods = super()._get_translation_frontend_modules_name()
-        installed = request.registry._init_modules.union(odoo.conf.server_wide_modules)
-        return mods + [mod for mod in installed if mod.startswith('website')]
+        installed = request.registry._init_modules.union(odoo.tools.config['server_wide_modules'])
+        return mods + [mod for mod in installed if 'website' in mod]
 
     @classmethod
     def _serve_page(cls):
         req_page = request.httprequest.path
+        WebsitePage = request.env['website.page'].sudo()
+        page_info = WebsitePage._get_page_info(request)
 
-        def _search_page(comparator='='):
-            page_domain = [('url', comparator, req_page)] + request.website.website_domain()
-            return request.env['website.page'].sudo().search(page_domain, order='website_id asc', limit=1)
-
-        # specific page first
-        page = _search_page()
-
-        # case insensitive search
-        if not page:
-            page = _search_page('=ilike')
-            if page:
-                logger.info("Page %r not found, redirecting to existing page %r", req_page, page.url)
-                return request.redirect(page.url)
+        # redirect to the right url
+        if page_info and page_info['url'] != req_page:
+            logger.info("Page %r not found, redirecting to existing page %r", req_page, page_info['url'])
+            return request.redirect(page_info['url'])
 
         # redirect without trailing /
-        if not page and req_page != "/" and req_page.endswith("/"):
+        if not page_info and req_page != "/" and req_page.endswith("/"):
             # mimick `_postprocess_args()` redirect
             path = request.httprequest.path[:-1]
             if request.lang != cls._get_default_lang():
@@ -290,24 +330,22 @@ class Http(models.AbstractModel):
                 path += '?' + request.httprequest.query_string.decode('utf-8')
             return request.redirect(path, code=301)
 
-        if page and (request.env.user.has_group('website.group_website_designer') or page.is_visible):
-            _, ext = os.path.splitext(req_page)
-            response = request.render(page.view_id.id, {
-                'main_object': page,
-            }, mimetype=_guess_mimetype(ext))
-            return response
+        if page_info:
+            return WebsitePage.browse(page_info['id'])._get_response(request)
+
         return False
 
     @classmethod
     def _serve_redirect(cls):
         req_page = request.httprequest.path
-        domain = [
-            ('redirect_type', 'in', ('301', '302')),
+        req_page_with_qs = request.httprequest.environ['REQUEST_URI']
+        domain = (
+            Domain('redirect_type', 'in', ('301', '302'))
             # trailing / could have been removed by server_page
-            '|', ('url_from', '=', req_page.rstrip('/')), ('url_from', '=', req_page + '/')
-        ]
-        domain += request.website.website_domain()
-        return request.env['website.rewrite'].sudo().search(domain, limit=1)
+            & Domain('url_from', 'in', [req_page_with_qs, req_page.rstrip('/'), req_page + '/'])
+            & request.website.website_domain()
+        )
+        return request.env['website.rewrite'].sudo().search(domain, order='url_from DESC', limit=1)
 
     @classmethod
     def _serve_fallback(cls):
@@ -317,17 +355,12 @@ class Http(models.AbstractModel):
             return parent
 
         # minimal setup to serve frontend pages
-        if not request.uid:
-            cls._auth_method_public()
         cls._frontend_pre_dispatch()
         cls._handle_debug()
-        request.params = request.get_http_params()
 
         website_page = cls._serve_page()
         if website_page:
             website_page.flatten()
-            cls._register_website_track(website_page)
-            cls._post_dispatch(website_page)
             return website_page
 
         redirect = cls._serve_redirect()
@@ -351,31 +384,28 @@ class Http(models.AbstractModel):
 
     @classmethod
     def _get_values_500_error(cls, env, values, exception):
-        View = env["ir.ui.view"]
         values = super()._get_values_500_error(env, values, exception)
-        if 'qweb_exception' in values:
-            try:
-                # exception.name might be int, string
-                exception_template = int(exception.name)
-            except ValueError:
-                exception_template = exception.name
-            view = View._view_obj(exception_template)
-            if exception.html and exception.html in view.arch:
+        if hasattr(exception, 'qweb'):
+            qweb_error = exception.qweb
+            exception_template = qweb_error.ref
+            View = env["ir.ui.view"].sudo()
+            view = exception_template and View._get_template_view(exception_template)
+            if not view or qweb_error.element and qweb_error.element in view.arch:
                 values['view'] = view
             else:
                 # There might be 2 cases where the exception code can't be found
                 # in the view, either the error is in a child view or the code
                 # contains branding (<div t-att-data="request.browse('ok')"/>).
                 et = view.with_context(inherit_branding=False)._get_combined_arch()
-                node = et.xpath(exception.path) if exception.path else et
+                node = et.xpath(qweb_error.path) if qweb_error.path else et
                 line = node is not None and len(node) > 0 and etree.tostring(node[0], encoding='unicode')
                 if line:
-                    values['view'] = View._views_get(exception_template).filtered(
+                    values['view'] = View._views_get(view.id).filtered(
                         lambda v: line in v.arch
                     )
                     values['view'] = values['view'] and values['view'][0]
         # Needed to show reset template on translated pages (`_prepare_environment` will set it for main lang)
-        values['editable'] = request.uid and request.env.user.has_group('website.group_website_designer')
+        values['editable'] = request.env.uid and request.env.user.has_group('website.group_website_designer')
         return values
 
     @classmethod
@@ -386,19 +416,19 @@ class Http(models.AbstractModel):
 
     @api.model
     def get_frontend_session_info(self):
-        session_info = super(Http, self).get_frontend_session_info()
+        session_info = super().get_frontend_session_info()
         geoip_country_code = request.geoip.country_code
         geoip_phone_code = request.env['res.country']._phone_code_for(geoip_country_code) if geoip_country_code else None
         session_info.update({
             'is_website_user': request.env.user.id == request.website.user_id.id,
             'geoip_country_code': geoip_country_code,
             'geoip_phone_code': geoip_phone_code,
-            'lang_url_code': request.lang._get_cached('url_code'),
+            'lang_url_code': request.lang.url_code,
         })
         if request.env.user.has_group('website.group_website_restricted_editor'):
             session_info.update({
                 'website_id': request.website.id,
-                'website_company_id': request.website._get_cached('company_id'),
+                'website_company_id': request.website.company_id.id,
             })
         session_info['bundle_params']['website_id'] = request.website.id
         return session_info
@@ -410,7 +440,7 @@ class Http(models.AbstractModel):
             if not request.env['website'].get_current_website().cookies_bar:
                 # Cookies bar is disabled on this website
                 return True
-            accepted_cookie_types = json_scriptsafe.loads(request.httprequest.cookies.get('website_cookies_bar', '{}'))
+            accepted_cookie_types = json_scriptsafe.loads(request.cookies.get('website_cookies_bar', '{}'))
 
             # pre-16.0 compatibility, `website_cookies_bar` was `"true"`.
             # In that case we delete that cookie and let the user choose again.
@@ -426,14 +456,10 @@ class Http(models.AbstractModel):
         # is not restricted by the website module.
         return result
 
-    @api.model
-    def _verify_request_recaptcha_token(self, action):
-        return True
-
 
 class ModelConverter(ir_http.ModelConverter):
 
-    def to_url(self, value):
+    def to_url(self, value: models.BaseModel) -> str:
         if value.env.context.get('slug_matching'):
             return value.env.context.get('_converter_value', str(value.id))
         return super().to_url(value)
@@ -443,9 +469,9 @@ class ModelConverter(ir_http.ModelConverter):
         # Allow to current_website_id directly in route domain
         args['current_website_id'] = env['website'].get_current_website().id
         domain = safe_eval(self.domain, args)
+        domain = Domain(domain)
         if dom:
-            domain += dom
-        for record in Model.search(domain):
-            # return record so URL will be the real endpoint URL as the record will go through `slug()`
-            # the same way as endpoint URL is retrieved during dispatch (301 redirect), see `to_url()` from ModelConverter
-            yield record
+            domain &= Domain(dom)
+        # return record so URL will be the real endpoint URL as the record will go through `slug()`
+        # the same way as endpoint URL is retrieved during dispatch (301 redirect), see `to_url()` from ModelConverter
+        yield from Model.search(domain)

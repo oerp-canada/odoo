@@ -2,7 +2,6 @@
 # Part of Odoo. See LICENSE file for full copyright and licensing details.
 
 from odoo import api, fields, models, _
-from odoo.addons.http_routing.models.ir_http import slug
 
 
 class EventEvent(models.Model):
@@ -42,6 +41,11 @@ class EventEvent(models.Model):
     def toggle_exhibitor_menu(self, val):
         self.exhibitor_menu = val
 
+    def copy_event_menus(self, old_events):
+        super().copy_event_menus(old_events)
+        for new_event in self:
+            new_event.exhibitor_menu_ids.menu_id.parent_id = new_event.menu_id
+
     def _get_menu_update_fields(self):
         return super(EventEvent, self)._get_menu_update_fields() + ['exhibitor_menu']
 
@@ -59,5 +63,5 @@ class EventEvent(models.Model):
     def _get_website_menu_entries(self):
         self.ensure_one()
         return super(EventEvent, self)._get_website_menu_entries() + [
-            (_('Exhibitors'), '/event/%s/exhibitors' % slug(self), False, 60, 'exhibitor')
+            (_('Exhibitors list'), '/event/%s/exhibitors' % self.env['ir.http']._slug(self), False, 60, 'exhibitor', False)
         ]

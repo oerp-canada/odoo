@@ -1,12 +1,11 @@
-# -*- coding: utf-8 -*-
 # Part of Odoo. See LICENSE file for full copyright and licensing details.
 
 {
     'name': "Project - SMS",
     'summary': 'Send text messages when project/task stage move',
     'description': "Send text messages when project/task stage move",
-    'category': 'Hidden',
-    'version': '1.0',
+    'category': 'Services/Project',
+    'version': '1.1',
     'depends': ['project', 'sms'],
     'data': [
         'views/project_stage_views.xml',
@@ -17,5 +16,6 @@
         'security/project_sms_security.xml',
     ],
     'auto_install': True,
+    'author': 'Odoo S.A.',
     'license': 'LGPL-3',
 }

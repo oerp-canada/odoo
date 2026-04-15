@@ -1,22 +1,26 @@
-/** @odoo-module **/
-
 import { Dropdown } from "@web/core/dropdown/dropdown";
+import { DropdownGroup } from "@web/core/dropdown/dropdown_group";
 import { DropdownItem } from "@web/core/dropdown/dropdown_item";
 import { CheckBox } from "@web/core/checkbox/checkbox";
-import { browser } from "@web/core/browser/browser";
 import { registry } from "@web/core/registry";
-import { useService } from "@web/core/utils/hooks";
+import { user } from "@web/core/user";
+import { session } from "@web/session";
 
 import { Component } from "@odoo/owl";
+import { imageUrl } from "@web/core/utils/urls";
 
 const userMenuRegistry = registry.category("user_menuitems");
 
 export class UserMenu extends Component {
+    static template = "web.UserMenu";
+    static components = { DropdownGroup, Dropdown, DropdownItem, CheckBox };
+    static props = {};
+
     setup() {
-        this.user = useService("user");
-        const { origin } = browser.location;
-        const { userId } = this.user;
-        this.source = `${origin}/web/image?model=res.users&field=avatar_128&id=${userId}`;
+        this.userName = user.name;
+        this.dbName = session.db;
+        const { partnerId, writeDate } = user;
+        this.source = imageUrl("res.partner", partnerId, "avatar_128", { unique: writeDate });
     }
 
     getElements() {
@@ -31,9 +35,6 @@ export class UserMenu extends Component {
         return sortedItems;
     }
 }
-UserMenu.template = "web.UserMenu";
-UserMenu.components = { Dropdown, DropdownItem, CheckBox };
-UserMenu.props = {};
 
 export const systrayItem = {
     Component: UserMenu,

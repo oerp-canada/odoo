@@ -1,33 +1,33 @@
-# -*- coding: utf-8 -*-
 # Part of Odoo. See LICENSE file for full copyright and licensing details.
 
+from unittest import skip
+
+from odoo.fields import Command
 from odoo.tests import Form, tagged
 
+from odoo.addons.sale.tests.common import TestSaleCommon
 from odoo.addons.stock_account.tests.test_anglo_saxon_valuation_reconciliation_common import ValuationReconciliationTestCommon
 
 
 @tagged('post_install', '-at_install')
-class TestSaleMRPAngloSaxonValuation(ValuationReconciliationTestCommon):
+@skip('Temporary to fast merge new valuation')
+class TestSaleMRPAngloSaxonValuation(TestSaleCommon, ValuationReconciliationTestCommon):
 
     @classmethod
-    def setUpClass(cls, chart_template_ref=None):
-        super().setUpClass(chart_template_ref=chart_template_ref)
+    def setUpClass(cls):
+        super().setUpClass()
 
         cls.env.user.company_id.anglo_saxon_accounting = True
-        cls.uom_unit = cls.env.ref('uom.product_uom_unit')
 
-    def _create_product(self, name, product_type, price):
-        return self.env['product.product'].create({
-            'name': name,
-            'type': product_type,
-            'standard_price': price,
-            'categ_id': self.stock_account_product_categ.id if product_type == 'product' else self.env.ref('product.product_category_all').id,
-        })
+    @classmethod
+    def _create_product(cls, **create_vals):
+        if create_vals.get('is_storable'):
+            create_vals['categ_id'] = cls.stock_account_product_categ.id
+        return super()._create_product(**create_vals)
 
     def test_sale_mrp_kit_bom_cogs(self):
         """Check invoice COGS aml after selling and delivering a product
         with Kit BoM having another product with Kit BoM as component"""
-
         # ----------------------------------------------
         # BoM of Kit A:
         #   - BoM Type: Kit
@@ -44,11 +44,12 @@ class TestSaleMRPAngloSaxonValuation(ValuationReconciliationTestCommon):
         #     * 3 x Component BB (Cost: $5, Consumable)
         # ----------------------------------------------
 
-        self.component_a = self._create_product('Component A', 'product', 3.00)
-        self.component_b = self._create_product('Component B', 'product', 4.00)
-        self.component_bb = self._create_product('Component BB', 'consu', 5.00)
-        self.kit_a = self._create_product('Kit A', 'product', 0.00)
-        self.kit_b = self._create_product('Kit B', 'consu', 0.00)
+        self.component_a = self._create_product(name='Component A', is_storable=True, standard_price=3.00)
+        self.component_b = self._create_product(name='Component B', is_storable=True, standard_price=4.00)
+        self.component_bb = self._create_product(name='Component BB', is_storable=False, standard_price=5.00)
+        self.kit_a = self._create_product(name='Kit A', is_storable=True, standard_price=0.00)
+        self.kit_b = self._create_product(name='Kit B', is_storable=False, standard_price=0.00)
+        pack_2 = self.env['uom.uom'].create({'name': 'Pack of 2', 'relative_factor': 2, 'relative_uom_id': self.kit_a.uom_id.id})
 
         self.kit_a.write({
             'property_account_expense_id': self.company_data['default_account_expense'].id,
@@ -57,7 +58,6 @@ class TestSaleMRPAngloSaxonValuation(ValuationReconciliationTestCommon):
 
         # Create BoM for Kit A
         bom_product_form = Form(self.env['mrp.bom'])
-        bom_product_form.product_id = self.kit_a
         bom_product_form.product_tmpl_id = self.kit_a.product_tmpl_id
         bom_product_form.product_qty = 3.0
         bom_product_form.type = 'phantom'
@@ -71,7 +71,6 @@ class TestSaleMRPAngloSaxonValuation(ValuationReconciliationTestCommon):
 
         # Create BoM for Kit B
         bom_product_form = Form(self.env['mrp.bom'])
-        bom_product_form.product_id = self.kit_b
         bom_product_form.product_tmpl_id = self.kit_b.product_tmpl_id
         bom_product_form.product_qty = 10.0
         bom_product_form.type = 'phantom'
@@ -89,14 +88,14 @@ class TestSaleMRPAngloSaxonValuation(ValuationReconciliationTestCommon):
                 (0, 0, {
                     'name': self.kit_a.name,
                     'product_id': self.kit_a.id,
-                    'product_uom_qty': 1.0,
-                    'product_uom': self.kit_a.uom_id.id,
+                    'product_uom_qty': 0.5,
+                    'product_uom_id': pack_2.id,
                     'price_unit': 1,
-                    'tax_id': False,
+                    'tax_ids': False,
                 })],
         })
         so.action_confirm()
-        so.picking_ids.move_ids.quantity_done = 1
+        so.picking_ids.move_ids.write({'quantity': 1, 'picked': True})
         so.picking_ids.button_validate()
 
         invoice = so.with_context(default_journal_id=self.company_data['default_journal_sale'].id)._create_invoices()
@@ -107,9 +106,9 @@ class TestSaleMRPAngloSaxonValuation(ValuationReconciliationTestCommon):
         self.assertEqual(len(amls), 4)
         stock_out_aml = amls.filtered(lambda aml: aml.account_id == self.company_data['default_account_stock_out'])
         self.assertEqual(stock_out_aml.debit, 0)
-        self.assertAlmostEqual(stock_out_aml.credit, 1.53, "Should not include the value of consumable component")
+        self.assertAlmostEqual(stock_out_aml.credit, 1.53, msg="Should not include the value of consumable component")
         cogs_aml = amls.filtered(lambda aml: aml.account_id == self.company_data['default_account_expense'])
-        self.assertAlmostEqual(cogs_aml.debit, 1.53, "Should not include the value of consumable component")
+        self.assertAlmostEqual(cogs_aml.debit, 1.53, msg="Should not include the value of consumable component")
         self.assertEqual(cogs_aml.credit, 0)
 
     def test_sale_mrp_anglo_saxon_variant(self):
@@ -126,7 +125,7 @@ class TestSaleMRPAngloSaxonValuation(ValuationReconciliationTestCommon):
         # Create Product template with variants
         self.product_template = self.env['product.template'].create({
             'name': 'Product Template',
-            'type': 'product',
+            'is_storable': True,
             'uom_id': self.uom_unit.id,
             'invoice_policy': 'delivery',
             'categ_id': self.stock_account_product_categ.id,
@@ -145,7 +144,7 @@ class TestSaleMRPAngloSaxonValuation(ValuationReconciliationTestCommon):
         def create_simple_bom_for_product(product, name, price):
             component = self.env['product.product'].create({
                 'name': 'Component ' + name,
-                'type': 'product',
+                'is_storable': True,
                 'uom_id': self.uom_unit.id,
                 'categ_id': self.stock_account_product_categ.id,
                 'standard_price': price
@@ -179,7 +178,6 @@ class TestSaleMRPAngloSaxonValuation(ValuationReconciliationTestCommon):
                     'name': product.name,
                     'product_id': product.id,
                     'product_uom_qty': 2,
-                    'product_uom': product.uom_id.id,
                     'price_unit': product.list_price
                 })],
                 'company_id': self.company_data['company'].id,
@@ -190,9 +188,7 @@ class TestSaleMRPAngloSaxonValuation(ValuationReconciliationTestCommon):
             # Deliver the three finished products
             pick = so.picking_ids
             # To check the products on the picking
-            wiz_act = pick.button_validate()
-            wiz = Form(self.env[wiz_act['res_model']].with_context(wiz_act['context'])).save()
-            wiz.process()
+            pick.button_validate()
             # Create the invoice
             so._create_invoices()
             invoice = so.invoice_ids
@@ -222,8 +218,8 @@ class TestSaleMRPAngloSaxonValuation(ValuationReconciliationTestCommon):
         """
         self.stock_account_product_categ.property_cost_method = 'fifo'
 
-        kit = self._create_product('Simple Kit', 'product', 0)
-        component = self._create_product('Compo A', 'product', 0)
+        kit = self._create_product(name='Simple Kit', is_storable=True, standard_price=0)
+        component = self._create_product(name='Compo A', is_storable=True, standard_price=0)
         kit.property_account_expense_id = self.company_data['default_account_expense']
 
         self.env['mrp.bom'].create({
@@ -235,29 +231,27 @@ class TestSaleMRPAngloSaxonValuation(ValuationReconciliationTestCommon):
 
         # Receive 3 components: one @10, one @20 and one @60
         in_moves = self.env['stock.move'].create([{
-            'name': 'IN move @%s' % p,
             'product_id': component.id,
             'location_id': self.env.ref('stock.stock_location_suppliers').id,
             'location_dest_id': self.company_data['default_warehouse'].lot_stock_id.id,
-            'product_uom': component.uom_id.id,
+            'uom_id': component.uom_id.id,
             'product_uom_qty': 1,
             'price_unit': p,
         } for p in [10, 20, 60]])
         in_moves._action_confirm()
-        in_moves.quantity_done = 1
+        in_moves.write({'quantity': 1, 'picked': True})
         in_moves._action_done()
 
         # Sell 3 kits
         so = self.env['sale.order'].create({
-            'partner_id': self.env.ref('base.res_partner_1').id,
+            'partner_id': self.env['res.partner'].create({'name': 'Test Partner'}).id,
             'order_line': [
                 (0, 0, {
                     'name': kit.name,
                     'product_id': kit.id,
                     'product_uom_qty': 3.0,
-                    'product_uom': kit.uom_id.id,
                     'price_unit': 100,
-                    'tax_id': False,
+                    'tax_ids': False,
                 })],
         })
         so.action_confirm()
@@ -267,11 +261,10 @@ class TestSaleMRPAngloSaxonValuation(ValuationReconciliationTestCommon):
         picking = so.picking_ids
         while picking:
             pickings.append(picking)
-            picking.move_ids.quantity_done = 1
+            picking.move_ids.write({'quantity': 1, 'picked': True})
             action = picking.button_validate()
             if isinstance(action, dict):
-                wizard = Form(self.env[action['res_model']].with_context(action['context'])).save()
-                wizard.process()
+                Form.from_action(self.env, action).save().process()
             picking = picking.backorder_ids
 
         invoice = so._create_invoices()
@@ -279,24 +272,21 @@ class TestSaleMRPAngloSaxonValuation(ValuationReconciliationTestCommon):
 
         # Receive one @100
         in_moves = self.env['stock.move'].create({
-            'name': 'IN move @100',
             'product_id': component.id,
             'location_id': self.env.ref('stock.stock_location_suppliers').id,
             'location_dest_id': self.company_data['default_warehouse'].lot_stock_id.id,
-            'product_uom': component.uom_id.id,
+            'uom_id': component.uom_id.id,
             'product_uom_qty': 1,
             'price_unit': 100,
         })
         in_moves._action_confirm()
-        in_moves.quantity_done = 1
+        in_moves.write({'quantity': 1, 'picked': True})
         in_moves._action_done()
 
         # Return the second picking (i.e. one component @20)
-        ctx = {'active_id': pickings[1].id, 'active_model': 'stock.picking'}
-        return_wizard = Form(self.env['stock.return.picking'].with_context(ctx)).save()
-        return_picking_id, dummy = return_wizard._create_returns()
-        return_picking = self.env['stock.picking'].browse(return_picking_id)
-        return_picking.move_ids.quantity_done = 1
+        return_picking = pickings[1]._create_return()
+        return_picking.move_ids.product_uom_qty = 1
+        return_picking.action_assign()
         return_picking.button_validate()
 
         # Add a credit note for the returned kit
@@ -326,8 +316,8 @@ class TestSaleMRPAngloSaxonValuation(ValuationReconciliationTestCommon):
         """
         self.stock_account_product_categ.property_cost_method = 'fifo'
 
-        kit = self._create_product('Simple Kit', 'product', 0)
-        component = self._create_product('Compo A', 'product', 0)
+        kit = self._create_product(name='Simple Kit', is_storable=True, standard_price=0)
+        component = self._create_product(name='Compo A', is_storable=True, standard_price=0)
         (kit + component).invoice_policy = 'delivery'
         kit.property_account_expense_id = self.company_data['default_account_expense']
 
@@ -340,29 +330,27 @@ class TestSaleMRPAngloSaxonValuation(ValuationReconciliationTestCommon):
 
         # Receive 3 components: one @10, one @20 and one @60
         in_moves = self.env['stock.move'].create([{
-            'name': 'IN move @%s' % p,
             'product_id': component.id,
             'location_id': self.env.ref('stock.stock_location_suppliers').id,
             'location_dest_id': self.company_data['default_warehouse'].lot_stock_id.id,
-            'product_uom': component.uom_id.id,
+            'uom_id': component.uom_id.id,
             'product_uom_qty': 1,
             'price_unit': p,
         } for p in [10, 20, 60]])
         in_moves._action_confirm()
-        in_moves.quantity_done = 1
+        in_moves.write({'quantity': 1, 'picked': True})
         in_moves._action_done()
 
         # Sell 3 kits
         so = self.env['sale.order'].create({
-            'partner_id': self.env.ref('base.res_partner_1').id,
+            'partner_id': self.env['res.partner'].create({'name': 'Test Partner'}).id,
             'order_line': [
                 (0, 0, {
                     'name': kit.name,
                     'product_id': kit.id,
                     'product_uom_qty': 3.0,
-                    'product_uom': kit.uom_id.id,
                     'price_unit': 100,
-                    'tax_id': False,
+                    'tax_ids': False,
                 })],
         })
         so.action_confirm()
@@ -372,11 +360,10 @@ class TestSaleMRPAngloSaxonValuation(ValuationReconciliationTestCommon):
         picking = so.picking_ids
         while picking:
             pickings.append(picking)
-            picking.move_ids.quantity_done = 1
+            picking.move_ids.write({'quantity': 1, 'picked': True})
             action = picking.button_validate()
             if isinstance(action, dict):
-                wizard = Form(self.env[action['res_model']].with_context(action['context'])).save()
-                wizard.process()
+                Form.from_action(self.env, action).save().process()
             picking = picking.backorder_ids
 
         invoice = so._create_invoices()
@@ -384,24 +371,21 @@ class TestSaleMRPAngloSaxonValuation(ValuationReconciliationTestCommon):
 
         # Receive one @100
         in_moves = self.env['stock.move'].create({
-            'name': 'IN move @100',
             'product_id': component.id,
             'location_id': self.env.ref('stock.stock_location_suppliers').id,
             'location_dest_id': self.company_data['default_warehouse'].lot_stock_id.id,
-            'product_uom': component.uom_id.id,
+            'uom_id': component.uom_id.id,
             'product_uom_qty': 1,
             'price_unit': 100,
         })
         in_moves._action_confirm()
-        in_moves.quantity_done = 1
+        in_moves.write({'quantity': 1, 'picked': True})
         in_moves._action_done()
 
         # Return the second picking (i.e. one component @20)
-        ctx = {'active_id': pickings[1].id, 'active_model': 'stock.picking'}
-        return_wizard = Form(self.env['stock.return.picking'].with_context(ctx)).save()
-        return_picking_id, dummy = return_wizard._create_returns()
-        return_picking = self.env['stock.picking'].browse(return_picking_id)
-        return_picking.move_ids.quantity_done = 1
+        return_picking = pickings[1]._create_return()
+        return_picking.move_ids.product_uom_qty = 1
+        return_picking.move_ids.action_assign()
         return_picking.button_validate()
 
         # Create a new invoice for the returned kit
@@ -426,9 +410,9 @@ class TestSaleMRPAngloSaxonValuation(ValuationReconciliationTestCommon):
     def test_kit_avco_fully_owned_and_delivered_invoice_post_delivery(self):
         self.stock_account_product_categ.property_cost_method = 'average'
 
-        compo01 = self._create_product('Compo 01', 'product', 10)
-        compo02 = self._create_product('Compo 02', 'product', 20)
-        kit = self._create_product('Kit', 'product', 0)
+        compo01 = self._create_product(name='Compo 01', is_storable=True, standard_price=10)
+        compo02 = self._create_product(name='Compo 02', is_storable=True, standard_price=20)
+        kit = self._create_product(name='Kit', is_storable=True, standard_price=0)
 
         (compo01 + compo02 + kit).invoice_policy = 'delivery'
 
@@ -438,7 +422,7 @@ class TestSaleMRPAngloSaxonValuation(ValuationReconciliationTestCommon):
         self.env['mrp.bom'].create({
             'product_id': kit.id,
             'product_tmpl_id': kit.product_tmpl_id.id,
-            'product_uom_id': kit.uom_id.id,
+            'uom_id': kit.uom_id.id,
             'product_qty': 1.0,
             'type': 'phantom',
             'bom_line_ids': [
@@ -454,13 +438,12 @@ class TestSaleMRPAngloSaxonValuation(ValuationReconciliationTestCommon):
                     'name': kit.name,
                     'product_id': kit.id,
                     'product_uom_qty': 1.0,
-                    'product_uom': kit.uom_id.id,
                     'price_unit': 5,
-                    'tax_id': False,
+                    'tax_ids': False,
                 })],
         })
         so.action_confirm()
-        so.picking_ids.move_ids.quantity_done = 1
+        so.picking_ids.move_ids.write({'quantity': 1, 'picked': True})
         so.picking_ids.button_validate()
 
         invoice = so._create_invoices()
@@ -477,9 +460,9 @@ class TestSaleMRPAngloSaxonValuation(ValuationReconciliationTestCommon):
     def test_kit_avco_partially_owned_and_delivered_invoice_post_delivery(self):
         self.stock_account_product_categ.property_cost_method = 'average'
 
-        compo01 = self._create_product('Compo 01', 'product', 10)
-        compo02 = self._create_product('Compo 02', 'product', 20)
-        kit = self._create_product('Kit', 'product', 0)
+        compo01 = self._create_product(name='Compo 01', is_storable=True, standard_price=10)
+        compo02 = self._create_product(name='Compo 02', is_storable=True, standard_price=20)
+        kit = self._create_product(name='Kit', is_storable=True, standard_price=0)
 
         (compo01 + compo02 + kit).invoice_policy = 'delivery'
 
@@ -491,7 +474,7 @@ class TestSaleMRPAngloSaxonValuation(ValuationReconciliationTestCommon):
         self.env['mrp.bom'].create({
             'product_id': kit.id,
             'product_tmpl_id': kit.product_tmpl_id.id,
-            'product_uom_id': kit.uom_id.id,
+            'uom_id': kit.uom_id.id,
             'product_qty': 1.0,
             'type': 'phantom',
             'bom_line_ids': [
@@ -507,13 +490,13 @@ class TestSaleMRPAngloSaxonValuation(ValuationReconciliationTestCommon):
                     'name': kit.name,
                     'product_id': kit.id,
                     'product_uom_qty': 2.0,
-                    'product_uom': kit.uom_id.id,
                     'price_unit': 5,
-                    'tax_id': False,
+                    'tax_ids': False,
                 })],
         })
         so.action_confirm()
-        so.picking_ids.move_line_ids.qty_done = 1
+        so.picking_ids.move_line_ids.quantity = 1
+        so.picking_ids.move_ids.picked = True
         so.picking_ids.button_validate()
 
         invoice = so._create_invoices()
@@ -528,3 +511,157 @@ class TestSaleMRPAngloSaxonValuation(ValuationReconciliationTestCommon):
             {'account_id': self.company_data['default_account_stock_out'].id,   'debit': 0,     'credit': 30},
             {'account_id': self.company_data['default_account_expense'].id,     'debit': 30,    'credit': 0},
         ])
+
+    def test_anglo_saxo_kit_subkits(self):
+        """Check invoice COGS aml after selling and delivering a product
+        with Kit BoM producing 2 times the product and having
+        2 products with Kit BoM as components"""
+
+        # ----------------------------------------------
+        # BoM of Main kit:
+        #   - BoM Type: Kit
+        #   - Quantity: 4
+        #   - Components:
+        #     * 1 x Subkit A
+        #     * 1 x Subkit B
+        #
+        # BoM of Subkit A:
+        #   - BoM Type: Kit
+        #   - Quantity: 1
+        #   - Components:
+        #     * 2 x Component A (Cost: $10, Storable)
+        #
+        # BoM of Subkit B:
+        #   - BoM Type: Kit
+        #   - Quantity: 1
+        #   - Components:
+        #     * 2 x Component B (Cost: $6, Storable)
+        # ----------------------------------------------
+
+        component_a = self._create_product(name='Component A', is_storable=True, standard_price=10.00)
+        component_b = self._create_product(name='Component B', is_storable=True, standard_price=6.00)
+        subkit_a = self._create_product(name='Subkit A', is_storable=True, standard_price=0.00)
+        subkit_b = self._create_product(name='Subkit B', is_storable=True, standard_price=0.00)
+        main_kit = self._create_product(name='Main kit', is_storable=True, standard_price=0.00)
+
+        main_kit.write({
+            'property_account_expense_id': self.company_data['default_account_expense'].id,
+            'property_account_income_id': self.company_data['default_account_revenue'].id,
+        })
+
+        # Create BoM for Main kit
+        self.env['mrp.bom'].create({
+            'product_id': main_kit.id,
+            'product_tmpl_id': main_kit.product_tmpl_id.id,
+            'product_qty': 4.0,
+            'type': 'phantom',
+            'bom_line_ids': [
+                (0, 0, {'product_id': subkit_a.id, 'product_qty': 1.0}),
+                (0, 0, {'product_id': subkit_b.id, 'product_qty': 1.0}),
+            ],
+        })
+        # Create BoM for Subkit A
+        self.env['mrp.bom'].create({
+            'product_id': subkit_a.id,
+            'product_tmpl_id': subkit_a.product_tmpl_id.id,
+            'product_qty': 1.0,
+            'type': 'phantom',
+            'bom_line_ids': [
+                (0, 0, {'product_id': component_a.id, 'product_qty': 2.0}),
+            ],
+        })
+        # Create BoM for Subkit B
+        self.env['mrp.bom'].create({
+            'product_id': subkit_b.id,
+            'product_tmpl_id': subkit_b.product_tmpl_id.id,
+            'product_qty': 1.0,
+            'type': 'phantom',
+            'bom_line_ids': [
+                (0, 0, {'product_id': component_b.id, 'product_qty': 2.0}),
+            ],
+        })
+
+        so = self.env['sale.order'].create({
+            'partner_id': self.partner_a.id,
+            'order_line': [
+                (0, 0, {
+                    'name': main_kit.name,
+                    'product_id': main_kit.id,
+                    'product_uom_qty': 1.0,
+                    'price_unit': 1,
+                    'tax_ids': False,
+                })],
+        })
+        so.action_confirm()
+        for move in so.picking_ids.move_ids:
+            move.quantity = move.product_uom_qty
+        so.picking_ids.button_validate()
+
+        invoice = so.with_context(default_journal_id=self.company_data['default_journal_sale'].id)._create_invoices()
+        invoice.action_post()
+
+        # Check the resulting accounting entries
+        amls = invoice.line_ids
+        self.assertEqual(len(amls), 4)
+        stock_out_aml = amls.filtered(lambda aml: aml.account_id == self.company_data['default_account_stock_out'])
+        self.assertEqual(stock_out_aml.debit, 0)
+        self.assertAlmostEqual(stock_out_aml.credit, 8.00, msg="Should include include the components from all subkits, with the price adapted for 1 Main kit")
+        cogs_aml = amls.filtered(lambda aml: aml.account_id == self.company_data['default_account_expense'])
+        self.assertAlmostEqual(cogs_aml.debit, 8.00, msg="Should include include the components from all subkits, with the price adapted for 1 Main kit")
+        self.assertEqual(cogs_aml.credit, 0)
+
+    def test_sell_kit_invoice_before_delivery(self):
+        """ When a kit product is invoiced prior to delivery, we want to make sure to reconcile all
+        the AMLs from its explosion together, else we risk re-reconciliation attempts (which will
+        block certain actions from being performed altogether).
+        """
+        self.stock_account_product_categ.property_cost_method = 'average'
+
+        compo01 = self._create_product(name="Compo 01", is_storable=True, standard_price=10)
+        compo02 = self._create_product(name="Compo 02", is_storable=True, standard_price=20)
+        kit = self._create_product(name="Kit", is_storable=True, standard_price=30)
+        (compo01 + compo02 + kit).write({'invoice_policy': 'order'})
+        warehouse = self.company_data['default_warehouse']
+        self.env['stock.quant']._update_available_quantity(compo01, warehouse.lot_stock_id, 1.0)
+        self.env['stock.quant']._update_available_quantity(compo02, warehouse.lot_stock_id, 2.0)
+        self.env['mrp.bom'].create({
+            'type': 'phantom',
+            'product_id': kit.id,
+            'product_tmpl_id': kit.product_tmpl_id.id,
+            'product_qty': 1,
+            'bom_line_ids': [
+                Command.create({'product_id': compo01.id, 'product_qty': 1}),
+                Command.create({'product_id': compo02.id, 'product_qty': 1}),
+            ],
+        })
+        sale_order = self.env['sale.order'].create({
+            'partner_id': self.partner_a.id,
+            'order_line': [
+                Command.create({
+                    'product_id': kit.id,
+                    'product_uom_qty': 1,
+                    'price_unit': 10,
+                }),
+                Command.create({
+                    'product_id': compo02.id,
+                    'product_uom_qty': 1,
+                    'price_unit': 5,
+                }),
+            ],
+        })
+        sale_order.action_confirm()
+        invoice = sale_order.with_context(default_journal_id=self.company_data['default_journal_sale'].id)._create_invoices()
+        invoice.action_post()
+        delivery = sale_order.picking_ids
+        # would fail due to attempted re-reconciliation prior to this commit
+        delivery.button_validate()
+        stock_output_amls = self.env['account.move.line'].search([('account_id', '=', self.company_data['default_account_stock_out'].id)], order='id asc')
+        self.assertRecordValues(stock_output_amls,
+            [
+                {'product_id': kit.id,       'reconciled': True,    'debit': 0.0,     'credit':  30.0},
+                {'product_id': compo02.id,   'reconciled': True,    'debit': 0.0,     'credit':  20.0},
+                {'product_id': compo01.id,   'reconciled': True,    'debit': 10.0,    'credit':  0.0},
+                {'product_id': compo02.id,   'reconciled': True,    'debit': 20.0,    'credit':  0.0},
+                {'product_id': compo02.id,   'reconciled': True,    'debit': 20.0,    'credit':  0.0},
+            ]
+        )

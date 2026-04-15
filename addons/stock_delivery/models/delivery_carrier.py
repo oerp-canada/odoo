@@ -36,36 +36,51 @@ class DeliveryCarrier(models.Model):
         ''' Send the package to the service provider
 
         :param pickings: A recordset of pickings
-        :return list: A list of dictionaries (one per picking) containing of the form::
+        :returns: A list of dictionaries (one per picking) containing of
+            the form::
+
                          { 'exact_price': price,
                            'tracking_number': number }
-                           # TODO missing labels per package
-                           # TODO missing currency
-                           # TODO missing success, error, warnings
+        :rtype: list[dict] | None
         '''
+        # TODO missing labels per package
+        # TODO missing currency
+        # TODO missing success, error, warnings
         self.ensure_one()
         if hasattr(self, '%s_send_shipping' % self.delivery_type):
             return getattr(self, '%s_send_shipping' % self.delivery_type)(pickings)
+        return None
 
     def get_return_label(self, pickings, tracking_number=None, origin_date=None):
         self.ensure_one()
         if self.can_generate_return:
-            return getattr(self, '%s_get_return_label' % self.delivery_type)(
+            res = getattr(self, '%s_get_return_label' % self.delivery_type)(
                 pickings, tracking_number, origin_date
             )
+            if self.get_return_label_from_portal:
+                pickings.return_label_ids.generate_access_token()
+            return res
 
     def get_return_label_prefix(self):
-        return 'ReturnLabel-%s' % self.delivery_type
+        return 'LabelReturn-%s' % self.delivery_type
+
+    def _get_delivery_label_prefix(self):
+        return 'LabelShipping-%s' % self.delivery_type
+
+    def _get_delivery_doc_prefix(self):
+        return 'ShippingDoc-%s' % self.delivery_type
 
     def get_tracking_link(self, picking):
         ''' Ask the tracking link to the service provider
 
         :param picking: record of stock.picking
-        :return str: an URL containing the tracking link or False
+        :returns: an URL containing the tracking link or None
+        :rtype: str | None
         '''
         self.ensure_one()
         if hasattr(self, '%s_get_tracking_link' % self.delivery_type):
             return getattr(self, '%s_get_tracking_link' % self.delivery_type)(picking)
+        return None
 
     def cancel_shipment(self, pickings):
         ''' Cancel a shipment
@@ -98,9 +113,11 @@ class DeliveryCarrier(models.Model):
             total_cost += self._product_price_to_company_currency(line.product_qty, line.product_id, order.company_id)
 
         total_weight = order._get_estimated_weight() + default_package_type.base_weight
+        order_weight = self.env.context.get('order_weight', False)
+        total_weight = order_weight or total_weight
         if total_weight == 0.0:
             weight_uom_name = self.env['product.template']._get_weight_uom_name_from_ir_config_parameter()
-            raise UserError(_("The package cannot be created because the total weight of the products in the picking is 0.0 %s") % (weight_uom_name))
+            raise UserError(_("The package cannot be created because the total weight of the products in the picking is 0.0 %s", weight_uom_name))
         # If max weight == 0 => division by 0. If this happens, we want to have
         # more in the max weight than in the total weight, so that it only
         # creates ONE package with everything.
@@ -144,7 +161,7 @@ class DeliveryCarrier(models.Model):
             return packages
 
         # Create all packages.
-        for package in picking.package_ids:
+        for package in picking.move_line_ids.result_package_id:
             move_lines = picking.move_line_ids.filtered(lambda ml: ml.result_package_id == package)
             commodities = self._get_commodities_from_stock_move_lines(move_lines)
             package_total_cost = 0.0
@@ -168,7 +185,7 @@ class DeliveryCarrier(models.Model):
             package_total_cost = 0.0
             for move_line in picking.move_line_ids:
                 package_total_cost += self._product_price_to_company_currency(
-                    move_line.qty_done, move_line.product_id, picking.company_id
+                    move_line.quantity, move_line.product_id, picking.company_id
                 )
             packages.append(DeliveryPackage(
                 commodities,
@@ -180,17 +197,18 @@ class DeliveryCarrier(models.Model):
                 picking=picking,
             ))
         elif not packages:
-            raise UserError(
-                _("The package cannot be created because the total weight of the products in the "
-                "picking is 0.0 %s") % (picking.weight_uom_name)
-            )
+            raise UserError(_(
+                "The package cannot be created because the total weight of the "
+                "products in the picking is 0.0 %s",
+                picking.weight_uom_name
+            ))
         return packages
 
     def _get_commodities_from_order(self, order):
         commodities = []
 
-        for line in order.order_line.filtered(lambda line: not line.is_delivery and not line.display_type and line.product_id.type in ['product', 'consu']):
-            unit_quantity = line.product_uom._compute_quantity(line.product_uom_qty, line.product_id.uom_id)
+        for line in order.order_line.filtered(lambda line: not line.is_delivery and not line.display_type and line.product_id.type == 'consu'):
+            unit_quantity = line.product_uom_id._compute_quantity(line.product_uom_qty, line.product_id.uom_id)
             rounded_qty = max(1, float_round(unit_quantity, precision_digits=0))
             country_of_origin = line.product_id.country_of_origin.code or order.warehouse_id.partner_id.country_id.code
             commodities.append(DeliveryCommodity(
@@ -205,11 +223,11 @@ class DeliveryCarrier(models.Model):
     def _get_commodities_from_stock_move_lines(self, move_lines):
         commodities = []
 
-        product_lines = move_lines.filtered(lambda line: line.product_id.type in ['product', 'consu'])
+        product_lines = move_lines.filtered(lambda line: line.product_id.type == 'consu')
         for product, lines in groupby(product_lines, lambda x: x.product_id):
             unit_quantity = sum(
-                line.product_uom_id._compute_quantity(
-                    line.qty_done if line.state == 'done' else line.reserved_uom_qty,
+                line.uom_id._compute_quantity(
+                    line.quantity,
                     product.uom_id)
                 for line in lines)
             rounded_qty = max(1, float_round(unit_quantity, precision_digits=0))
@@ -234,6 +252,8 @@ class DeliveryCarrier(models.Model):
         return res
 
     def fixed_get_tracking_link(self, picking):
+        if self.tracking_url and picking.carrier_tracking_ref:
+            return self.tracking_url.replace("<shipmenttrackingnumber>", picking.carrier_tracking_ref)
         return False
 
     def fixed_cancel_shipment(self, pickings):
@@ -254,6 +274,8 @@ class DeliveryCarrier(models.Model):
         return res
 
     def base_on_rule_get_tracking_link(self, picking):
+        if self.tracking_url and picking.carrier_tracking_ref:
+            return self.tracking_url.replace("<shipmenttrackingnumber>", picking.carrier_tracking_ref)
         return False
 
     def base_on_rule_cancel_shipment(self, pickings):

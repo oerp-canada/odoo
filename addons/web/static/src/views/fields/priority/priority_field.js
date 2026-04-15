@@ -1,11 +1,10 @@
-/** @odoo-module **/
-
+import { useState } from "@web/owl2/utils";
 import { useCommand } from "@web/core/commands/command_hook";
 import { registry } from "@web/core/registry";
-import { _lt } from "@web/core/l10n/translation";
+import { _t } from "@web/core/l10n/translation";
 import { standardFieldProps } from "../standard_field_props";
 
-import { Component, useState } from "@odoo/owl";
+import { Component } from "@odoo/owl";
 
 export class PriorityField extends Component {
     static template = "web.PriorityField";
@@ -27,7 +26,7 @@ export class PriorityField extends Component {
     }
 
     get commands() {
-        const commandName = this.env._t("Set priority...");
+        const commandName = _t("Set priority...");
         return [
             [
                 commandName,
@@ -82,16 +81,24 @@ export class PriorityField extends Component {
     }
 
     async updateRecord(value) {
-        await this.props.record.update({ [this.props.name]: value });
-        if (this.props.autosave) {
-            return this.props.record.save();
-        }
+        await this.props.record.update({ [this.props.name]: value }, { save: this.props.autosave });
     }
 }
 
 export const priorityField = {
     component: PriorityField,
-    displayName: _lt("Priority"),
+    displayName: _t("Priority"),
+    supportedOptions: [
+        {
+            label: _t("Autosave"),
+            name: "autosave",
+            type: "boolean",
+            default: true,
+            help: _t(
+                "If checked, the record will be saved immediately when the field is modified."
+            ),
+        },
+    ],
     supportedTypes: ["selection"],
     extractProps({ options, viewType }, dynamicInfo) {
         return {

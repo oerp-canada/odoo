@@ -1,13 +1,15 @@
-/** @odoo-module **/
-
+import { useState } from "@web/owl2/utils";
+import { localization } from "@web/core/l10n/localization";
 import { _t } from "@web/core/l10n/translation";
 import { registry } from "@web/core/registry";
-import { pick } from "@web/core/utils/objects";
-import { groupBy, sortBy } from "@web/core/utils/arrays";
+import { sortBy } from "@web/core/utils/arrays";
+import { checkFileSize, DEFAULT_MAX_FILE_SIZE } from "@web/core/utils/files";
 import { memoize } from "@web/core/utils/functions";
-import { sprintf } from "@web/core/utils/strings";
-import { useState } from "@odoo/owl";
+import { useService } from "@web/core/utils/hooks";
+import { pick } from "@web/core/utils/objects";
+import { session } from "@web/session";
 import { ImportBlockUI } from "./import_block_ui";
+import { BinaryFileManager } from "./binary_file_manager";
 
 const mainComponentRegistry = registry.category("main_components");
 
@@ -77,13 +79,12 @@ const strftimeToHumanFormat = memoize(function strftimeToHumanFormat(value) {
  *
  */
 export class BaseImportModel {
-    constructor({ env, resModel, context, orm }) {
+    constructor({ env, context, orm }) {
         this.id = 1;
         this.env = env;
         this.orm = orm;
         this.handleInterruption = false;
 
-        this.resModel = resModel;
         this.context = context || {};
 
         this.fields = [];
@@ -98,7 +99,6 @@ export class BaseImportModel {
         this.importOptionsValues = {
             ...this.formattingOptionsValues,
             advanced: {
-                reloadParse: true,
                 value: true,
             },
             has_headers: {
@@ -127,7 +127,27 @@ export class BaseImportModel {
             },
         };
 
+        const maxUploadSize = session.max_file_upload_size || DEFAULT_MAX_FILE_SIZE;
+        this.binaryFilesParams = {
+            binaryFiles: {
+                value: {},
+            },
+            maxSizePerBatch: {
+                help: _t("Defines how many megabytes can be imported in each batch"),
+                value: 10,
+                max: Math.round(maxUploadSize / 1024 / 1024),
+                min: 0,
+            },
+            delayAfterEachBatch: {
+                help: _t("Delay applied after each batch to prevent unthrottled calls"),
+                value: 1,
+                min: 1,
+            },
+        };
+
         this.fieldsToHandle = {};
+
+        this.notificationService = useService("notification");
     }
 
     //--------------------------------------------------------------------------
@@ -207,6 +227,10 @@ export class BaseImportModel {
         mainComponentRegistry.remove("ImportBlockUI");
     }
 
+    setResModel(resModel) {
+        this.resModel = resModel;
+    }
+
     async init() {
         [this.importTemplates, this.id] = await Promise.all([
             this.orm.call(this.resModel, "get_import_templates", [], {
@@ -240,27 +264,12 @@ export class BaseImportModel {
 
             const error = await this._executeImportStep(isTest, importRes);
             if (error) {
-                let message;
                 const errorData = error.data || {};
-                if (errorData.type === "xhrerror") {
-                    const xhr = errorData.objects[0];
-                    switch (xhr.status) {
-                        case 504: // gateway timeout
-                            message = _t(
-                                "Import timed out. Please retry. If you still encounter this issue, the file may be too big for the system's configuration, try to split it (import less records per file)."
-                            );
-                            break;
-                        default:
-                            message = _t(
-                                "An unknown issue occurred during import (possibly lost connection, data limit exceeded or memory limits exceeded). Please retry in case the issue is transient. If the issue still occurs, try to split the file rather than import it at once."
-                            );
-                    }
-                } else {
-                    message =
-                        (errorData.arguments &&
-                            (errorData.arguments[1] || errorData.arguments[0])) ||
-                        error.message;
-                }
+                const message =
+                    (errorData.arguments && (errorData.arguments[1] || errorData.arguments[0])) ||
+                    _t(
+                        "An unknown issue occurred during import (possibly lost connection, data limit exceeded or memory limits exceeded). Please retry in case the issue is transient. If the issue still occurs, try to split the file rather than import it at once."
+                    );
 
                 if (error.message) {
                     this._addMessage("danger", [error.message, message]);
@@ -279,10 +288,10 @@ export class BaseImportModel {
         }
 
         if (!importRes.hasError) {
-            if (importRes.nextrow) {
+            if (!isTest && importRes.nextrow) {
                 this._addMessage("warning", [
-                    sprintf(
-                        _t("Click 'Resume' to proceed with the import, resuming at line %s."),
+                    _t(
+                        "Click 'Resume' to proceed with the import, resuming at line %s.",
                         importRes.nextrow + 1
                     ),
                     _t("You can test or reload your file before resuming the import."),
@@ -290,6 +299,7 @@ export class BaseImportModel {
             }
             if (isTest) {
                 this._addMessage("info", [_t("Everything seems valid.")]);
+                this.setOption("skip", 0);
             }
         } else {
             importRes.nextrow = startRow;
@@ -332,8 +342,21 @@ export class BaseImportModel {
         }
         this.importOptionsValues[optionName].value = value;
         if (this.importOptionsValues[optionName].reloadParse) {
-            await this.updateData();
+            return this.updateData();
         }
+    }
+
+    onBinaryFilesParamsChanged(parameterName, value) {
+        if (parameterName === "binaryFiles") {
+            const files = {};
+            for (const file of value) {
+                if (checkFileSize(file.size, this.notificationService)) {
+                    files[file.name] = file;
+                }
+            }
+            value = files;
+        }
+        this.binaryFilesParams[parameterName].value = value;
     }
 
     setColumnField(column, fieldInfo) {
@@ -373,7 +396,10 @@ export class BaseImportModel {
             importRes.columns,
             this.formattedImportOptions,
         ];
-        const { ids, messages, nextrow, name, error } = await this._callImport(isTest, importArgs);
+        const { ids, messages, nextrow, name, error, binary_filenames } = await this._callImport(
+            isTest,
+            importArgs
+        );
 
         // Handle server errors
         if (error) {
@@ -393,9 +419,62 @@ export class BaseImportModel {
             }
         }
 
-        this.setOption("skip", nextrow || 0);
-        importRes.nextrow = nextrow;
+        // Push local image to records
+        await this._pushLocalImageToRecords(ids, binary_filenames, isTest);
+
+        // Check if we should continue
+        if (nextrow) {
+            this.setOption("skip", nextrow);
+            importRes.nextrow = nextrow;
+        } else {
+            // Falsy `nextrow` signals there's nothing left to import
+            importRes.nextrow = 0;
+            this.stopImport();
+        }
         return false;
+    }
+
+    async _pushLocalImageToRecords(ids, binaryFilenames, isTest) {
+        if (typeof binaryFilenames === "object") {
+            const parameters = {
+                tracking_disable: this.importOptions.tracking_disable,
+                delayAfterEachBatch: this.binaryFilesParams.delayAfterEachBatch.value,
+                maxBatchSize: this.binaryFilesParams.maxSizePerBatch.value * 1024 * 1024,
+            };
+
+            if (!this.binaryFilesParams.binaryFiles) {
+                return;
+            }
+            const binaryFiles = this.binaryFilesParams.binaryFiles.value;
+            const fields = Object.keys(binaryFilenames);
+            const binaryFileManager = new BinaryFileManager(
+                this.resModel,
+                fields,
+                parameters,
+                this.context,
+                this.orm,
+                this.notificationService
+            );
+            for (let rowIndex = 0; rowIndex < ids.length; rowIndex++) {
+                const id = ids[rowIndex];
+                for (const field of fields) {
+                    const fileName = binaryFilenames[field][rowIndex];
+                    if (!fileName) {
+                        continue;
+                    }
+                    if (fileName in binaryFiles) {
+                        const file = binaryFiles[fileName];
+                        if (!file || isTest) {
+                            continue;
+                        }
+                        await binaryFileManager.addFile(id, field, file);
+                    }
+                }
+            }
+            if (!isTest) {
+                await binaryFileManager.sendLastPayload();
+            }
+        }
     }
 
     async _callImport(dryrun, args) {
@@ -428,7 +507,10 @@ export class BaseImportModel {
             this._addMessage(sortedMessages[0].type, [sortedMessages[0].message]);
             delete sortedMessages[0];
         } else {
-            this._addMessage("danger", [_t("The file contains blocking errors (see below)")]);
+            this.notificationService.add(_t("Import failed: see errors below"), {
+                type: "danger",
+                autocloseDelay: 4000,
+            });
         }
 
         for (const [columnFieldId, errors] of Object.entries(sortedMessages)) {
@@ -445,8 +527,11 @@ export class BaseImportModel {
                     if (error.record !== undefined) {
                         this._addMessage("danger", [
                             error.rows.from === error.rows.to
-                                ? sprintf(_t('Error at row %s: "%s"'), error.record, error.message)
-                                : sprintf(_t("%s at multiple rows"), error.message),
+                                ? _t('Error at row %(row)s: "%(error)s"', {
+                                      row: error.record,
+                                      error: error.message,
+                                  })
+                                : _t("%s at multiple rows", error.message),
                         ]);
                     }
                     // Handle global errors.
@@ -460,7 +545,7 @@ export class BaseImportModel {
 
     _groupErrorsByField(messages) {
         const groupedErrors = {};
-        const errorsByMessage = groupBy(this._sortErrors(messages), (f) => f.message || "0");
+        const errorsByMessage = Object.groupBy(this._sortErrors(messages), (f) => f.message || "0");
         for (const [message, errors] of Object.entries(errorsByMessage)) {
             if (!message.record) {
                 const foundError = errors.find((e) => e.record === undefined);
@@ -530,16 +615,16 @@ export class BaseImportModel {
         }
 
         if (this.importOptions.has_headers && res.headers && res.preview.length > 0) {
-            return res.headers.flatMap((header, index) => {
-                return this._createColumn(
+            return res.headers.flatMap((header, index) =>
+                this._createColumn(
                     res,
                     getId(res, index),
                     header,
                     index,
                     res.preview[index],
                     res.preview[index][0]
-                );
-            });
+                )
+            );
         } else if (res.preview && res.preview.length >= 2) {
             return res.preview.flatMap((preview, index) =>
                 this._createColumn(
@@ -587,6 +672,7 @@ export class BaseImportModel {
         const advanced = this.importOptionsValues.advanced.value;
         const fields = {
             basic: [],
+            required: [],
             suggested: [],
             additional: [],
             relational: [],
@@ -612,9 +698,11 @@ export class BaseImportModel {
             field.label = ancestors.map((f) => f.string).join(" / ");
 
             // Get field respective category
-            if (!collection) {
-                if (field.name === "id") {
+            if (!collection || collection === fields.required) {
+                if (field.name === "id" && ancestors.length === 1) {
                     collection = fields.basic;
+                } else if (field.required && ancestors.length === 1) {
+                    collection = fields.required;
                 } else if (isRegular(field.fields)) {
                     collection = hasType(types, field) ? fields.suggested : fields.additional;
                 } else {
@@ -658,10 +746,20 @@ export class BaseImportModel {
             if (!column.fieldInfo) {
                 continue;
             }
-
+            if (
+                column.fieldInfo.name === "id" &&
+                column.previews.some((p) => Number.isInteger(Number(p)))
+            ) {
+                column.comments.push({
+                    type: "warning",
+                    content: _t(
+                        `Use unique key across objects for External ID's, for example "lead_1" instead of "1"`
+                    ),
+                });
+            }
             // Fields of type "char", "text" or "many2many" can be specified multiple
             // times and they will be concatenated, fields of other types must be unique.
-            if (["char", "text", "many2many"].includes(column.fieldInfo.type)) {
+            if (["char", "text", "html", "many2many"].includes(column.fieldInfo.type)) {
                 if (column.fieldInfo.type === "many2many") {
                     column.comments.push({
                         type: "info",
@@ -694,7 +792,7 @@ export class BaseImportModel {
     _getCSVFormattingOptions() {
         return {
             encoding: {
-                label: _t("Encoding:"),
+                label: _t("Encoding"),
                 type: "select",
                 value: "",
                 options: [
@@ -711,44 +809,70 @@ export class BaseImportModel {
                 ],
             },
             separator: {
-                label: _t("Separator:"),
+                label: _t("Separator"),
                 type: "select",
                 value: "",
                 options: [
+                    { value: "", label: _t("Other") },
                     { value: ",", label: _t("Comma") },
                     { value: ";", label: _t("Semicolon") },
                     { value: "\t", label: _t("Tab") },
                     { value: " ", label: _t("Space") },
                 ],
+                other: [",", ";", "\t", " "],
             },
             quoting: {
-                label: _t("Text Delimiter:"),
+                label: _t("Delimiter"),
                 type: "input",
                 value: '"',
             },
+            float_thousand_separator: {
+                label: _t("Thousands Separator"),
+                type: "select",
+                value: localization.thousandsSep,
+                options: [
+                    { value: ",", label: _t("Comma") },
+                    { value: ".", label: _t("Dot") },
+                    { value: "", label: _t("No Separator") },
+                ],
+            },
+            float_decimal_separator: {
+                label: _t("Decimals Separator"),
+                type: "select",
+                value: localization.decimalPoint,
+                options: [
+                    { value: ",", label: _t("Comma") },
+                    { value: ".", label: _t("Dot") },
+                ],
+            },
             date_format: {
+                label: _t("Date Format"),
                 help: _t(
                     "Use YYYY to represent the year, MM for the month and DD for the day. Include separators such as a dot, forward slash or dash. You can use a custom format in addition to the suggestions provided. Leave empty to let Odoo guess the format (recommended)"
                 ),
-                label: _t("Date Format:"),
                 type: "input",
                 value: "",
+                placeholder: _t("No date detected"),
                 options: [
-                    "YYYY-MM-DD",
-                    "YYYY/MM/DD",
                     "DD/MM/YYYY",
-                    "DDMMYYYY",
                     "MM/DD/YYYY",
-                    "MMDDYYYY",
+                    "YYYY/MM/DD",
+                    "DD-MM-YYYY",
+                    "MM-DD-YYYY",
+                    "YYYY-MM-DD",
+                    "DD.MM.YYYY",
+                    "MM.DD.YYYY",
+                    "YYYY.MM.DD",
                 ],
             },
             datetime_format: {
+                label: _t("Datetime Format"),
                 help: _t(
                     "Use HH for hours in a 24h system, use II in conjonction with 'p' for a 12h system. You can use a custom format in addition to the suggestions provided. Leave empty to let Odoo guess the format (recommended)"
                 ),
-                label: _t("Datetime Format:"),
                 type: "input",
                 value: "",
+                placeholder: _t("No datetime detected"),
                 options: [
                     "YYYY-MM-DD HH:mm:SS",
                     "YYYY/MM/DD HH:mm:SS",
@@ -758,25 +882,6 @@ export class BaseImportModel {
                     "MMDDYYYY II:mm:SS p",
                 ],
             },
-            float_thousand_separator: {
-                label: _t("Thousands Separator:"),
-                type: "select",
-                value: ",",
-                options: [
-                    { value: ",", label: _t("Comma") },
-                    { value: ".", label: _t("Dot") },
-                    { value: "", label: _t("No Separator") },
-                ],
-            },
-            float_decimal_separator: {
-                label: _t("Decimals Separator:"),
-                type: "select",
-                value: ".",
-                options: [
-                    { value: ",", label: _t("Comma") },
-                    { value: ".", label: _t("Dot") },
-                ],
-            },
         };
     }
 }
@@ -784,6 +889,7 @@ export class BaseImportModel {
 /**
  * @returns {BaseImportModel}columns
  */
-export function useImportModel({ env, resModel, context, orm }) {
-    return useState(new BaseImportModel({ env, resModel, context, orm }));
+export function useImportModel({ env, context }) {
+    const orm = useService("orm");
+    return useState(new BaseImportModel({ env, context, orm }));
 }

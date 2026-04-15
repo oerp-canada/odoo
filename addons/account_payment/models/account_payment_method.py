@@ -14,7 +14,7 @@ class AccountPaymentMethod(models.Model):
             if code in ('none', 'custom'):
                 continue
             res[code] = {
-                'mode': 'unique',
-                'domain': [('type', '=', 'bank')],
+                'mode': 'electronic',
+                'type': ('bank',),
             }
         return res

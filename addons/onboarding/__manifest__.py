@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Part of Odoo. See LICENSE file for full copyright and licensing details.
 
 {
@@ -10,8 +9,7 @@
 This module allows to manage onboardings and their progress
 ================================================================================
     """,
-    'depends': ['base'],
-    'installable': True,
+    'depends': ['web'],
     'data': [
         'views/onboarding_templates.xml',
         'views/onboarding_views.xml',
@@ -21,13 +19,15 @@ This module allows to manage onboardings and their progress
     'assets': {
         'web.assets_backend': [
             'onboarding/static/src/**/*',
+            ("remove", "onboarding/static/src/scss/onboarding.variables.dark.scss"),
         ],
         "web.dark_mode_variables": [
             ('before', 'onboarding/static/src/scss/onboarding.variables.scss', 'onboarding/static/src/scss/onboarding.variables.dark.scss'),
         ],
         'web._assets_primary_variables': [
             'onboarding/static/src/scss/onboarding.variables.scss',
-        ]
+        ],
     },
+    'author': 'Odoo S.A.',
     'license': 'LGPL-3',
 }

@@ -36,6 +36,8 @@ class AccountMove(models.Model):
         compute='_compute_edi_show_cancel_button')
     edi_show_abandon_cancel_button = fields.Boolean(
         compute='_compute_edi_show_abandon_cancel_button')
+    edi_show_force_cancel_button = fields.Boolean(
+        compute='_compute_edi_show_force_cancel_button')
 
     @api.depends('edi_document_ids.state')
     def _compute_edi_state(self):
@@ -51,6 +53,11 @@ class AccountMove(models.Model):
                 move.edi_state = 'to_cancel'
             else:
                 move.edi_state = False
+
+    @api.depends('edi_document_ids.state')
+    def _compute_edi_show_force_cancel_button(self):
+        for move in self:
+            move.edi_show_force_cancel_button = move._can_force_cancel()
 
     @api.depends('edi_document_ids.error')
     def _compute_edi_error_count(self):
@@ -69,14 +76,15 @@ class AccountMove(models.Model):
                 move.edi_blocking_level = error_doc.blocking_level
             else:
                 error_levels = set([doc.blocking_level for doc in move.edi_document_ids])
+                count = str(move.edi_error_count)
                 if 'error' in error_levels:
-                    move.edi_error_message = str(move.edi_error_count) + _(" Electronic invoicing error(s)")
+                    move.edi_error_message = _("%(count)s Electronic invoicing error(s)", count=count)
                     move.edi_blocking_level = 'error'
                 elif 'warning' in error_levels:
-                    move.edi_error_message = str(move.edi_error_count) + _(" Electronic invoicing warning(s)")
+                    move.edi_error_message = _("%(count)s Electronic invoicing warning(s)", count=count)
                     move.edi_blocking_level = 'warning'
                 else:
-                    move.edi_error_message = str(move.edi_error_count) + _(" Electronic invoicing info(s)")
+                    move.edi_error_message = _("%(count)s Electronic invoicing info(s)", count=count)
                     move.edi_blocking_level = 'info'
 
     @api.depends(
@@ -91,20 +99,24 @@ class AccountMove(models.Model):
             format_web_services = to_process.edi_format_id.filtered(lambda f: f._needs_web_services())
             move.edi_web_services_to_process = ', '.join(f.name for f in format_web_services)
 
+    def _check_edi_documents_for_reset_to_draft(self):
+        self.ensure_one()
+        for doc in self.edi_document_ids:
+            move_applicability = doc.edi_format_id._get_move_applicability(self)
+            if doc.edi_format_id._needs_web_services() \
+                and doc.state in ('sent', 'to_cancel') \
+                and move_applicability \
+                and move_applicability.get('cancel'):
+                return False
+        return True
+
     @api.depends('edi_document_ids.state')
     def _compute_show_reset_to_draft_button(self):
         # OVERRIDE
         super()._compute_show_reset_to_draft_button()
-
         for move in self:
-            for doc in move.edi_document_ids:
-                move_applicability = doc.edi_format_id._get_move_applicability(move)
-                if doc.edi_format_id._needs_web_services() \
-                    and doc.state in ('sent', 'to_cancel') \
-                    and move_applicability \
-                    and move_applicability.get('cancel'):
-                    move.show_reset_to_draft_button = False
-                    break
+            if not move._check_edi_documents_for_reset_to_draft():
+                move.show_reset_to_draft_button = False
 
     @api.depends('edi_document_ids.state')
     def _compute_edi_show_cancel_button(self):
@@ -169,22 +181,6 @@ class AccountMove(models.Model):
                                         grouping_key to aggregate tax values together. The returned dictionary is added
                                         to each tax details in order to retrieve the full grouping_key later.
 
-        :param compute_mode:            Optional parameter to specify the method used to allocate the tax line amounts
-                                        among the invoice lines:
-                                        'tax_details' (the default) uses the AccountMove._get_query_tax_details method.
-                                        'compute_all' uses the AccountTax._compute_all method.
-
-                                        The 'tax_details' method takes the tax line balance and allocates it among the
-                                        invoice lines to which that tax applies, proportionately to the invoice lines'
-                                        base amounts. This always ensures that the sum of the tax amounts equals the
-                                        tax line's balance, which, depending on the constraints of a particular
-                                        localization, can be more appropriate when 'Round Globally' is set.
-
-                                        The 'compute_all' method returns, for each invoice line, the exact tax amounts
-                                        corresponding to the taxes applied to the invoice line. Depending on the
-                                        constraints of the particular localization, this can be more appropriate when
-                                        'Round per Line' is set.
-
         :return:                        The full tax details for the current invoice and for each invoice line
                                         separately. The returned dictionary is the following:
 
@@ -223,72 +219,6 @@ class AccountMove(models.Model):
             grouping_key_generator=grouping_key_generator,
         )
 
-    def _prepare_edi_vals_to_export(self):
-        ''' The purpose of this helper is to prepare values in order to export an invoice through the EDI system.
-        This includes the computation of the tax details for each invoice line that could be very difficult to
-        handle regarding the computation of the base amount.
-
-        :return: A python dict containing default pre-processed values.
-        '''
-        self.ensure_one()
-
-        res = {
-            'record': self,
-            'balance_multiplicator': -1 if self.is_inbound() else 1,
-            'invoice_line_vals_list': [],
-        }
-
-        # Invoice lines details.
-        for index, line in enumerate(self.invoice_line_ids.filtered(lambda line: line.display_type == 'product'), start=1):
-            line_vals = line._prepare_edi_vals_to_export()
-            line_vals['index'] = index
-            res['invoice_line_vals_list'].append(line_vals)
-
-        # Totals.
-        res.update({
-            'total_price_subtotal_before_discount': sum(x['price_subtotal_before_discount'] for x in res['invoice_line_vals_list']),
-            'total_price_discount': sum(x['price_discount'] for x in res['invoice_line_vals_list']),
-        })
-
-        return res
-
-    def _update_payments_edi_documents(self):
-        ''' Update the edi documents linked to the current journal entries. These journal entries must be linked to an
-        account.payment of an account.bank.statement.line. This additional method is needed because the payment flow is
-        not the same as the invoice one. Indeed, the edi documents must be updated when the reconciliation with some
-        invoices is changing.
-        '''
-        edi_document_vals_list = []
-        for payment in self:
-            edi_formats = payment._get_reconciled_invoices().journal_id.edi_format_ids + payment.edi_document_ids.edi_format_id
-            edi_formats = self.env['account.edi.format'].browse(edi_formats.ids) # Avoid duplicates
-            for edi_format in edi_formats:
-                existing_edi_document = payment.edi_document_ids.filtered(lambda x: x.edi_format_id == edi_format)
-                move_applicability = edi_format._get_move_applicability(payment)
-
-                if move_applicability:
-                    if existing_edi_document:
-                        existing_edi_document.write({
-                            'state': 'to_send',
-                            'error': False,
-                            'blocking_level': False,
-                        })
-                    else:
-                        edi_document_vals_list.append({
-                            'edi_format_id': edi_format.id,
-                            'move_id': payment.id,
-                            'state': 'to_send',
-                        })
-                elif existing_edi_document:
-                    existing_edi_document.write({
-                        'state': False,
-                        'error': False,
-                        'blocking_level': False,
-                    })
-
-        self.env['account.edi.document'].create(edi_document_vals_list)
-        self.edi_document_ids._process_documents_no_web_services()
-
     def _is_ready_to_be_sent(self):
         # OVERRIDE
         # Prevent a mail to be sent to the customer if the EDI document is not sent.
@@ -313,7 +243,7 @@ class AccountMove(models.Model):
                 if move_applicability:
                     errors = edi_format._check_move_configuration(move)
                     if errors:
-                        raise UserError(_("Invalid invoice configuration:\n\n%s") % '\n'.join(errors))
+                        raise UserError(_("Invalid invoice configuration:\n\n%s", '\n'.join(errors)))
 
                     existing_edi_document = move.edi_document_ids.filtered(lambda x: x.edi_format_id == edi_format)
                     if existing_edi_document:
@@ -330,8 +260,17 @@ class AccountMove(models.Model):
 
         self.env['account.edi.document'].create(edi_document_vals_list)
         posted.edi_document_ids._process_documents_no_web_services()
-        self.env.ref('account_edi.ir_cron_edi_network')._trigger()
+        if not self.env.context.get('skip_account_edi_cron_trigger'):
+            self.env.ref('account_edi.ir_cron_edi_network')._trigger()
         return posted
+
+    def button_force_cancel(self):
+        """ Cancel the invoice without waiting for the cancellation request to succeed.
+        """
+        for move in self:
+            to_cancel_edi_documents = move.edi_document_ids.filtered(lambda doc: doc.state == 'to_cancel')
+            move.message_post(body=_("This invoice was canceled while the EDIs %s still had a pending cancellation request.", ", ".join(to_cancel_edi_documents.mapped('edi_format_id.name'))))
+        self.button_cancel()
 
     def button_cancel(self):
         # OVERRIDE
@@ -345,18 +284,23 @@ class AccountMove(models.Model):
 
         return res
 
+    def _edi_allow_button_draft(self):
+        self.ensure_one()
+        return not self.edi_show_cancel_button
+
     def button_draft(self):
         # OVERRIDE
         for move in self:
-            if move.edi_show_cancel_button:
+            if not move._edi_allow_button_draft():
                 raise UserError(_(
                     "You can't edit the following journal entry %s because an electronic document has already been "
-                    "sent. Please use the 'Request EDI Cancellation' button instead."
-                ) % move.display_name)
+                    "sent. Please use the 'Request EDI Cancellation' button instead.",
+                    move.display_name))
 
         res = super().button_draft()
 
         self.edi_document_ids.write({'error': False, 'blocking_level': False})
+        self.edi_document_ids.filtered(lambda doc: doc.state == 'to_send').unlink()
 
         return res
 
@@ -365,7 +309,7 @@ class AccountMove(models.Model):
         '''
         to_cancel_documents = self.env['account.edi.document']
         for move in self:
-            move._check_fiscalyear_lock_date()
+            move._check_fiscal_lock_dates()
             is_move_marked = False
             for doc in move.edi_document_ids:
                 move_applicability = doc.edi_format_id._get_move_applicability(move)
@@ -394,7 +338,7 @@ class AccountMove(models.Model):
             if is_move_marked:
                 move.message_post(body=_("A request for cancellation of the EDI has been called off."))
 
-        documents.write({'state': 'sent'})
+        documents.write({'state': 'sent', 'error': False, 'blocking_level': False})
 
     def _get_edi_document(self, edi_format):
         return self.edi_document_ids.filtered(lambda d: d.edi_format_id == edi_format)
@@ -403,31 +347,30 @@ class AccountMove(models.Model):
         return self._get_edi_document(edi_format).sudo().attachment_id
 
     # this override is to make sure that the main attachment is not the edi xml otherwise the attachment viewer will not work correctly
-    def _message_set_main_attachment_id(self, attachment_ids):
-        if self.message_main_attachment_id and len(attachment_ids) > 1 and self.message_main_attachment_id in self.edi_document_ids.attachment_id:
-            self.message_main_attachment_id = self.env['ir.attachment']
-        super()._message_set_main_attachment_id(attachment_ids)
+    def _message_set_main_attachment_id(self, attachments, force=False, filter_xml=True):
+        if not force and len(attachments) > 1 and self.message_main_attachment_id in self.edi_document_ids.attachment_id:
+            force = True
+        super()._message_set_main_attachment_id(attachments, force=force, filter_xml=filter_xml)
 
     ####################################################
     # Business operations
     ####################################################
 
     def button_process_edi_web_services(self):
+        self.ensure_one()
         self.action_process_edi_web_services(with_commit=False)
 
     def action_process_edi_web_services(self, with_commit=True):
         docs = self.edi_document_ids.filtered(lambda d: d.state in ('to_send', 'to_cancel') and d.blocking_level != 'error')
         docs._process_documents_web_services(with_commit=with_commit)
 
-    def _retry_edi_documents_error_hook(self):
-        ''' Hook called when edi_documents are retried. For example, when it's needed to clean a field.
-        TO OVERRIDE
+    def _retry_edi_documents_error(self):
+        '''Called when edi_documents need to be retried.
         '''
-        return
+        self.edi_document_ids.write({'error': False, 'blocking_level': False})
 
     def action_retry_edi_documents_error(self):
-        self._retry_edi_documents_error_hook()
-        self.edi_document_ids.write({'error': False, 'blocking_level': False})
+        self._retry_edi_documents_error()
         self.action_process_edi_web_services()
 
     ####################################################
@@ -444,113 +387,3 @@ class AccountMove(models.Model):
                 move_result.setdefault('attachment_ids', []).extend(edi_attachments.get('attachment_ids', []))
                 move_result.setdefault('attachments', []).extend(edi_attachments.get('attachments', []))
         return result
-
-    ####################################################
-    # Export Electronic Document
-    ####################################################
-
-    def _action_download_electronic_invoice(self):
-        if not self:
-            return False
-        return {
-            'type': 'ir.actions.act_url',
-            'url': '/account_edi/download_edi_documents?%s' % url_encode({'ids': self.filtered('edi_document_ids').ids}),
-            'target': 'new',
-        }
-
-    def _create_zipped(self):
-        buffer = io.BytesIO()
-        with zipfile.ZipFile(buffer, 'w', compression=zipfile.ZIP_DEFLATED) as zipfile_obj:
-            for invoice in self:
-                for document in invoice.edi_document_ids:
-                    if document.state in {'sent', 'cancelled'}:
-                        zipfile_obj.writestr(document.display_name, document.attachment_id.raw)
-        return buffer.getvalue()
-
-class AccountMoveLine(models.Model):
-    _inherit = 'account.move.line'
-
-    ####################################################
-    # Export Electronic Document
-    ####################################################
-
-    def _prepare_edi_vals_to_export(self):
-        ''' The purpose of this helper is the same as '_prepare_edi_vals_to_export' but for a single invoice line.
-        This includes the computation of the tax details for each invoice line or the management of the discount.
-        Indeed, in some EDI, we need to provide extra values depending the discount such as:
-        - the discount as an amount instead of a percentage.
-        - the price_unit but after subtraction of the discount.
-
-        :return: A python dict containing default pre-processed values.
-        '''
-        self.ensure_one()
-
-        if self.discount == 100.0:
-            gross_price_subtotal = self.currency_id.round(self.price_unit * self.quantity)
-        else:
-            gross_price_subtotal = self.currency_id.round(self.price_subtotal / (1 - self.discount / 100.0))
-
-        res = {
-            'line': self,
-            'price_unit_after_discount': self.currency_id.round(self.price_unit * (1 - (self.discount / 100.0))),
-            'price_subtotal_before_discount': gross_price_subtotal,
-            'price_subtotal_unit': self.currency_id.round(self.price_subtotal / self.quantity) if self.quantity else 0.0,
-            'price_total_unit': self.currency_id.round(self.price_total / self.quantity) if self.quantity else 0.0,
-            'price_discount': gross_price_subtotal - self.price_subtotal,
-            'price_discount_unit': (gross_price_subtotal - self.price_subtotal) / self.quantity if self.quantity else 0.0,
-            'gross_price_total_unit': self.currency_id.round(gross_price_subtotal / self.quantity) if self.quantity else 0.0,
-            'unece_uom_code': self.product_id.product_tmpl_id.uom_id._get_unece_code(),
-        }
-        return res
-
-    def _reconcile_pre_hook(self):
-        # EXTENDS 'account'
-        # In some countries, the payments must be sent to the government under some condition. One of them could be
-        # there is at least one reconciled invoice to the payment. Then, we need to update the state of the edi
-        # documents during the reconciliation.
-        results = super()._reconcile_pre_hook()
-        all_lines = self + self.matched_debit_ids.debit_move_id + self.matched_credit_ids.credit_move_id
-        results['edi_payments'] = all_lines.move_id\
-            .filtered(lambda move: move.payment_id or move.statement_line_id)
-        results['edi_invoices_per_payment_before'] = {
-            pay: pay._get_reconciled_invoices()
-            for pay in results['edi_payments']
-        }
-        return results
-
-    def _reconcile_post_hook(self, data):
-        # EXTENDS 'account'
-        super()._reconcile_post_hook(data)
-        payments = data['edi_payments']
-        invoices_per_payment_before = data['edi_invoices_per_payment_before']
-        invoices_per_payment_after = {pay: pay._get_reconciled_invoices() for pay in payments}
-
-        changed_payments = self.env['account.move']
-        for payment, invoices_after in invoices_per_payment_after.items():
-            invoices_before = invoices_per_payment_before[payment]
-
-            if set(invoices_after.ids) != set(invoices_before.ids):
-                changed_payments |= payment
-        changed_payments._update_payments_edi_documents()
-
-    def remove_move_reconcile(self):
-        # OVERRIDE
-        # When a payment has been sent to the government, it usually contains some information about reconciled
-        # invoices. If the user breaks a reconciliation, the related payments must be cancelled properly and then, a new
-        # electronic document must be generated.
-        all_lines = self + self.matched_debit_ids.debit_move_id + self.matched_credit_ids.credit_move_id
-        payments = all_lines.move_id.filtered(lambda move: move.payment_id or move.statement_line_id)
-
-        invoices_per_payment_before = {pay: pay._get_reconciled_invoices() for pay in payments}
-        res = super().remove_move_reconcile()
-        invoices_per_payment_after = {pay: pay._get_reconciled_invoices() for pay in payments}
-
-        changed_payments = self.env['account.move']
-        for payment, invoices_after in invoices_per_payment_after.items():
-            invoices_before = invoices_per_payment_before[payment]
-
-            if set(invoices_after.ids) != set(invoices_before.ids):
-                changed_payments |= payment
-        changed_payments._update_payments_edi_documents()
-
-        return res

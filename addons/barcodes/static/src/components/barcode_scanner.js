@@ -1,13 +1,19 @@
-/** @odoo-module **/
-
-import { isBarcodeScannerSupported, scanBarcode } from "@web/webclient/barcode/barcode_scanner";
+import { _t } from "@web/core/l10n/translation";
+import { scanBarcode } from "@web/core/barcode/barcode_dialog";
+import { isBarcodeScannerSupported } from "@web/core/barcode/barcode_video_scanner";
 import { Component } from "@odoo/owl";
 import { useService } from "@web/core/utils/hooks";
 
 export class BarcodeScanner extends Component {
+    static template = "barcodes.BarcodeScanner";
+    static props = {
+        onBarcodeScanned: { type: Function },
+    };
+
     setup() {
         this.notification = useService("notification");
         this.isBarcodeScannerSupported = isBarcodeScannerSupported();
+        this.scanBarcode = () => scanBarcode(this.env, this.facingMode);
     }
 
     get facingMode() {
@@ -18,9 +24,9 @@ export class BarcodeScanner extends Component {
         let error = null;
         let barcode = null;
         try {
-            barcode = await scanBarcode(this.facingMode);
+            barcode = await this.scanBarcode();
         } catch (err) {
-            error = err.error.message;
+            error = err.message;
         }
 
         if (barcode) {
@@ -29,14 +35,9 @@ export class BarcodeScanner extends Component {
                 window.navigator.vibrate(100);
             }
         } else {
-            this.notification.add(error || this.env._t("Please, Scan again!"), {
+            this.notification.add(error || _t("Please, Scan again!"), {
                 type: "warning",
             });
         }
     }
 }
-
-BarcodeScanner.template = "barcodes.BarcodeScanner";
-BarcodeScanner.props = {
-    onBarcodeScanned: { type: Function },
-};

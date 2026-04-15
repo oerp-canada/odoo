@@ -1,12 +1,17 @@
-import pytz
-from datetime import datetime, timedelta
-from markupsafe import Markup
+# Part of Odoo. See LICENSE file for full copyright and licensing details.
+
+from contextlib import contextmanager
+from datetime import datetime, timedelta, UTC
 from unittest.mock import patch, MagicMock
 
-from odoo.tests.common import HttpCase
+from freezegun import freeze_time
+from markupsafe import Markup
 
-from odoo.addons.microsoft_calendar.models.microsoft_sync import MicrosoftSync
-from odoo.addons.microsoft_calendar.utils.event_id_storage import combine_ids
+from odoo import fields
+from odoo.tests.common import HttpCase
+from odoo.tools import mute_logger
+from odoo.addons.microsoft_calendar.models.microsoft_sync import MicrosoftCalendarSync
+
 
 def mock_get_token(user):
     return f"TOKEN_FOR_USER_{user.id}"
@@ -19,14 +24,14 @@ def _modified_date_in_the_future(event):
     return (event.write_date + timedelta(seconds=5)).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 def patch_api(func):
-    @patch.object(MicrosoftSync, '_microsoft_insert', MagicMock())
-    @patch.object(MicrosoftSync, '_microsoft_delete', MagicMock())
-    @patch.object(MicrosoftSync, '_microsoft_patch', MagicMock())
+    @patch.object(MicrosoftCalendarSync, '_microsoft_insert', MagicMock())
+    @patch.object(MicrosoftCalendarSync, '_microsoft_delete', MagicMock())
+    @patch.object(MicrosoftCalendarSync, '_microsoft_patch', MagicMock())
     def patched(self, *args, **kwargs):
         return func(self, *args, **kwargs)
     return patched
 
-# By inheriting from TransactionCase, postcommit hooks (so methods tagged with `@after_commit` in MicrosoftSync),
+# By inheriting from TransactionCase, postcommit hooks (so methods tagged with `@after_commit` in MicrosoftCalendarSync),
 # are not called because no commit is done.
 # To be able to manually call these postcommit hooks, we need to inherit from HttpCase.
 # Note: as postcommit hooks are called separately, do not forget to invalidate cache for records read during the test.
@@ -35,6 +40,11 @@ class TestCommon(HttpCase):
     @patch_api
     def setUp(self):
         super(TestCommon, self).setUp()
+        m = mute_logger('odoo.addons.auth_signup.models.res_users')
+        mute_logger.__enter__(m)  # noqa: PLC2801
+        self.addCleanup(mute_logger.__exit__, m, None, None, None)
+
+        self.env.user.unpause_microsoft_synchronization()
 
         # prepare users
         self.organizer_user = self.env["res.users"].search([("name", "=", "Mike Organizer")])
@@ -54,6 +64,10 @@ class TestCommon(HttpCase):
                 'login': 'john@attendee.com',
                 'partner_id': partner.id,
             })
+
+        # Add token validity with one hour of time window for properly checking the sync status.
+        for user in [self.organizer_user, self.attendee_user]:
+            user.microsoft_calendar_token_validity = fields.Datetime.now() + timedelta(hours=1)
 
         # -----------------------------------------------------------------------------------------
         # To create Odoo events
@@ -108,11 +122,11 @@ class TestCommon(HttpCase):
                 'contentType': "text",
             },
             "start": {
-                'dateTime': pytz.utc.localize(self.simple_event_values["start"]).isoformat(),
+                'dateTime': self.simple_event_values["start"].replace(tzinfo=UTC).isoformat(),
                 'timeZone': 'Europe/London'
             },
             "end": {
-                'dateTime': pytz.utc.localize(self.simple_event_values["stop"]).isoformat(),
+                'dateTime': self.simple_event_values["stop"].replace(tzinfo=UTC).isoformat(),
                 'timeZone': 'Europe/London'
             },
             "isAllDay": False,
@@ -241,7 +255,8 @@ class TestCommon(HttpCase):
             "start": self.start_date,
             "stop": self.end_date,
             "user_id": self.organizer_user,
-            "microsoft_id": combine_ids("123", "456"),
+            "microsoft_id": "123",
+            "ms_universal_event_id": "456",
             "partner_ids": [self.organizer_user.partner_id.id, self.attendee_user.partner_id.id],
         }
         self.expected_odoo_recurrency_from_outlook = {
@@ -258,7 +273,8 @@ class TestCommon(HttpCase):
             'fri': False,
             'interval': self.recurrent_event_interval,
             'month_by': 'date',
-            'microsoft_id': combine_ids('REC123', 'REC456'),
+            "microsoft_id": "REC123",
+            "ms_universal_event_id": "REC456",
             'name': "Every %s Days until %s" % (
                 self.recurrent_event_interval, self.recurrence_end_date.strftime("%Y-%m-%d")
             ),
@@ -397,7 +413,8 @@ class TestCommon(HttpCase):
                 "stop": self.end_date + timedelta(days=i * self.recurrent_event_interval),
                 "until": self.recurrence_end_date.date(),
                 "microsoft_recurrence_master_id": "REC123",
-                'microsoft_id': combine_ids(f"REC123_EVENT_{i+1}", f"REC456_EVENT_{i+1}"),
+                "microsoft_id": f"REC123_EVENT_{i+1}",
+                "ms_universal_event_id": f"REC456_EVENT_{i+1}",
                 "recurrency": True,
                 "follow_recurrence": True,
                 "active": True,
@@ -405,6 +422,24 @@ class TestCommon(HttpCase):
             for i in range(self.recurrent_events_count)
         ]
         self.env.cr.postcommit.clear()
+
+    @contextmanager
+    def mock_datetime_and_now(self, mock_dt):
+        """
+        Used when synchronization date (using env.cr.now()) is important
+        in addition to standard datetime mocks. Used mainly to detect sync
+        issues.
+        """
+        with freeze_time(mock_dt), \
+                patch.object(self.env.cr, 'now', lambda: mock_dt):
+            yield
+
+    def sync_odoo_recurrences_with_outlook_feature(self):
+        """
+        Returns the status of the recurrence synchronization feature with Outlook.
+        True if it is active and False otherwise. This function guides previous tests to abort before they are checked.
+        """
+        return False
 
     def create_events_for_tests(self):
         """
@@ -419,7 +454,8 @@ class TestCommon(HttpCase):
             self.simple_event = self.env["calendar.event"].with_user(self.organizer_user).create(
                 dict(
                     self.simple_event_values,
-                    microsoft_id=combine_ids("123", "456"),
+                    microsoft_id="123",
+                    ms_universal_event_id="456",
                 )
             )
 
@@ -430,7 +466,8 @@ class TestCommon(HttpCase):
                 dict(
                     self.simple_event_values,
                     name=f"event{i}",
-                    microsoft_id=combine_ids(f"e{i}", f"u{i}"),
+                    microsoft_id=f"e{i}",
+                    ms_universal_event_id=f"u{i}"
                 )
                 for i in range(1, 4)
             ])
@@ -443,27 +480,37 @@ class TestCommon(HttpCase):
         )
         already_created = self.recurrent_base_event
 
+        # Currently, it is forbidden to create recurrences in Odoo. A trick for deactivating the checking
+        # is needed below in this test setup: deactivating the synchronization during recurrences creation.
+        sync_previous_state = self.env.user.microsoft_synchronization_stopped
+        self.env.user.microsoft_synchronization_stopped = False
+
         if not already_created:
-            self.recurrent_base_event = self.env["calendar.event"].with_user(self.organizer_user).create(
+            self.recurrent_base_event = self.env["calendar.event"].with_context(dont_notify=True).with_user(self.organizer_user).create(
                 self.recurrent_event_values
             )
         self.recurrence = self.env["calendar.recurrence"].search([("base_event_id", "=", self.recurrent_base_event.id)])
 
         # set ids set by Outlook
         if not already_created:
-            self.recurrence.write({
-                "microsoft_id": combine_ids("REC123", "REC456"),
+            self.recurrence.with_context(dont_notify=True).write({
+                "microsoft_id": "REC123",
+                "ms_universal_event_id": "REC456"
             })
             for i, e in enumerate(self.recurrence.calendar_event_ids.sorted(key=lambda r: r.start)):
-                e.write({
-                    "microsoft_id": combine_ids(f"REC123_EVENT_{i+1}", f"REC456_EVENT_{i+1}"),
+                e.with_context(dont_notify=True).write({
+                    "microsoft_id": f"REC123_EVENT_{i+1}",
+                    "ms_universal_event_id": f"REC456_EVENT_{i+1}",
                     "microsoft_recurrence_master_id": "REC123",
                 })
             self.recurrence.invalidate_recordset()
             self.recurrence.calendar_event_ids.invalidate_recordset()
 
-        self.recurrent_events = self.recurrence.calendar_event_ids.sorted(key=lambda r: r.start)
-        self.recurrent_events_count = len(self.recurrent_events)
+            self.recurrent_events = self.recurrence.calendar_event_ids.sorted(key=lambda r: r.start)
+            self.recurrent_events_count = len(self.recurrent_events)
+
+        # Rollback the synchronization status after setup.
+        self.env.user.microsoft_synchronization_stopped = sync_previous_state
 
     def assert_odoo_event(self, odoo_event, expected_values):
         """

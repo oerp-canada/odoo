@@ -1,10 +1,14 @@
-/* @odoo-module */
+import { Record } from "@mail/model/export";
 
-export class CannedResponse {
+export class CannedResponse extends Record {
+    static _name = "mail.canned.response";
+
     /** @type {number} */
     id;
     /** @type {string} */
-    name;
+    source;
     /** @type {string} */
     substitution;
 }
+
+CannedResponse.register();

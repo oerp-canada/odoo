@@ -1,11 +1,9 @@
-/** @odoo-module **/
-
 /**
  * @typedef StandardFieldProps
  * @property {string} [id]
  * @property {string} name
  * @property {boolean} [readonly]
- * @property {import("@web/views/relational_model").Record} record
+ * @property {import("@web/model/relational_model/record").Record} record
  */
 
 export const standardFieldProps = {

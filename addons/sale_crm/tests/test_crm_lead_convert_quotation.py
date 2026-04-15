@@ -7,6 +7,7 @@ from odoo.tests.common import tagged, users
 
 
 @tagged('lead_manage')
+@tagged('at_install', '-post_install')  # LEGACY at_install
 class TestLeadConvertToTicket(crm_common.TestCrmCommon):
 
     @classmethod
@@ -73,7 +74,6 @@ class TestLeadConvertToTicket(crm_common.TestCrmCommon):
         self.assertEqual(lead.partner_id, self.contact_2)
         # TDE TODO: have a real sync assert for lead / contact
         self.assertEqual(lead.email_from, self.contact_2.email)
-        self.assertEqual(lead.mobile, self.contact_2.mobile)
         self.assertEqual(action['context']['default_partner_id'], self.contact_2.id)
 
     @users('user_sales_salesman')

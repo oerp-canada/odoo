@@ -1,76 +1,74 @@
-/* @odoo-module */
-
 import { registry } from "@web/core/registry";
+import { stepUtils } from "@web_tour/tour_utils";
 
-import { stepUtils } from "@web_tour/tour_service/tour_utils";
+function createChatbotSteps(...stepMessages) {
+    return [
+        {
+            trigger: "div[name='script_step_ids'] .o_field_x2many_list_row_add button",
+            run: "click",
+        },
+        ...stepMessages
+            .map((message) => [
+                {
+                    trigger: ".modal .odoo-editor-editable",
+                    run: `editor ${message}`,
+                },
+                {
+                    trigger: `.modal .odoo-editor-editable:contains(${message})`,
+                },
+                {
+                    trigger: ".modal button:contains(Save & New)",
+                    run: "click",
+                },
+                {
+                    trigger: `tr:contains(${message})`,
+                },
+                {
+                    trigger: ".modal .odoo-editor-editable:empty",
+                },
+            ])
+            .flat(),
+        {
+            trigger: ".modal-footer button:contains(Discard)",
+            run: "click",
+        },
+    ];
+}
 
 const commonSteps = [
     stepUtils.showAppsMenuItem(),
     {
         trigger: '.o_app[data-menu-xmlid="im_livechat.menu_livechat_root"]',
+        run: "click",
     },
     {
         trigger: 'button[data-menu-xmlid="im_livechat.livechat_config"]',
+        run: "click",
     },
     {
         trigger: 'a[data-menu-xmlid="im_livechat.chatbot_config"]',
+        run: "click",
     },
     {
         trigger: ".o_list_button_add",
+        run: "click",
     },
     {
         trigger: 'input[id="title_0"]',
-        run: "text Test Chatbot Sequence",
+        run: "edit Test Chatbot Sequence",
     },
-    {
-        trigger: 'div[name="script_step_ids"] .o_field_x2many_list_row_add a',
-    },
-    {
-        trigger: "textarea#message_0",
-        run: "text Step 1",
-    },
-    {
-        trigger: 'button:contains("Save & New")',
-    },
-    {
-        trigger: 'tr:contains("Step 1")',
-        in_modal: false,
-        run: () => {},
-    },
-    {
-        trigger: "textarea#message_0",
-        run: "text Step 2",
-    },
-    {
-        trigger: 'button:contains("Save & New")',
-    },
-    {
-        trigger: 'tr:contains("Step 2")',
-        in_modal: false,
-        run: () => {},
-    },
-    {
-        trigger: "textarea#message_0",
-        run: "text Step 3",
-    },
+    ...createChatbotSteps("Step 1", "Step 2", "Step 3"),
 ];
 
 /**
  * Simply create a few steps in order to check the sequences.
  */
 registry.category("web_tour.tours").add("im_livechat_chatbot_steps_sequence_tour", {
-    test: true,
-    url: "/web",
-    steps: [
+    steps: () => [
         ...commonSteps,
         {
-            trigger: 'button:contains("Save & Close")',
-        },
-        {
             trigger: "body.o_web_client:not(.modal-open)",
-            run() {},
         },
-        ...stepUtils.discardForm(),
     ],
 });
 
@@ -78,64 +76,22 @@ registry.category("web_tour.tours").add("im_livechat_chatbot_steps_sequence_tour
  * Same as above, with an extra drag&drop at the end.
  */
 registry.category("web_tour.tours").add("im_livechat_chatbot_steps_sequence_with_move_tour", {
-    test: true,
-    url: "/web",
-    steps: [
+    steps: () => [
         ...commonSteps,
-        {
-            trigger: 'button:contains("Save & New")',
-        },
-        {
-            trigger: 'tr:contains("Step 3")',
-            in_modal: false,
-            run: () => {},
-        },
-        {
-            trigger: "textarea#message_0",
-            run: "text Step 4",
-        },
-        {
-            trigger: 'button:contains("Save & New")',
-        },
-        {
-            trigger: 'tr:contains("Step 4")',
-            in_modal: false,
-            run: () => {},
-        },
-        {
-            trigger: "textarea#message_0",
-            run: "text Step 5",
-        },
-        {
-            trigger: 'button:contains("Save & Close")',
-        },
+        ...createChatbotSteps("Step 4", "Step 5"),
         {
             trigger: "body.o_web_client:not(.modal-open)",
-            run: () => {},
         },
         {
             trigger: 'div[name="script_step_ids"] tr:nth-child(5) .o_row_handle',
-            run: 'drag_and_drop_native div[name="script_step_ids"] tr:nth-child(2)',
+            run: 'drag_and_drop(div[name="script_step_ids"] tr:nth-child(2))',
         },
-        {
-            trigger: 'div[name="script_step_ids"] .o_field_x2many_list_row_add a',
-        },
-        {
-            trigger: "textarea#message_0",
-            run: "text Step 6",
-        },
-        {
-            trigger: 'button:contains("Save & Close")',
-        },
+        ...createChatbotSteps("Step 6"),
         {
             trigger: "body.o_web_client:not(.modal-open)",
-            run: () => {},
         },
         {
             trigger: 'tr:contains("Step 6")',
-            in_modal: false,
-            run: () => {},
         },
-        ...stepUtils.discardForm(),
     ],
 });

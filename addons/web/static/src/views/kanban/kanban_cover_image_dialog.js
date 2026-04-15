@@ -1,23 +1,25 @@
-/** @odoo-module **/
-
+import { useState } from "@web/owl2/utils";
 import { Dialog } from "@web/core/dialog/dialog";
 import { FileInput } from "@web/core/file_input/file_input";
 import { useService } from "@web/core/utils/hooks";
 
-import { Component, useState, onWillStart } from "@odoo/owl";
+import { Component, onWillStart } from "@odoo/owl";
 
 let nextDialogId = 1;
 
 export class KanbanCoverImageDialog extends Component {
+    static template = "web.KanbanCoverImageDialog";
+    static components = { Dialog, FileInput };
+    static props = ["*"];
     setup() {
         this.id = `o_cover_image_upload_${nextDialogId++}`;
         this.orm = useService("orm");
         this.http = useService("http");
         const { record, fieldName } = this.props;
-        const attachment = (record && record.data[fieldName]) || [];
+        const attachment = record.data[fieldName];
         this.state = useState({
             selectFile: false,
-            selectedAttachmentId: attachment[0],
+            selectedAttachmentId: attachment?.id || false,
         });
         onWillStart(async () => {
             this.attachments = await this.orm.searchRead(
@@ -31,6 +33,10 @@ export class KanbanCoverImageDialog extends Component {
             );
             this.state.selectFile = this.props.autoOpen && this.attachments.length;
         });
+    }
+
+    get hasCoverImage() {
+        return Boolean(this.props.record.data[this.props.fieldName]);
     }
 
     onUpload([attachment]) {
@@ -58,9 +64,8 @@ export class KanbanCoverImageDialog extends Component {
     }
 
     async setCover() {
-        const id = this.state.selectedAttachmentId ? [this.state.selectedAttachmentId] : false;
-        await this.props.record.update({ [this.props.fieldName]: id });
-        await this.props.record.save();
+        const value = this.state.selectedAttachmentId ? { id: this.state.selectedAttachmentId } : false;
+        await this.props.record.update({ [this.props.fieldName]: value }, { save: true });
         this.props.close();
     }
 
@@ -68,6 +73,3 @@ export class KanbanCoverImageDialog extends Component {
         this.state.selectFile = true;
     }
 }
-
-KanbanCoverImageDialog.template = "web.KanbanCoverImageDialog";
-KanbanCoverImageDialog.components = { Dialog, FileInput };

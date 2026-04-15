@@ -1,85 +1,54 @@
-/* @odoo-module */
-
-import { onMounted, onWillUpdateProps } from "@odoo/owl";
-
+import { RecipientTag, useRecipientChecker } from "@mail/core/web/recipient_tag";
+import { parseEmail } from "@mail/utils/common/format";
 import { _t } from "@web/core/l10n/translation";
 import { registry } from "@web/core/registry";
-import { TagsList } from "@web/core/tags_list/tags_list";
-import { sprintf } from "@web/core/utils/strings";
 import {
     Many2ManyTagsField,
     many2ManyTagsField,
 } from "@web/views/fields/many2many_tags/many2many_tags_field";
-import { useOpenMany2XRecord } from "@web/views/fields/relational_utils";
+import { Many2XAutocomplete } from "@web/views/fields/relational_utils";
 
-export class FieldMany2ManyTagsEmailTagsList extends TagsList {}
-FieldMany2ManyTagsEmailTagsList.template = "FieldMany2ManyTagsEmailTagsList";
+export class FieldMany2ManyTagsEmailMany2xAutocomplete extends Many2XAutocomplete {
+    /**
+     * @override
+     * @param {string} value
+     * @returns {Object}
+     */
+    getCreationContext(value) {
+        const [name, email] = value ? parseEmail(value) : ["", ""];
+        const context = super.getCreationContext(name);
+        if (email) {
+            context["default_email"] = email;
+        }
+        return context;
+    }
+}
 
 export class FieldMany2ManyTagsEmail extends Many2ManyTagsField {
+    static template = "FieldMany2ManyTagsEmailTags";
+    static components = {
+        ...super.components,
+        Tag: RecipientTag,
+        Many2XAutocomplete: FieldMany2ManyTagsEmailMany2xAutocomplete,
+    };
     static props = {
-        ...Many2ManyTagsField.props,
+        ...super.props,
         context: { type: Object, optional: true },
+        canEditTags: { type: Boolean, optional: true },
     };
 
     setup() {
         super.setup();
-
-        this.openedDialogs = 0;
-        this.recordsIdsToAdd = [];
-        this.openMany2xRecord = useOpenMany2XRecord({
-            resModel: this.relation,
-            activeActions: {
-                create: false,
-                createEdit: false,
-                write: true,
-            },
-            isToMany: true,
-            onRecordSaved: async (record) => {
-                if (record.data.email) {
-                    this.recordsIdsToAdd.push(record.resId);
-                }
-            },
-            fieldString: this.props.string,
-        });
-
-        // Using onWillStart causes an infinite loop, onMounted will handle the initial
-        // check and onWillUpdateProps handles any addition to the field.
-        onMounted(this.checkEmails.bind(this, this.props));
-        onWillUpdateProps(this.checkEmails.bind(this));
-    }
-
-    async checkEmails(props) {
-        const invalidRecords = props.record.data[props.name].records.filter(
-            (record) => !record.data.email
-        );
-        // Remove records with invalid data, open form view to edit those and readd them if they are updated correctly.
-        const dialogDefs = [];
-        for (const record of invalidRecords) {
-            dialogDefs.push(
-                this.openMany2xRecord({
-                    resId: record.resId,
-                    context: props.context,
-                    title: sprintf(_t("Edit: %s"), record.data.display_name),
-                })
-            );
+        if (this.quickCreate) {
+            this.quickCreate = this.quickCreateRecipient.bind(this);
         }
-        this.openedDialogs += invalidRecords.length;
-        const invalidRecordIds = invalidRecords.map((rec) => rec.resId);
-        if (invalidRecordIds.length) {
-            this.props.record.data[this.props.name].replaceWith(
-                props.record.data[props.name].currentIds.filter(
-                    (id) => !invalidRecordIds.includes(id)
-                )
-            );
-        }
-        return Promise.all(dialogDefs).then(() => {
-            this.openedDialogs -= invalidRecords.length;
-            if (this.openedDialogs || !this.recordsIdsToAdd.length) {
-                return;
-            }
-            props.record.data[props.name].add(this.recordsIdsToAdd, { isM2M: true });
-            this.recordsIdsToAdd = [];
-        });
+
+        this.recipientCheckerBus = useRecipientChecker(() => this.tags.map((tag) => ({ id: tag.id, email: tag.props.email })));
+
+        const update = this.update;
+        this.update = async (object) => {
+            await update(object);
+        };
     }
 
     get tags() {
@@ -92,27 +61,58 @@ export class FieldMany2ManyTagsEmail extends Many2ManyTagsField {
             },
             {}
         );
-        tags.forEach((tag) => (tag.email = emailByResId[tag.resId]));
+        tags.forEach((tag) => {
+            tag.props.email = emailByResId[tag.props.resId];
+        });
         return tags;
     }
-}
 
-FieldMany2ManyTagsEmail.components = {
-    ...FieldMany2ManyTagsEmail.components,
-    TagsList: FieldMany2ManyTagsEmailTagsList,
-};
+    /**
+     * @override
+     * @param {Record} record
+     * @returns {Object}
+     */
+    getTagProps(record) {
+        const p = super.getTagProps(record);
+        return {
+            ...p,
+            text:
+                record.data.name || record.data.email || record.data.display_name || _t("Unnamed"),
+            bus: this.recipientCheckerBus,
+            updateRecipient: this.updateRecipient.bind(this),
+            name: p.text,
+            email: record.data.email,
+            tooltip: record.data.email || p.text,
+            id: record.id,
+            resId: record.resId,
+        };
+    }
+
+    async quickCreateRecipient(request) {
+        const [name, email] = parseEmail(request);
+        const [partnerId] = await this.orm.create("res.partner", [{ name, email }]);
+        return this.props.record.data[this.props.name].addAndRemove({ add: [partnerId] });
+    }
+
+    async updateRecipient(newEmail, partnerId) {
+        const list = this.props.record.data[this.props.name];
+        const partnerRecord = list.records.find((r) => r.resId === partnerId);
+        partnerRecord.canSaveOnUpdate = true;
+        return partnerRecord.update({ email: newEmail }, { save: true });
+    }
+}
 
 export const fieldMany2ManyTagsEmail = {
     ...many2ManyTagsField,
     component: FieldMany2ManyTagsEmail,
-    extractProps(fieldInfo, dynamicInfo) {
-        const props = many2ManyTagsField.extractProps(...arguments);
-        props.context = dynamicInfo.context;
-        return props;
-    },
-    relatedFields: (fieldInfo) => {
-        return [...many2ManyTagsField.relatedFields(fieldInfo), { name: "email", type: "char" }];
-    },
+    supportedOptions: [
+        ...many2ManyTagsField.supportedOptions.filter((option) => option.name !== "color_field"),
+    ],
+    relatedFields: (fieldInfo) => [
+        ...many2ManyTagsField.relatedFields(fieldInfo),
+        { name: "email", type: "char", readonly: false },
+        { name: "name", type: "char" },
+    ],
     additionalClasses: ["o_field_many2many_tags"],
 };
 

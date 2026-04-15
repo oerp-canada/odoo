@@ -1,37 +1,39 @@
-# -*- coding: utf-8 -*-
 # Part of Odoo. See LICENSE file for full copyright and licensing details.
 
 import logging
 import math
 import re
-
 from datetime import datetime
 
 from odoo import api, fields, models, tools, _
 from odoo.exceptions import UserError, ValidationError, AccessError
-from odoo.tools import sql
-from odoo.addons.http_routing.models.ir_http import slug, unslug
+from odoo.fields import Domain
+from odoo.tools import sql, SQL
+from odoo.tools.json import scriptsafe as json_safe
 
 _logger = logging.getLogger(__name__)
 
 
-class Post(models.Model):
+class ForumPost(models.Model):
     _name = 'forum.post'
     _description = 'Forum Post'
     _inherit = [
         'mail.thread',
         'website.seo.metadata',
+        'website.located.mixin',
         'website.searchable.mixin',
     ]
-    _order = "is_correct DESC, vote_count DESC, write_date DESC"
+    _order = "is_correct DESC, vote_count DESC, last_activity_date DESC"
+
+    _CUSTOMER_HEADERS_LIMIT_COUNT = 0  # never use X-Msg-To headers
 
     name = fields.Char('Title')
-    forum_id = fields.Many2one('forum.forum', string='Forum', required=True)
+    forum_id = fields.Many2one('forum.forum', string='Forum', required=True, index=True)
     content = fields.Html('Content', strip_style=True)
     plain_content = fields.Text(
         'Plain Content',
         compute='_compute_plain_content', store=True)
-    tag_ids = fields.Many2many('forum.tag', 'forum_tag_rel', 'forum_id', 'forum_tag_id', string='Tags')
+    tag_ids = fields.Many2many('forum.tag', 'forum_tag_rel', 'forum_post_id', 'forum_tag_id', string='Tags')
     state = fields.Selection(
         [
             ('active', 'Active'), ('pending', 'Waiting Validation'),
@@ -40,18 +42,18 @@ class Post(models.Model):
         ], string='Status', default='active')
     views = fields.Integer('Views', default=0, readonly=True, copy=False)
     active = fields.Boolean('Active', default=True)
-    website_message_ids = fields.One2many(domain=lambda self: [('model', '=', self._name), ('message_type', 'in', ['email', 'comment'])])
-    website_url = fields.Char('Website URL', compute='_compute_website_url')
+    website_message_ids = fields.One2many(domain=lambda self: [('model', '=', self._name), ('message_type', 'in', ['email', 'comment', 'email_outgoing'])])
     website_id = fields.Many2one(related='forum_id.website_id', readonly=True)
 
     # history
     create_date = fields.Datetime('Asked on', index=True, readonly=True)
     create_uid = fields.Many2one('res.users', string='Created by', index=True, readonly=True)
     write_date = fields.Datetime('Updated on', index=True, readonly=True)
-    bump_date = fields.Datetime('Bumped on', readonly=True,
-                                help="Technical field allowing to bump a question. Writing on this field will trigger "
-                                     "a write on write_date and therefore bump the post. Directly writing on write_date "
-                                     "is currently not supported and this field is a workaround.")
+    last_activity_date = fields.Datetime(
+        'Last activity on', readonly=True, required=True, default=fields.Datetime.now,
+        help="Field to keep track of a post's last activity. Updated whenever it is replied to, "
+             "or when a comment is added on the post or one of its replies."
+    )
     write_uid = fields.Many2one('res.users', string='Updated by', index=True, readonly=True)
     relevancy = fields.Float('Relevance', compute="_compute_relevancy", store=True)
 
@@ -73,7 +75,7 @@ class Post(models.Model):
     self_reply = fields.Boolean('Reply to own question', compute='_compute_self_reply', store=True)
     child_ids = fields.One2many(
         'forum.post', 'parent_id', string='Post Answers',
-        domain=lambda self: [('forum_id', 'in', self.forum_id.ids)])
+        domain="[('forum_id', '=', forum_id)]")
     child_count = fields.Integer('Answers', compute='_compute_child_count', store=True)
     uid_has_answered = fields.Boolean('Has Answered', compute='_compute_uid_has_answered')
     has_validated_answer = fields.Boolean(
@@ -162,7 +164,7 @@ class Post(models.Model):
 
     @api.constrains('parent_id')
     def _check_parent_id(self):
-        if not self._check_recursion():
+        if self._has_cycle():
             raise ValidationError(_('You cannot create recursive forum posts.'))
 
     @api.depends('content')
@@ -175,7 +177,7 @@ class Post(models.Model):
         self.website_url = False
         for post in self.filtered(lambda post: post.id):
             anchor = f'#answer_{post.id}' if post.parent_id else ''
-            post.website_url = f'/forum/{slug(post.forum_id)}/{slug(post)}{anchor}'
+            post.website_url = f'/forum/{self.env["ir.http"]._slug(post.forum_id)}/{self.env["ir.http"]._slug(post)}{anchor}'
 
     @api.depends('vote_count', 'forum_id.relevancy_post_vote', 'forum_id.relevancy_time_decay')
     def _compute_relevancy(self):
@@ -188,7 +190,7 @@ class Post(models.Model):
 
     @api.depends_context('uid')
     def _compute_user_vote(self):
-        votes = self.env['forum.post.vote'].search_read([('post_id', 'in', self._ids), ('user_id', '=', self._uid)], ['vote', 'post_id'])
+        votes = self.env['forum.post.vote'].sudo().search_read([('post_id', 'in', self._ids), ('user_id', '=', self.env.uid)], ['vote', 'post_id'])
         mapped_vote = dict([(v['post_id'][0], v['vote']) for v in votes])
         for vote in self:
             vote.user_vote = mapped_vote.get(vote.id, 0)
@@ -205,7 +207,7 @@ class Post(models.Model):
     @api.depends_context('uid')
     def _compute_user_favourite(self):
         for post in self:
-            post.user_favourite = post._uid in post.favourite_ids.ids
+            post.user_favourite = post.env.uid in post.favourite_ids.ids
 
     @api.depends('favourite_ids')
     def _compute_favorite_count(self):
@@ -225,7 +227,7 @@ class Post(models.Model):
     @api.depends_context('uid')
     def _compute_uid_has_answered(self):
         for post in self:
-            post.uid_has_answered = post._uid in post.child_ids.create_uid.ids
+            post.uid_has_answered = post.env.uid in post.child_ids.create_uid.ids
 
     @api.depends('child_ids.is_correct')
     def _compute_has_validated_answer(self):
@@ -259,52 +261,44 @@ class Post(models.Model):
             post.can_downvote = is_admin or user.karma >= post.forum_id.karma_downvote or post.user_vote == 1
             post.can_comment = is_admin or user.karma >= post.karma_comment
             post.can_comment_convert = is_admin or user.karma >= post.karma_comment_convert
-            post.can_view = is_admin or user.karma >= post.karma_close or (post_sudo.create_uid.karma > 0 and (post_sudo.active or post_sudo.create_uid == user))
-            post.can_display_biography = is_admin or post_sudo.create_uid.karma >= post.forum_id.karma_user_bio
+            post.can_view = post.can_close or post_sudo.active and (post_sudo.create_uid.karma > 0 or post_sudo.create_uid == user)
+            post.can_display_biography = is_admin or (post_sudo.create_uid.karma >= post.forum_id.karma_user_bio and post_sudo.create_uid.website_published)
             post.can_post = is_admin or user.karma >= post.forum_id.karma_post
             post.can_flag = is_admin or user.karma >= post.forum_id.karma_flag
             post.can_moderate = is_admin or user.karma >= post.forum_id.karma_moderate
             post.can_use_full_editor = is_admin or user.karma >= post.forum_id.karma_editor
 
     def _search_can_view(self, operator, value):
-        if operator not in ('=', '!=', '<>'):
-            raise ValueError('Invalid operator: %s' % (operator,))
-
-        if not value:
-            operator = operator == "=" and '!=' or '='
-            value = True
+        if operator != 'in':
+            return NotImplemented
 
         user = self.env.user
         # Won't impact sitemap, search() in converter is forced as public user
         if self.env.is_admin():
             return [(1, '=', 1)]
 
-        req = """
+        sql = SQL("""(
             SELECT p.id
             FROM forum_post p
                    LEFT JOIN res_users u ON p.create_uid = u.id
                    LEFT JOIN forum_forum f ON p.forum_id = f.id
             WHERE
-                (p.create_uid = %s and f.karma_close_own <= %s)
-                or (p.create_uid != %s and f.karma_close_all <= %s)
+                (p.create_uid = %(user_id)s and f.karma_close_own <= %(karma)s)
+                or (p.create_uid != %(user_id)s and f.karma_close_all <= %(karma)s)
                 or (
                     u.karma > 0
-                    and (p.active or p.create_uid = %s)
+                    and (p.active or p.create_uid = %(user_id)s)
                 )
-        """
-
-        op = operator == "=" and "inselect" or "not inselect"
-
-        # don't use param named because orm will add other param (test_active, ...)
-        return [('id', op, (req, (user.id, user.karma, user.id, user.karma, user.id)))]
+        )""", user_id=user.id, karma=user.karma)
+        return [('id', 'in', sql)]
 
     # EXTENDS WEBSITE.SEO.METADATA
 
     def _default_website_meta(self):
-        res = super(Post, self)._default_website_meta()
-        res['default_opengraph']['og:title'] = res['default_twitter']['twitter:title'] = self.name
-        res['default_opengraph']['og:description'] = res['default_twitter']['twitter:description'] = self.plain_content
-        res['default_opengraph']['og:image'] = res['default_twitter']['twitter:image'] = self.env['website'].image_url(self.create_uid, 'image_1024')
+        res = super()._default_website_meta()
+        res['default_opengraph']['og:title'] = self.name
+        res['default_opengraph']['og:description'] = self.plain_content
+        res['default_opengraph']['og:image'] = self.env['website'].image_url(self.create_uid, 'image_1024')
         res['default_twitter']['twitter:card'] = 'summary'
         res['default_meta_description'] = self.plain_content
         return res
@@ -313,13 +307,31 @@ class Post(models.Model):
     # CRUD
     # ----------------------------------------------------------------------
 
+    def _ensure_parent_can_accept_post(self):
+        # Method to call after an operation to ensure that the parent
+        # successfully accepts the post according flag and mode.
+        for post in self:
+            if not post.parent_id:
+                continue
+            # parent-based check
+            if post.parent_id.state == 'flagged':
+                raise UserError(_('Posting answer on a [Flagged] question is not possible.'))
+            if post.forum_id.mode == 'questions' and \
+                post.create_uid in (post.parent_id.child_ids - post).create_uid:
+                raise UserError(_('You can post only one answer.'))
+
     @api.model_create_multi
     def create(self, vals_list):
+        defaults_to_check = self.default_get(['content', 'forum_id'])
         for vals in vals_list:
-            if 'content' in vals and vals.get('forum_id'):
-                vals['content'] = self._update_content(vals['content'], vals['forum_id'])
+            content = vals.get('content', defaults_to_check.get('content'))
+            if content:
+                forum_id = vals.get('forum_id', defaults_to_check.get('forum_id'))
+                vals['content'] = self._update_content(content, forum_id)
 
-        posts = super(Post, self.with_context(mail_create_nolog=True)).create(vals_list)
+        posts = super(ForumPost, self.with_context(mail_create_nolog=True)).create(vals_list)
+
+        posts._ensure_parent_can_accept_post()
 
         for post in posts:
             # deleted or closed questions
@@ -336,7 +348,7 @@ class Post(models.Model):
             # add karma for posting new questions
             if not post.parent_id and post.state == 'active':
                 post.create_uid.sudo()._add_karma(post.forum_id.karma_gen_question_new, post, _('Ask a new question'))
-        posts.post_notification()
+        posts.sudo()._notify_state_update()
         return posts
 
     def unlink(self):
@@ -345,10 +357,13 @@ class Post(models.Model):
             if post.is_correct:
                 post.create_uid.sudo()._add_karma(post.forum_id.karma_gen_answer_accepted * -1, post, _('The accepted answer is deleted'))
                 self.env.user.sudo()._add_karma(post.forum_id.karma_gen_answer_accepted * -1, post, _('Delete the accepted answer'))
-        return super(Post, self).unlink()
+        return super().unlink()
 
     def write(self, vals):
         trusted_keys = ['active', 'is_correct', 'tag_ids']  # fields where security is checked manually
+        if 'forum_id' in vals:
+            forum = self.env['forum.forum'].browse(vals['forum_id'])
+            forum.check_access('write')
         if 'content' in vals:
             vals['content'] = self._update_content(vals['content'], self.forum_id.id)
 
@@ -357,6 +372,8 @@ class Post(models.Model):
             tag_ids = set(self.new({'tag_ids': vals['tag_ids']}).tag_ids.ids)
 
         for post in self:
+            if post.state == 'flagged' and not post.can_moderate:
+                raise AccessError(_('%d karma required to update a flagged post.', post.forum_id.karma_moderate))
             if 'state' in vals:
                 if vals['state'] in ['active', 'close']:
                     if not post.can_close:
@@ -374,7 +391,7 @@ class Post(models.Model):
                     raise AccessError(_('%d karma required to accept or refuse an answer.', post.karma_accept))
                 # update karma except for self-acceptance
                 mult = 1 if vals['is_correct'] else -1
-                if vals['is_correct'] != post.is_correct and post.create_uid.id != self._uid:
+                if vals['is_correct'] != post.is_correct and post.create_uid.id != self.env.uid:
                     post.create_uid.sudo()._add_karma(post.forum_id.karma_gen_answer_accepted * mult, post,
                                                       _('User answer accepted') if mult > 0 else _('Accepted answer removed'))
                     self.env.user.sudo()._add_karma(post.forum_id.karma_gen_answer_accept * mult, post,
@@ -385,7 +402,9 @@ class Post(models.Model):
             if any(key not in trusted_keys for key in vals) and not post.can_edit:
                 raise AccessError(_('%d karma required to edit a post.', post.karma_edit))
 
-        res = super(Post, self).write(vals)
+        res = super().write(vals)
+
+        self._ensure_parent_can_accept_post()
 
         # if post content modify, notify followers
         if 'content' in vals or 'name' in vals:
@@ -407,7 +426,7 @@ class Post(models.Model):
         """ Instead of the classic form view, redirect to the post on the website directly """
         self.ensure_one()
         if not force_website and not self.state == 'active':
-            return super(Post, self)._get_access_action(access_uid=access_uid, force_website=force_website)
+            return super()._get_access_action(access_uid=access_uid, force_website=force_website)
         return {
             'type': 'ir.actions.act_url',
             'url': '/forum/%s/%s' % (self.forum_id.id, self.id),
@@ -426,8 +445,10 @@ class Post(models.Model):
         forum = self.env['forum.forum'].browse(forum_id)
         if content and self.env.user.karma < forum.karma_dofollow:
             for match in re.findall(r'<a\s.*href=".*?">', content):
-                match = re.escape(match)  # replace parenthesis or special char in regex
-                content = re.sub(match, match[:3] + 'rel="nofollow" ' + match[3:], content)
+                escaped_match = re.escape(match)  # replace parenthesis or special char in regex
+                url_match = re.match(r'^.*href="(.*)".*', match) # extracting the link allows to rebuild a clean link tag
+                url = url_match.group(1)
+                content = re.sub(escaped_match, f'<a rel="nofollow" href="{url}">', content)
 
         if self.env.user.karma < forum.karma_editor:
             filter_regexp = r'(<img.*?>)|(<a[^>]*?href[^>]*?>)|(<[a-z|A-Z]+[^>]*style\s*=\s*[\'"][^\'"]*\s*background[^:]*:[^url;]*url)'
@@ -440,7 +461,7 @@ class Post(models.Model):
     # BUSINESS
     # ----------------------------------------------------------------------
 
-    def post_notification(self):
+    def _notify_state_update(self):
         for post in self:
             tag_partners = post.tag_ids.sudo().mapped('message_partner_ids')
 
@@ -518,7 +539,7 @@ class Post(models.Model):
 
         self.write({
             'state': 'close',
-            'closed_uid': self._uid,
+            'closed_uid': self.env.uid,
             'closed_date': datetime.today().strftime(tools.DEFAULT_SERVER_DATETIME_FORMAT),
             'closed_reason_id': reason_id,
         })
@@ -540,17 +561,17 @@ class Post(models.Model):
                 'active': True,
                 'moderator_id': self.env.user.id,
             })
-            post.post_notification()
+            post.sudo()._notify_state_update()
         return True
 
-    def refuse(self):
+    def _refuse(self):
         for post in self:
             if not post.can_moderate:
                 raise AccessError(_('%d karma required to refuse a post.', post.forum_id.karma_moderate))
             post.moderator_id = self.env.user
         return True
 
-    def flag(self):
+    def _flag(self):
         res = []
         for post in self:
             if not post.can_flag:
@@ -572,7 +593,7 @@ class Post(models.Model):
                 res.append({'error': 'post_non_flaggable'})
         return res
 
-    def mark_as_offensive(self, reason_id):
+    def _mark_as_offensive(self, reason_id):
         for post in self:
             if not post.can_moderate:
                 raise AccessError(_('%d karma required to mark a post as offensive.', post.forum_id.karma_moderate))
@@ -600,21 +621,12 @@ class Post(models.Model):
 
         reason_id = self.env.ref('website_forum.reason_8').id
         _logger.info('User %s marked as spams (in batch): %s' % (self.env.uid, spams))
-        return spams.mark_as_offensive(reason_id)
-
-    def bump(self):
-        """ Bump a question: trigger a write_date by writing on a dummy bump_date
-        field. One cannot bump a question more than once every 10 days. """
-        self.ensure_one()
-        if self.forum_id.allow_bump and not self.child_ids and (datetime.today() - datetime.strptime(self.write_date, tools.DEFAULT_SERVER_DATETIME_FORMAT)).days > 9:
-            # write through super to bypass karma; sudo to allow public user to bump any post
-            return self.sudo().write({'bump_date': fields.Datetime.now()})
-        return False
+        return spams._mark_as_offensive(reason_id)
 
     def vote(self, upvote=True):
         self.ensure_one()
         Vote = self.env['forum.post.vote']
-        existing_vote = Vote.search([('post_id', '=', self.id), ('user_id', '=', self._uid)])
+        existing_vote = Vote.search([('post_id', '=', self.id), ('user_id', '=', self.env.uid)])
         new_vote_value = '1' if upvote else '-1'
         if existing_vote:
             if upvote:
@@ -650,7 +662,7 @@ class Post(models.Model):
             'date': self.create_date,
         }
         # done with the author user to have create_uid correctly set
-        new_message = question.with_user(self_sudo.create_uid.id).with_context(mail_create_nosubscribe=True).sudo().message_post(**values).sudo(False)
+        new_message = question.with_user(self_sudo.create_uid.id).with_context(mail_post_autofollow_author_skip=True).sudo().message_post(**values).sudo(False)
 
         # unlink the original answer, using SUPERUSER_ID to avoid karma issues
         self.sudo().unlink()
@@ -658,18 +670,18 @@ class Post(models.Model):
         return new_message
 
     @api.model
-    def convert_comment_to_answer(self, message_id, default=None):
+    def convert_comment_to_answer(self, message_id):
         """ Tool to convert a comment (mail.message) into an answer (forum.post).
         The original comment is unlinked and a new answer from the comment's author
         is created. Nothing is done if the comment's author already answered the
         question. """
-        comment = self.env['mail.message'].sudo().browse(message_id)
-        post = self.browse(comment.res_id)
-        if not comment.author_id or not comment.author_id.user_ids:  # only comment posted by users can be converted
+        comment_sudo = self.env['mail.message'].sudo().browse(message_id)
+        post = self.browse(comment_sudo.res_id)
+        if not comment_sudo.author_id or not comment_sudo.author_id.user_ids:  # only comment posted by users can be converted
             return False
 
         # karma-based action check: must check the message's author to know if own / all
-        is_author = comment.author_id.id == self.env.user.partner_id.id
+        is_author = comment_sudo.author_id.id == self.env.user.partner_id.id
         karma_own = post.forum_id.karma_comment_convert_own
         karma_all = post.forum_id.karma_comment_convert_all
         karma_convert = is_author and karma_own or karma_all
@@ -682,64 +694,66 @@ class Post(models.Model):
 
         # check the message's author has not already an answer
         question = post.parent_id if post.parent_id else post
-        post_create_uid = comment.author_id.user_ids[0]
+        post_create_uid = comment_sudo.author_id.user_ids[0]
         if any(answer.create_uid.id == post_create_uid.id for answer in question.child_ids):
             return False
 
         # create the new post
         post_values = {
             'forum_id': question.forum_id.id,
-            'content': comment.body,
+            'content': comment_sudo.body,
             'parent_id': question.id,
-            'name': _('Re: %s') % (question.name or ''),
+            'name': _('Re: %s', question.name or ''),
         }
         # done with the author user to have create_uid correctly set
         new_post = self.with_user(post_create_uid).sudo().create(post_values).sudo(False)
 
         # delete comment
-        comment.unlink()
+        comment_sudo.unlink()
 
         return new_post
 
     def unlink_comment(self, message_id):
+        comment_sudo = self.env['mail.message'].sudo().browse(message_id)
+        if comment_sudo.model != 'forum.post':
+            return [False] * len(self)
+
+        user_karma = self.env.user.karma
         result = []
         for post in self:
-            user = self.env.user
-            comment = self.env['mail.message'].sudo().browse(message_id)
-            if not comment.model == 'forum.post' or not comment.res_id == post.id:
+            if comment_sudo.res_id != post.id:
                 result.append(False)
                 continue
             # karma-based action check: must check the message's author to know if own or all
-            karma_unlink = (
-                comment.author_id.id == user.partner_id.id and
-                post.forum_id.karma_comment_unlink_own or post.forum_id.karma_comment_unlink_all
+            karma_required = (
+                post.forum_id.karma_comment_unlink_own
+                if comment_sudo.author_id.id == self.env.user.partner_id.id
+                else post.forum_id.karma_comment_unlink_all
             )
-            can_unlink = user.karma >= karma_unlink
-            if not can_unlink:
-                raise AccessError(_('%d karma required to unlink a comment.', karma_unlink))
-            result.append(comment.unlink())
+            if user_karma < karma_required:
+                raise AccessError(_('%d karma required to delete a comment.', karma_required))
+            result.append(comment_sudo.unlink())
         return result
 
     def _set_viewed(self):
         self.ensure_one()
         return sql.increment_fields_skiplock(self, 'views')
 
+    def _update_last_activity(self):
+        self.ensure_one()
+        return self.sudo().write({'last_activity_date': fields.Datetime.now()})
+
     # ----------------------------------------------------------------------
     # MESSAGING
     # ----------------------------------------------------------------------
 
-    @api.model
-    def _get_mail_message_access(self, res_ids, operation, model_name=None):
-        # XDO FIXME: to be correctly fixed with new _get_mail_message_access and filter access rule
-        if operation in ('write', 'unlink') and (not model_name or model_name == 'forum.post'):
-            # Make sure only author or moderator can edit/delete messages
-            for post in self.browse(res_ids):
-                if not post.can_edit:
-                    raise AccessError(_('%d karma required to edit a post.', post.karma_edit))
-        return super(Post, self)._get_mail_message_access(res_ids, operation, model_name=model_name)
+    def _mail_get_operation_for_mail_message_operation(self, message_operation):
+        operations = super()._mail_get_operation_for_mail_message_operation(message_operation)
+        if message_operation in ('write', 'unlink'):
+            operations = [(Domain('can_edit', '=', True) & domain, op) for domain, op in operations]
+        return operations
 
-    def _notify_get_recipients_groups(self, message, model_description, msg_vals=None):
-        """ Add access button to everyone if the document is active. """
+    def _notify_get_recipients_groups(self, message, model_description, msg_vals=False):
         groups = super()._notify_get_recipients_groups(
             message, model_description, msg_vals=msg_vals
         )
@@ -753,7 +767,6 @@ class Post(models.Model):
 
         return groups
 
-    @api.returns('mail.message', lambda value: value.id)
     def message_post(self, *, message_type='notification', **kwargs):
         if self.ids and message_type == 'comment':  # user comments have a restriction on karma
             # add followers of comments on the parent post
@@ -771,23 +784,82 @@ class Post(models.Model):
             self.ensure_one()
             if not self.can_comment:
                 raise AccessError(_('%d karma required to comment.', self.karma_comment))
-            if not kwargs.get('record_name') and self.parent_id:
-                kwargs['record_name'] = self.parent_id.name
-        return super(Post, self).message_post(message_type=message_type, **kwargs)
+            if not kwargs.get('force_record_name') and self.parent_id.name:
+                kwargs['force_record_name'] = self.parent_id.name
+        return super().message_post(message_type=message_type, **kwargs)
 
     def _notify_thread_by_inbox(self, message, recipients_data, msg_vals=False, **kwargs):
-        """ Override to avoid keeping all notified recipients of a comment.
-        We avoid tracking needaction on post comments. Only emails should be
-        sufficient. """
-        if msg_vals is None:
-            msg_vals = {}
+        # Override to avoid keeping all notified recipients of a comment.
+        # We avoid tracking needaction on post comments. Only emails should be
+        # ufficient.
+        msg_vals = msg_vals or {}
         if msg_vals.get('message_type', message.message_type) == 'comment':
             return
-        return super(Post, self)._notify_thread_by_inbox(message, recipients_data, msg_vals=msg_vals, **kwargs)
+        return super()._notify_thread_by_inbox(message, recipients_data, msg_vals=msg_vals, **kwargs)
 
     # ----------------------------------------------------------------------
     # WEBSITE
     # ----------------------------------------------------------------------
+
+    def _get_microdata(self):
+        """
+        Generate structured data (microdata) for the post.
+
+        Returns:
+            str or None: Microdata in JSON format representing the post, or None
+            if not applicable.
+        """
+        self.ensure_one()
+        # Return if it's not a question.
+        if self.parent_id:
+            return None
+        correct_posts = self.child_ids.filtered(lambda post: post.is_correct)
+        suggested_posts = self.child_ids.filtered(lambda post: not post.is_correct)[:5]
+        # A QAPage schema must have one accepted answer or at least one suggested answer
+        if not suggested_posts and not correct_posts:
+            return None
+
+        structured_data = {
+            "@context": "https://schema.org",
+            "@type": "QAPage",
+            "mainEntity": self._get_structured_data(post_type="question"),
+        }
+        if correct_posts:
+            structured_data["mainEntity"]["acceptedAnswer"] = correct_posts[0]._get_structured_data()
+        if suggested_posts:
+            structured_data["mainEntity"]["suggestedAnswer"] = [
+                suggested_post._get_structured_data()
+                for suggested_post in suggested_posts
+            ]
+        return json_safe.dumps(structured_data, indent=2)
+
+    def _get_structured_data(self, post_type="answer"):
+        """
+        Generate structured data (microdata) for an answer or a question.
+
+        Returns:
+            dict: microdata.
+        """
+        res = {
+            "upvoteCount": self.vote_count,
+            "datePublished": self.create_date.isoformat() + 'Z',
+            "url": self.env['ir.http']._url_for(self.website_url),
+            "author": {
+                "@type": "Person",
+                "name": self.create_uid.sudo().name,
+            },
+        }
+        if post_type == "answer":
+            res["@type"] = "Answer"
+            res["text"] = self.plain_content
+        else:
+            res["@type"] = "Question"
+            res["name"] = self.name
+            res["text"] = self.plain_content or self.name
+            res["answerCount"] = self.child_count
+        if self.create_uid.sudo().website_published:
+            res["author"]["url"] = self.env['ir.http']._url_for(f"/profile/user/{ self.create_uid.sudo().id }")
+        return res
 
     def go_to_website(self):
         self.ensure_one()
@@ -797,40 +869,47 @@ class Post(models.Model):
 
     @api.model
     def _search_get_detail(self, website, order, options):
-        with_description = options['displayDescription']
-        with_date = options['displayDetail']
-        search_fields = ['name']
+        search_fields = ['name', 'tag_ids.name']
         fetch_fields = ['id', 'name', 'website_url']
         mapping = {
             'name': {'name': 'name', 'type': 'text', 'match': True},
             'website_url': {'name': 'website_url', 'type': 'text', 'truncate': False},
+            'search_item_metadata': {'name': 'created_by', 'type': 'text', 'truncate': False, 'match': True},
+            'image_url': {'name': 'image_url', 'type': 'html'},
+            'tags': {'name': 'tag_ids', 'type': 'tags', 'match': True},
         }
 
         domain = website.website_domain()
-        domain += [('parent_id', '=', False), ('state', '=', 'active'), ('can_view', '=', True)]
+        domain &= Domain('state', '=', 'active') & Domain('can_view', '=', True)
+        include_answers = options.get('include_answers', False)
+        if not include_answers:
+            domain &= Domain('parent_id', '=', False)
         forum = options.get('forum')
         if forum:
-            domain += [('forum_id', '=', unslug(forum)[1])]
+            domain &= Domain('forum_id', '=', self.env['ir.http']._unslug(forum)[1])
         tags = options.get('tag')
         if tags:
-            domain += [('tag_ids', 'in', [unslug(tag)[1] for tag in tags.split(',')])]
+            domain &= Domain('tag_ids', 'in', [self.env['ir.http']._unslug(tag)[1] for tag in tags.split(',')])
         filters = options.get('filters')
         if filters == 'unanswered':
-            domain += [('child_ids', '=', False)]
+            domain &= Domain('child_ids', '=', False)
         elif filters == 'solved':
-            domain += [('has_validated_answer', '=', True)]
+            domain &= Domain('has_validated_answer', '=', True)
         elif filters == 'unsolved':
-            domain += [('has_validated_answer', '=', False)]
+            domain &= Domain('has_validated_answer', '=', False)
         user = self.env.user
         my = options.get('my')
-        if my == 'mine':
-            domain += [('create_uid', '=', user.id)]
-        elif my == 'followed':
-            domain += [('message_partner_ids', '=', user.partner_id.id)]
+        create_uid = user.id if my == 'mine' else options.get('create_uid')
+        if create_uid:
+            domain &= Domain('create_uid', '=', create_uid)
+        if my == 'followed':
+            domain &= Domain('message_partner_ids', '=', user.partner_id.id)
         elif my == 'tagged':
-            domain += [('tag_ids.message_partner_ids', '=', user.partner_id.id)]
+            domain &= Domain('tag_ids.message_partner_ids', '=', user.partner_id.id)
         elif my == 'favourites':
-            domain += [('favourite_ids', '=', user.id)]
+            domain &= Domain('favourite_ids', '=', user.id)
+        elif my == 'upvoted':
+            domain &= Domain('vote_ids.user_id', '=', user.id)
 
         # 'sorting' from the form's "Order by" overrides order during auto-completion
         order = options.get('sorting', order)
@@ -838,13 +917,6 @@ class Post(models.Model):
             parts = [part for part in order.split(',') if 'is_published' not in part]
             order = ','.join(parts)
 
-        if with_description:
-            search_fields.append('content')
-            fetch_fields.append('content')
-            mapping['description'] = {'name': 'content', 'type': 'text', 'html': True, 'match': True}
-        if with_date:
-            fetch_fields.append('write_date')
-            mapping['detail'] = {'name': 'date', 'type': 'html'}
         return {
             'model': 'forum.post',
             'base_domain': [domain],
@@ -853,12 +925,49 @@ class Post(models.Model):
             'mapping': mapping,
             'icon': 'fa-comment-o',
             'order': order,
+            'group_name': self.env._("Forum Post"),
+            'sequence': 110,
         }
 
     def _search_render_results(self, fetch_fields, mapping, icon, limit):
-        with_date = 'detail' in mapping
         results_data = super()._search_render_results(fetch_fields, mapping, icon, limit)
         for post, data in zip(self, results_data):
-            if with_date:
-                data['date'] = self.env['ir.qweb.field.date'].record_to_html(post, 'write_date', {})
+            data['search_item_metadata'] = post.create_uid.name
+            data['tag_ids'] = post.tag_ids.read(['name'])
+            data['image_url'] = self.env['website'].image_url(post.create_uid, 'avatar_128')
         return results_data
+
+    def _get_related_posts(self, limit=5):
+        """Return at most a list of {limit} posts related to the main post, based on tag
+        Jaccard similarity. It computes similarity of sets based on ratio of sets
+        intersection divided by sets union (and thus varies from 0 to 1, 1 being
+        identical sets)."""
+
+        self.ensure_one()
+
+        if not self.tag_ids:
+            return self.env['forum.post']
+
+        self.env.cr.execute(SQL("""
+            SELECT forum_post.id,
+              -- Jaccard similarity
+                   (COUNT(DISTINCT intersection_tag_rel.forum_tag_id))::DECIMAL
+                   / COUNT(DISTINCT union_tag_rel.forum_tag_id)::DECIMAL AS similarity
+              FROM forum_post
+              -- common tags (intersection)
+              JOIN forum_tag_rel AS intersection_tag_rel
+                ON intersection_tag_rel.forum_post_id = forum_post.id
+               AND intersection_tag_rel.forum_tag_id = ANY(%(tag_ids)s)
+              -- union tags
+        RIGHT JOIN forum_tag_rel AS union_tag_rel
+                ON union_tag_rel.forum_post_id = forum_post.id
+                OR union_tag_rel.forum_post_id = %(current_post_id)s
+             WHERE id != %(current_post_id)s
+          GROUP BY forum_post.id
+          ORDER BY similarity DESC,
+                   forum_post.last_activity_date DESC
+             LIMIT %(limit)s
+        """, current_post_id=self.id, tag_ids=self.tag_ids.ids, limit=limit))
+
+        result = self.env.cr.dictfetchall()
+        return self.browse([r["id"] for r in result])

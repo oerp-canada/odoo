@@ -1,14 +1,27 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <templates xml:space="preserve">
-    <t t-name="web.DateTimePickerPopover" owl="1">
-        <DateTimePicker t-props="props.pickerProps">
+    <t t-name="web.DateTimePickerPopover">
+        <DateTimePicker t-props="this.props.pickerProps">
             <t t-set-slot="buttons">
-                <t t-if="props.pickerProps.type === 'datetime' or Array.isArray(props.pickerProps.value)">
-                    <button class="o_apply btn btn-primary btn-sm w-100 w-md-auto" t-on-click="props.close">
-                        <i class="fa fa-check pe-1" />
+                <div class="o_datetime_buttons d-flex gap-2">
+                    <button
+                        class="btn btn-sm btn-secondary"
+                        title="Clear"
+                        tabindex="-1"
+                        t-on-click="this.props.pickerProps.onReset"
+                        data-available-offline=""
+                    >
+                        <i class="fa fa-eraser" />
+                    </button>
+                    <button
+                        class="btn btn-sm btn-primary"
+                        tabindex="-1"
+                        t-on-click="this.props.close"
+                        data-available-offline=""
+                    >
                         <span>Apply</span>
                     </button>
-                </t>
+                </div>
             </t>
         </DateTimePicker>
     </t>

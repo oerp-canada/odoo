@@ -8,14 +8,18 @@ import re
 from odoo import tools
 from odoo.modules import get_resource_from_path
 
+from odoo.tests import tagged
+
 from . import lint_case
 
 _logger = logging.getLogger(__name__)
 
-TSTRING_RE = re.compile(r'_l?t\(\s*`.*?\s*`\s*\)', re.DOTALL)
+TSTRING_RE = re.compile(r'_t\(\s*`.*?\s*`\s*\)', re.DOTALL)
 EXPRESSION_RE = re.compile(r'\$\{.+?\}')
 UNDERSCORE_RE = re.compile(r'\b_\(\s*[\'"]')
 
+
+@tagged('at_install', '-post_install')  # LEGACY at_install
 class TestJsTranslations(lint_case.LintCase):
 
     def check_text(self, text):
@@ -41,8 +45,8 @@ class TestJsTranslations(lint_case.LintCase):
     def test_regular_expression(self):
         bad_js = """
         const foo = {
-            valid: _lt(`not useful but valid template-string`),
-            invalid: _lt(`invalid template-string
+            valid: _t(`not useful but valid template-string`),
+            invalid: _t(`invalid template-string
             that spans multiple lines ${expression}`)
         };
         """
@@ -102,7 +106,7 @@ class TestJsTranslations(lint_case.LintCase):
                     suffix = template_string
                 else:
                     prefix = "underscore.js used as translation function"
-                    suffix = "_t and _lt are the JS translation functions"
+                    suffix = "_t is the JS translation function"
 
                 _logger.error("%s found in `%s/%s` at line %s: %s", prefix, mod, relative_path, line_number, suffix)
 

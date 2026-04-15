@@ -1,46 +1,101 @@
-/** @odoo-module */
-
-import { ControlButtonsMixin } from "@point_of_sale/app/utils/control_buttons_mixin";
+import { onWillRender, useLayoutEffect, useRef, useState } from "@web/owl2/utils";
 import { registry } from "@web/core/registry";
 import { useService } from "@web/core/utils/hooks";
-import { useBarcodeReader } from "@point_of_sale/app/barcode/barcode_reader_hook";
-import { parseFloat } from "@web/views/fields/parsers";
-import { _lt } from "@web/core/l10n/translation";
-
-import { NumberPopup } from "@point_of_sale/app/utils/input_popups/number_popup";
-import { ErrorPopup } from "@point_of_sale/app/errors/popups/error_popup";
-import { ControlButtonPopup } from "@point_of_sale/app/screens/product_screen/control_buttons/control_buttons_popup";
-import { ConnectionLostError } from "@web/core/network/rpc_service";
-
-import { usePos } from "@point_of_sale/app/store/pos_hook";
-import { Component, onMounted, useState, useRef } from "@odoo/owl";
-import { ErrorBarcodePopup } from "@point_of_sale/app/barcode/error_popup/barcode_error_popup";
-
-import { NumpadWidget } from "@point_of_sale/app/screens/product_screen/numpad/numpad";
-import { OrderWidget } from "@point_of_sale/app/screens/product_screen/order/order";
-import { ProductsWidget } from "@point_of_sale/app/screens/product_screen/product_list/product_list";
+import { useTrackedAsync } from "@point_of_sale/app/hooks/hooks";
+import { useLongPress } from "@point_of_sale/app/hooks/long_press_hook";
+import { useBarcodeReader } from "@point_of_sale/app/hooks/barcode_reader_hook";
+import { _t } from "@web/core/l10n/translation";
+import { usePos } from "@point_of_sale/app/hooks/pos_hook";
+import { user } from "@web/core/user";
+import { Component, onMounted, onWillUnmount } from "@odoo/owl";
+import { CategorySelector } from "@point_of_sale/app/components/category_selector/category_selector";
+import { Input } from "@point_of_sale/app/components/inputs/input/input";
+import {
+    BACKSPACE,
+    Numpad,
+    getButtons,
+    DEFAULT_LAST_ROW,
+    SWITCHSIGN,
+} from "@point_of_sale/app/components/numpad/numpad";
 import { ActionpadWidget } from "@point_of_sale/app/screens/product_screen/action_pad/action_pad";
+import { Orderline } from "@point_of_sale/app/components/orderline/orderline";
+import { OrderSummary } from "@point_of_sale/app/screens/product_screen/order_summary/order_summary";
+import { ProductCard } from "@point_of_sale/app/components/product_card/product_card";
+import {
+    ControlButtons,
+    ControlButtonsPopup,
+} from "@point_of_sale/app/screens/product_screen/control_buttons/control_buttons";
+import { BarcodeVideoScanner } from "@web/core/barcode/barcode_video_scanner";
+import { AlertDialog } from "@web/core/confirmation_dialog/confirmation_dialog";
+import { OptionalProductPopup } from "@point_of_sale/app/components/popups/optional_products_popup/optional_products_popup";
+import { useRouterParamsChecker } from "@point_of_sale/app/hooks/pos_router_hook";
+import { debounce } from "@web/core/utils/timing";
+import { useSortable } from "@web/core/utils/sortable_owl";
 
-export class ProductScreen extends ControlButtonsMixin(Component) {
+const { DateTime } = luxon;
+
+export class ProductScreen extends Component {
     static template = "point_of_sale.ProductScreen";
     static components = {
         ActionpadWidget,
-        NumpadWidget,
-        OrderWidget,
-        ProductsWidget,
+        Numpad,
+        Orderline,
+        CategorySelector,
+        Input,
+        ControlButtons,
+        OrderSummary,
+        ProductCard,
+        BarcodeVideoScanner,
     };
-    static numpadActionName = _lt("Payment");
+    static props = {
+        orderUuid: { type: String },
+    };
 
     setup() {
         super.setup();
         this.pos = usePos();
-        this.ui = useState(useService("ui"));
-        this.popup = useService("popup");
-        this.orm = useService("orm");
-        this.notification = useService("pos_notification");
+        this.ui = useService("ui");
+        this.dialog = useService("dialog");
+        this.notification = useService("notification");
         this.numberBuffer = useService("number_buffer");
-        this.reminderRef = useRef("reminder");
-        onMounted(this.onMounted);
+        this.state = useState({
+            quantityByProductTmplId: {},
+        });
+
+        useRouterParamsChecker();
+        onMounted(() => {
+            this.currentOrder.deselectOrderline();
+            this.pos.openOpeningControl();
+            // Call `reset` when the `onMounted` callback in `numberBuffer.use` is done.
+            // We don't do this in the `mounted` lifecycle method because it is called before
+            // the callbacks in `onMounted` hook.
+            this.numberBuffer.reset();
+        });
+
+        onWillRender(() => {
+            // If its a shared order it can be paid from another POS
+            if (this.currentOrder?.state !== "draft" && !this.isValidatingOrder) {
+                this.pos.addNewOrder();
+            }
+        });
+
+        onWillUnmount(async () => {
+            if (
+                this.pos.config.use_presets &&
+                this.currentOrder &&
+                this.currentOrder.preset_id &&
+                this.currentOrder.preset_time
+            ) {
+                if (this.currentOrder.preset_time > DateTime.now()) {
+                    this.pos.addPendingOrder([this.currentOrder.id]);
+                    await this.pos.syncAllOrders();
+                }
+            }
+            this.pos.searchProductDBState = null;
+        });
+
+        this.barcodeReader = useService("barcode_reader");
+        this.sound = useService("mail.sound_effects");
 
         useBarcodeReader({
             product: this._barcodeProductAction,
@@ -52,159 +107,247 @@ export class ProductScreen extends ControlButtonsMixin(Component) {
             gs1: this._barcodeGS1Action,
         });
 
-        // Call `resset` when the `onMounted` callback in `numberBuffer.use` is done.
-        // We don't do this in the `mounted` lifecycle method because it is called before
-        // the callbacks in `onMounted` hook.
-        onMounted(() => this.numberBuffer.reset());
         this.numberBuffer.use({
-            triggerAtInput: (...args) => this.updateSelectedOrderline(...args),
             useWithBarcode: true,
         });
+
+        this.doLoadSampleData = useTrackedAsync(() => this.pos.loadSampleData());
+        this.longPressHandlers = useLongPress((product) => this.pos.onProductInfoClick(product));
+        this.onScroll = debounce(this.longPressHandlers.onScroll, 200, { leading: true });
+
+        useLayoutEffect(
+            () => {
+                this.state.quantityByProductTmplId = this.currentOrder?.lines?.reduce((acc, ol) => {
+                    if (!ol.combo_parent_id) {
+                        const productTmplId = ol.product_id.product_tmpl_id.id;
+                        acc[productTmplId] = (acc[productTmplId] || 0) + ol.qty;
+                    }
+                    return acc;
+                }, {});
+            },
+            () => [this.currentOrder, this.currentOrder.totalQuantity]
+        );
+
+        this.canReorderProducts = false;
+        Promise.resolve(user.checkAccessRight("product.template", "write")).then((hasAccess) => {
+            this.canReorderProducts = hasAccess;
+        });
+
+        useSortable({
+            ref: useRef("productsRoot"),
+            elements: ".product-sortable",
+            cursor: "move",
+            tolerance: 10,
+            connectGroups: false,
+            enable: () => this.canReorderProducts,
+            preventDrag: (element) => isNaN(Number(element.dataset.productId)),
+            onDragStart: () => {
+                this.longPressHandlers.onMouseUp();
+                this.longPressHandlers.onTouchEnd();
+            },
+            onDrop: async (params) => this._sortDrop(params),
+        });
     }
-    onMounted() {
-        this.pos.openCashControl();
+
+    async _sortDrop({ element, previous, next }) {
+        const elementId = Number(element.dataset.productId);
+        if (isNaN(elementId)) {
+            return;
+        }
+        let currentSeq = 0;
+        while (previous) {
+            if (previous.dataset.pos_sequence) {
+                currentSeq = Number(previous.dataset.pos_sequence) + 1;
+                break;
+            }
+            previous = previous.previousElementSibling;
+        }
+        if (!currentSeq) {
+            currentSeq = 1;
+        }
+
+        const sequenceById = { [elementId]: currentSeq };
+
+        while (next) {
+            if (next == element) {
+                next = next.nextElementSibling;
+            }
+            const nextSeq = Number(next.dataset.pos_sequence);
+            if (nextSeq > currentSeq) {
+                break;
+            }
+            currentSeq += 1;
+            const nextId = Number(next.dataset.productId);
+            if (!isNaN(nextId)) {
+                sequenceById[nextId] = currentSeq;
+            }
+            next = next.nextElementSibling;
+        }
+
+        // Force a rerender on the screen
+        for (const [id, seq] of Object.entries(sequenceById)) {
+            const record = this.pos.models["product.template"].get(Number(id));
+            record?.update({ pos_sequence: seq });
+        }
+        await this.pos.data.call("product.template", "set_pos_sequence", [sequenceById]);
     }
-    /**
-     * To be overridden by modules that checks availability of
-     * connected scale.
-     * @see _onScaleNotAvailable
-     */
-    get partner() {
-        return this.currentOrder ? this.currentOrder.get_partner() : null;
+
+    onPointerDown(event, product) {
+        if (isNaN(Number(product.id))) {
+            return;
+        }
+        if (event.pointerType == "mouse") {
+            this.longPressHandlers.onMouseDown(event, product);
+            return;
+        }
+        this.longPressHandlers.onTouchStart(product);
+    }
+
+    getNumpadButtons() {
+        const colorClassMap = {
+            [this.env.services.localization.decimalPoint]: "o_colorlist_item_numpad_color_6",
+            Backspace: "o_colorlist_item_numpad_color_1",
+            "-": "o_colorlist_item_numpad_color_3",
+        };
+
+        const defaultLastRowValues =
+            DEFAULT_LAST_ROW.map((button) => button.value) + [BACKSPACE.value];
+
+        return getButtons(DEFAULT_LAST_ROW, [
+            { value: "quantity", text: _t("Qty") },
+            {
+                value: "discount",
+                text: _t("%"),
+                disabled: !this.pos.config.manual_discount || this.pos.cashier._role === "minimal",
+            },
+            {
+                value: "price",
+                text: _t("Price"),
+                disabled:
+                    !this.pos.cashierHasPriceControlRights() ||
+                    this.pos.cashier._role === "minimal",
+            },
+            BACKSPACE,
+        ]).map((button) => ({
+            ...button,
+            disabled:
+                button.disabled ||
+                (button.value === SWITCHSIGN.value && this.pos.cashier._role === "minimal"),
+            class: `
+                ${defaultLastRowValues.includes(button.value) ? "" : ""}
+                ${colorClassMap[button.value] || ""}
+                ${this.pos.numpadMode === button.value ? "active" : ""}
+                ${button.value === "quantity" ? "numpad-qty rounded-0" : ""}
+                ${button.value === "price" ? "numpad-price rounded-0" : ""}
+                ${button.value === "discount" ? "numpad-discount rounded-0" : ""}
+            `,
+        }));
+    }
+    onNumpadClick(buttonValue) {
+        if (["quantity", "discount", "price"].includes(buttonValue)) {
+            this.numberBuffer.capture();
+            this.numberBuffer.reset();
+            this.pos.numpadMode = buttonValue;
+            return;
+        }
+        if (this.pos.selectedOrder.isRefund && buttonValue !== "Backspace") {
+            return this.dialog.add(AlertDialog, {
+                title: _t("%s update not allowed", this.pos.numpadMode),
+                body: _t("You can not change the %s of the refund order.", this.pos.numpadMode),
+            });
+        }
+        this.numberBuffer.sendKey(buttonValue);
     }
     get currentOrder() {
-        return this.pos.get_order();
+        return this.pos.getOrder();
     }
     get total() {
-        return this.env.utils.formatCurrency(this.currentOrder?.get_total_with_tax() ?? 0);
+        return this.currentOrder?.currencyDisplayPrice || 0;
     }
     get items() {
-        return this.currentOrder.orderlines?.reduce((items, line) => items + line.quantity, 0) ?? 0;
+        return this.env.utils.formatProductQty(
+            this.currentOrder.lines?.reduce((items, line) => items + line.qty, 0) ?? 0,
+            false
+        );
     }
-    async updateSelectedOrderline({ buffer, key }) {
-        if (this.pos.numpadMode === "quantity" && this.pos.disallowLineQuantityChange()) {
-            const order = this.pos.get_order();
-            if (!order.orderlines.length) {
-                return;
-            }
-            const selectedLine = order.get_selected_orderline();
-            const orderlines = order.orderlines;
-            const lastId = orderlines.length !== 0 && orderlines.at(orderlines.length - 1).cid;
-            const currentQuantity = this.pos.get_order().get_selected_orderline().get_quantity();
-
-            if (selectedLine.noDecrease) {
-                this.popup.add(ErrorPopup, {
-                    title: this.env._t("Invalid action"),
-                    body: this.env._t("You are not allowed to change this quantity"),
-                });
-                return;
-            }
-            const parsedInput = (buffer && parseFloat(buffer)) || 0;
-            if (lastId != selectedLine.cid) {
-                this._showDecreaseQuantityPopup();
-            } else if (currentQuantity < parsedInput) {
-                this._setValue(buffer);
-            } else if (parsedInput < currentQuantity) {
-                this._showDecreaseQuantityPopup();
-            }
-        } else {
-            const val = buffer === null ? "remove" : buffer;
-            this._setValue(val);
-            if (val == "remove") {
-                this.numberBuffer.reset();
-                this.pos.numpadMode = "quantity";
-            }
-        }
+    getProductName(product) {
+        return product.name;
     }
-    _setValue(val) {
-        const { numpadMode } = this.pos;
-        if (this.currentOrder.get_selected_orderline()) {
-            if (numpadMode === "quantity") {
-                const result = this.currentOrder.get_selected_orderline().set_quantity(val);
-                if (!result) {
-                    this.numberBuffer.reset();
-                }
-            } else if (numpadMode === "discount") {
-                this.currentOrder.get_selected_orderline().set_discount(val);
-            } else if (numpadMode === "price") {
-                var selected_orderline = this.currentOrder.get_selected_orderline();
-                selected_orderline.price_type = "manual";
-                selected_orderline.set_unit_price(val);
-            }
-        }
+    get barcodeVideoScannerProps() {
+        return {
+            facingMode: "environment",
+            onResult: (result) => {
+                this.barcodeReader.scan(result);
+                this.sound.play("beep");
+            },
+            onError: console.error,
+            delayBetweenScan: 2000,
+            cssClass: "w-100 h-100",
+        };
     }
     async _getProductByBarcode(code) {
-        let product = this.pos.db.get_product_by_barcode(code.base_code);
+        let product = this.pos.models["product.product"].getBy("barcode", code.base_code);
+
         if (!product) {
-            // find the barcode in the backend
-            let foundProductIds = [];
-            foundProductIds = await this.orm.search("product.product", [
-                ["barcode", "=", code.base_code],
-                ["sale_ok", "=", true],
+            const productPackaging = this.pos.models["product.uom"].getBy(
+                "barcode",
+                code.base_code
+            );
+            product = productPackaging && productPackaging.product_id;
+        }
+
+        if (!product) {
+            const records = await this.pos.loadNewProducts([
+                ["product_variant_ids.barcode", "in", [code.base_code]],
             ]);
-            if (foundProductIds.length) {
-                await this.pos._addProducts(foundProductIds);
-                // assume that the result is unique.
-                product = this.pos.db.get_product_by_id(foundProductIds[0]);
+
+            if (records && records["product.product"].length > 0) {
+                return records["product.product"][0];
             }
         }
+
         return product;
     }
     async _barcodeProductAction(code) {
         const product = await this._getProductByBarcode(code);
+
         if (!product) {
-            return this.popup.add(ErrorBarcodePopup, { code: code.base_code });
-        }
-        const options = await product.getAddProductOptions(code);
-        // Do not proceed on adding the product when no options is returned.
-        // This is consistent with clickProduct.
-        if (!options) {
+            this.sound.play("error");
+            this.barcodeReader.showNotFoundNotification(code);
             return;
         }
 
-        // update the options depending on the type of the scanned code
-        if (code.type === "price") {
-            Object.assign(options, {
-                price: code.value,
-                extras: {
-                    price_type: "manual",
-                },
-            });
-        } else if (code.type === "weight" || code.type === "quantity") {
-            Object.assign(options, {
-                quantity: code.value,
-                merge: false,
-            });
-        } else if (code.type === "discount") {
-            Object.assign(options, {
-                discount: code.value,
-                merge: false,
-            });
-        }
-        this.currentOrder.add_product(product, options);
+        await this.pos.addLineToCurrentOrder(
+            { product_id: product, product_tmpl_id: product.product_tmpl_id },
+            { code },
+            product.needToConfigure()
+        );
         this.numberBuffer.reset();
+        this.showOptionalProductPopupIfNeeded(product);
     }
-    _barcodePartnerAction(code) {
-        const partner = this.pos.db.get_partner_by_barcode(code.code);
+    async _getPartnerByBarcode(code) {
+        let partner = this.pos.models["res.partner"].getBy("barcode", code.code);
+        if (!partner) {
+            partner = await this.pos.data.searchRead("res.partner", [["barcode", "=", code.code]]);
+            partner = partner.length > 0 && partner[0];
+        }
+        return partner;
+    }
+    async _barcodePartnerAction(code) {
+        const partner = await this._getPartnerByBarcode(code);
         if (partner) {
-            if (this.currentOrder.get_partner() !== partner) {
-                this.currentOrder.set_partner(partner);
+            if (this.currentOrder.getPartner() !== partner) {
+                this.pos.setPartnerToCurrentOrder(partner);
             }
             return;
         }
-        return this.popup.add(ErrorBarcodePopup, { code: code.base_code });
+        this.barcodeReader.showNotFoundNotification(code);
     }
     _barcodeDiscountAction(code) {
-        var last_orderline = this.currentOrder.get_last_orderline();
+        var last_orderline = this.currentOrder.getLastOrderline();
         if (last_orderline) {
-            last_orderline.set_discount(code.value);
+            this.pos.setDiscountFromUI(last_orderline, code.value);
         }
-    }
-    async _parseElementsFromGS1(parsed_results) {
-        const productBarcode = parsed_results.find((element) => element.type === "product");
-        const lotBarcode = parsed_results.find((element) => element.type === "lot");
-        const product = await this._getProductByBarcode(productBarcode);
-        return { product, lotBarcode, customProductOptions: {} };
     }
     /**
      * Add a product to the current order using the product identifier and lot number from parsed results.
@@ -212,120 +355,88 @@ export class ProductScreen extends ControlButtonsMixin(Component) {
      * It then uses these values to retrieve the product and add it to the current order.
      */
     async _barcodeGS1Action(parsed_results) {
-        const { product, lotBarcode, customProductOptions } = await this._parseElementsFromGS1(
-            parsed_results
-        );
+        const productBarcode = parsed_results.find((element) => element.type === "product");
+        const lotBarcode = parsed_results.find((element) => element.type === "lot");
+        const qty = parsed_results.find((element) => element.type === "quantity");
+        const product = await this._getProductByBarcode(productBarcode);
+
         if (!product) {
-            const productBarcode = parsed_results.find((element) => element.type === "product");
-            return this.popup.add(ErrorBarcodePopup, { code: productBarcode.base_code });
+            this.barcodeReader.showNotFoundNotification(
+                parsed_results.find((element) => element.type === "product")
+            );
+            return;
         }
-        const options = await product.getAddProductOptions(lotBarcode);
-        await this.currentOrder.add_product(product, { ...options, ...customProductOptions });
+        const vals = { product_id: product, product_tmpl_id: product.product_tmpl_id };
+        if (
+            qty &&
+            product.uom_id &&
+            qty.rule?.associated_uom_id &&
+            product.uom_id.id == qty.rule.associated_uom_id[0]
+        ) {
+            vals.qty = qty.value;
+        }
+
+        await this.pos.addLineToCurrentOrder(vals, { code: lotBarcode });
         this.numberBuffer.reset();
+        this.showOptionalProductPopupIfNeeded(product);
     }
-    async displayAllControlPopup() {
-        await this.popup.add(ControlButtonPopup, {
-            controlButtons: this.controlButtons,
-        });
+    displayAllControlPopup() {
+        this.dialog.add(ControlButtonsPopup);
     }
-    async _showDecreaseQuantityPopup() {
-        this.numberBuffer.reset();
-        const { confirmed, payload: inputNumber } = await this.popup.add(NumberPopup, {
-            startingValue: 0,
-            title: this.env._t("Set the new quantity"),
-        });
-        const newQuantity = inputNumber && inputNumber !== "" ? parseFloat(inputNumber) : null;
-        if (confirmed && newQuantity !== null) {
-            const order = this.pos.get_order();
-            const selectedLine = order.get_selected_orderline();
-            const currentQuantity = selectedLine.get_quantity();
-            if (newQuantity >= currentQuantity) {
-                selectedLine.set_quantity(newQuantity);
-                return;
-            }
-            if (newQuantity >= selectedLine.saved_quantity) {
-                if (newQuantity == 0) {
-                    order.remove_orderline(selectedLine);
-                }
-                selectedLine.set_quantity(newQuantity);
-                return;
-            }
-            const newLine = selectedLine.clone();
-            const decreasedQuantity = selectedLine.saved_quantity - newQuantity;
-            newLine.order = order;
-            newLine.set_quantity(-decreasedQuantity, true);
-            selectedLine.set_quantity(selectedLine.saved_quantity);
-            order.add_orderline(newLine);
-        }
-    }
-    get selectedOrderlineQuantity() {
-        return this.currentOrder.get_selected_orderline()?.get_quantity_str();
-    }
-    get selectedOrderlineDisplayName() {
-        return this.currentOrder.get_selected_orderline()?.get_full_product_name();
-    }
-    get selectedOrderlineTotal() {
-        return this.env.utils.formatCurrency(
-            this.currentOrder.get_selected_orderline()?.get_display_price()
-        );
-    }
-    /**
-     * This getter is used to restart the animation on the product-reminder.
-     * When the information present on the product-reminder will change,
-     * the key will change and thus a new product-reminder will be created
-     * and the old one will be garbage collected leading to the animation
-     * being retriggered.
-     */
-    get animationKey() {
-        return [
-            this.selectedOrderlineQuantity,
-            this.selectedOrderlineDisplayName,
-            this.selectedOrderlineTotal,
-        ].join(",");
-    }
-    get showProductReminder() {
-        return this.currentOrder.get_selected_orderline() && this.selectedOrderlineQuantity;
-    }
-    primaryPayButton() {
-        return !this.currentOrder.is_empty();
-    }
-    primaryReviewButton() {
-        return !this.primaryPayButton() && !this.currentOrder.is_empty();
-    }
-    // FIXME POSREF this is dead code, check if we need the business logic that's left in here
-    // If we do it should be in the model.
-    async onClickPay() {
-        if (this.pos.get_order().server_id) {
-            try {
-                const isPaid = await this.orm.call("pos.order", "is_already_paid", [
-                    this.pos.get_order().server_id,
-                ]);
-                if (isPaid) {
-                    const searchDetails = {
-                        fieldName: "RECEIPT_NUMBER",
-                        searchTerm: this.pos.get_order().uid,
-                    };
-                    this.pos.showScreen("TicketScreen", {
-                        ui: { filter: "SYNCED", searchDetails },
-                    });
-                    this.notification.add(this.env._t("The order has been already paid."), 3000);
-                    this.pos.removeOrder(this.pos.get_order(), false);
-                    this.pos.add_new_order();
-                    return;
-                }
-            } catch (error) {
-                if (!(error instanceof ConnectionLostError)) {
-                    throw error;
-                }
-                // Reject error in a separate stack to display the offline popup, but continue the flow
-                Promise.reject(error);
-            }
-        }
-        this.currentOrder.pay();
-    }
+
     switchPane() {
+        this.pos.scanning = false;
         this.pos.switchPane();
+    }
+
+    getProductImage(product) {
+        return product.getImageUrl();
+    }
+
+    get searchWord() {
+        return this.pos.searchProductWord.trim();
+    }
+
+    async addProductToOrder(product) {
+        const options = {};
+        if (this.searchWord && product.isConfigurable()) {
+            const barcode = this.searchWord;
+            const searchedProduct = product.product_variant_ids.filter(
+                (p) => p.barcode && p.barcode.includes(barcode)
+            );
+            if (searchedProduct.length === 1) {
+                options["presetVariant"] = searchedProduct[0];
+            }
+        }
+        const line = await this.pos.addLineToCurrentOrder({ product_tmpl_id: product }, options);
+        this.showOptionalProductPopupIfNeeded(product);
+
+        return line;
+    }
+    showOptionalProductPopupIfNeeded(product) {
+        if (product.pos_optional_product_ids?.length) {
+            this.dialog.add(OptionalProductPopup, {
+                productTemplate: product,
+            });
+        }
+    }
+
+    async fastValidate(paymentMethod) {
+        try {
+            this.isValidatingOrder = true;
+            await this.pos.validateOrderFast(paymentMethod);
+        } finally {
+            this.isValidatingOrder = false;
+        }
     }
 }
 
-registry.category("pos_screens").add("ProductScreen", ProductScreen);
+registry.category("pos_pages").add("ProductScreen", {
+    name: "ProductScreen",
+    component: ProductScreen,
+    route: `/pos/ui/${odoo.pos_config_id}/product/{string:orderUuid}`,
+    params: {
+        orderUuid: true,
+        orderFinalized: false,
+    },
+});

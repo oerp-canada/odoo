@@ -1,17 +1,24 @@
-/** @odoo-module **/
-
 import { markRaw } from "@odoo/owl";
-import { registry } from "../registry";
-import { PopoverController } from "./popover_controller";
+import { Popover } from "@web/core/popover/popover";
+import { registry } from "@web/core/registry";
 
 /**
  * @typedef {{
+ *   animation?: Boolean;
+ *   arrow?: Boolean;
  *   closeOnClickAway?: boolean | (target: HTMLElement) => boolean;
+ *   closeOnEscape?: boolean;
+ *   env?: object;
+ *   fixedPosition?: boolean;
  *   onClose?: () => void;
+ *   onPositioned?: import("@web/core/position/position_hook").UsePositionOptions["onPositioned"];
  *   popoverClass?: string;
- *   position?: import("@web/core/position_hook").Options["position"];
- *   onPositioned?: import("@web/core/position_hook").PositionEventHandler;
+ *   role?: string;
+ *   position?: import("@web/core/position/position_hook").UsePositionOptions["position"];
+ *   ref?: Function;
  * }} PopoverServiceAddOptions
+ *
+ * @typedef {ReturnType<popoverService["start"]>["add"]} PopoverServiceAddFunction
  */
 
 export const popoverService = {
@@ -22,31 +29,42 @@ export const popoverService = {
          *
          * @param {HTMLElement} target
          * @param {typeof import("@odoo/owl").Component} component
-         * @param {object} props
+         * @param {object} [props]
          * @param {PopoverServiceAddOptions} [options]
          * @returns {() => void}
          */
-        const add = (target, component, props, options = {}) => {
+        const add = (target, component, props = {}, options = {}) => {
             const closeOnClickAway =
                 typeof options.closeOnClickAway === "function"
                     ? options.closeOnClickAway
                     : () => options.closeOnClickAway ?? true;
             const remove = overlay.add(
-                PopoverController,
+                Popover,
                 {
                     target,
                     close: () => remove(),
                     closeOnClickAway,
+                    closeOnEscape: options.closeOnEscape,
                     component,
                     componentProps: markRaw(props),
-                    popoverProps: {
-                        target,
-                        class: options.popoverClass,
-                        position: options.position,
-                        onPositioned: options.onPositioned,
-                    },
+                    shrink: options.shrink,
+                    ref: options.ref,
+                    class: options.popoverClass,
+                    animation: options.animation,
+                    arrow: options.arrow,
+                    role: options.role,
+                    position: options.position,
+                    onPositioned: options.onPositioned,
+                    fixedPosition: options.fixedPosition,
+                    holdOnHover: options.holdOnHover,
+                    setActiveElement: options.setActiveElement ?? true,
                 },
-                { onRemove: options.onClose }
+                {
+                    env: options.env,
+                    onRemove: options.onClose,
+                    rootId: target.getRootNode()?.host?.id,
+                    sequence: options.sequence,
+                }
             );
 
             return remove;

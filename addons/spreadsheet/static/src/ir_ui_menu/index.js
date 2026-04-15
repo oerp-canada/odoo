@@ -1,9 +1,7 @@
-/** @odoo-module */
-
 import { registry } from "@web/core/registry";
 import * as spreadsheet from "@odoo/o-spreadsheet";
 
-import IrMenuPlugin from "./ir_ui_menu_plugin";
+import { IrMenuPlugin } from "./ir_ui_menu_plugin";
 
 import {
     isMarkdownIrMenuIdUrl,
@@ -14,18 +12,21 @@ import {
     parseIrMenuIdLink,
 } from "./odoo_menu_link_cell";
 import { _t } from "@web/core/l10n/translation";
-import { sprintf } from "@web/core/utils/strings";
+import { navigateTo } from "../actions/helpers";
 
-const { urlRegistry, corePluginRegistry } = spreadsheet.registries;
+const { urlRegistry, corePluginRegistry, errorTypes } = spreadsheet.registries;
 const { EvaluationError } = spreadsheet;
 
 corePluginRegistry.add("ir_ui_menu_plugin", IrMenuPlugin);
 
+const LINK_ERROR = "#LINK";
+errorTypes.add(LINK_ERROR);
+
 class BadOdooLinkError extends EvaluationError {
     constructor(menuId) {
         super(
-            _t("#LINK"),
-            sprintf(_t("Menu %s not found. You may not have the required access rights."), menuId)
+            _t("Menu %s not found. You may not have the required access rights.", menuId),
+            LINK_ERROR
         );
     }
 }
@@ -42,7 +43,7 @@ export const spreadsheetLinkMenuCellService = {
         }
 
         urlRegistry
-            .add("OdooMenuIdLink", {
+            .replace("OdooMenuIdLink", {
                 sequence: 65,
                 match: isMarkdownIrMenuIdUrl,
                 createLink(url, label) {
@@ -62,24 +63,18 @@ export const spreadsheetLinkMenuCellService = {
                     const menuId = parseIrMenuIdLink(url);
                     return env.services.menu.getMenu(menuId).name;
                 },
-                open(url) {
+                open(url, env, newWindow) {
                     const menuId = parseIrMenuIdLink(url);
                     const menu = env.services.menu.getMenu(menuId);
-                    env.services.action.doAction(menu.actionID);
+                    env.services.action.doAction(menu.actionID, { newWindow });
                 },
-                // createCell: (id, content, properties, sheetId, getters) => {
-                //     const { url } = parseMarkdownLink(content);
-                //     const menuId = parseIrMenuIdLink(url);
-                //     const menuName = env.services.menu.getMenu(menuId).name;
-                //     return new OdooMenuLinkCell(id, content, menuId, menuName, properties);
-                // },
             })
-            .add("OdooMenuXmlLink", {
+            .replace("OdooMenuXmlLink", {
                 sequence: 66,
                 match: isIrMenuXmlUrl,
                 createLink(url, label) {
                     const xmlId = parseIrMenuXmlUrl(url);
-                    _getIrMenuByXmlId(xmlId);
+                    _getIrMenuByXmlId(xmlId); // Validate the XML ID exists
                     return {
                         url,
                         label,
@@ -92,20 +87,20 @@ export const spreadsheetLinkMenuCellService = {
                     const menuId = _getIrMenuByXmlId(xmlId).id;
                     return env.services.menu.getMenu(menuId).name;
                 },
-                open(url) {
+                open(url, env, newWindow) {
                     const xmlId = parseIrMenuXmlUrl(url);
                     const menuId = _getIrMenuByXmlId(xmlId).id;
                     const menu = env.services.menu.getMenu(menuId);
-                    env.services.action.doAction(menu.actionID);
+                    env.services.action.doAction(menu.actionID, { newWindow });
                 },
             })
-            .add("OdooViewLink", {
+            .replace("OdooViewLink", {
                 sequence: 67,
                 match: isMarkdownViewUrl,
                 createLink(url, label) {
                     return {
                         url,
-                        label: label,
+                        label,
                         isExternal: false,
                         isUrlEditable: false,
                     };
@@ -114,9 +109,11 @@ export const spreadsheetLinkMenuCellService = {
                     const actionDescription = parseViewLink(url);
                     return actionDescription.name;
                 },
-                open(url) {
+                async open(url, env, newWindow) {
                     const { viewType, action, name } = parseViewLink(url);
-                    env.services.action.doAction(
+                    await navigateTo(
+                        env,
+                        action.xmlId,
                         {
                             type: "ir.actions.act_window",
                             name: name,
@@ -126,7 +123,7 @@ export const spreadsheetLinkMenuCellService = {
                             domain: action.domain,
                             context: action.context,
                         },
-                        { viewType }
+                        { viewType, newWindow }
                     );
                 },
             });

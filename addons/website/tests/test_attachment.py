@@ -1,8 +1,5 @@
-from urllib.parse import urlparse
-
 import odoo.tests
-from odoo.tests.common import HOST
-from odoo.tools import config
+from ..tools import create_image_attachment
 
 
 @odoo.tests.common.tagged('post_install', '-at_install')
@@ -10,21 +7,9 @@ class TestWebsiteAttachment(odoo.tests.HttpCase):
 
     def test_01_type_url_301_image(self):
         IMD = self.env['ir.model.data']
-        IrAttachment = self.env['ir.attachment']
 
-        img1 = IrAttachment.create({
-            'public': True,
-            'name': 's_banner_default_image.jpg',
-            'type': 'url',
-            'url': '/website/static/src/img/snippets_demo/s_banner.jpg'
-        })
-
-        img2 = IrAttachment.create({
-            'public': True,
-            'name': 's_banner_default_image.jpg',
-            'type': 'url',
-            'url': '/web/image/test.an_image_url'
-        })
+        img1 = create_image_attachment(self.env, '/website/static/src/img/snippets_demo/s_banner.jpg', 's_banner_default_image.jpg')
+        img2 = create_image_attachment(self.env, '/web/image/test.an_image_url', 's_banner_default_image.jpg')
 
         IMD.create({
             'name': 'an_image_url',
@@ -43,11 +28,28 @@ class TestWebsiteAttachment(odoo.tests.HttpCase):
         req = self.url_open('/web/image/test.an_image_url')
         self.assertEqual(req.status_code, 200)
 
-        base = "http://%s:%s" % (HOST, config['http_port'])
-
-        req = self.opener.get(base + '/web/image/test.an_image_redirect_301', allow_redirects=False)
+        base = self.base_url()
+        req = self.url_open(base + '/web/image/test.an_image_redirect_301', allow_redirects=False)
         self.assertEqual(req.status_code, 301)
-        self.assertEqual(urlparse(req.headers.get('Location', '')).path, '/web/image/test.an_image_url')
+        self.assertURLEqual(req.headers['Location'], '/web/image/test.an_image_url')
 
-        req = self.opener.get(base + '/web/image/test.an_image_redirect_301', allow_redirects=True)
+        req = self.url_open(base + '/web/image/test.an_image_redirect_301', allow_redirects=True)
         self.assertEqual(req.status_code, 200)
+
+    def test_02_image_quality(self):
+        self.start_tour(self.env['website'].get_client_action_url('/', True), 'website_image_quality', login="admin")
+
+    def test_03_link_to_document(self):
+        Attachment = self.env['ir.attachment']
+        # hardcoded id for JS tour
+        self.env.cr.execute("SELECT setval(pg_get_serial_sequence(%s, 'id'), 437296, false)", (Attachment._table,))
+        Attachment.create({
+            'name': 'sample.txt',
+            'public': True,
+            'mimetype': 'text/plain',
+            'raw': b'Lorem Ipsum',
+        })
+        self.start_tour(self.env['website'].get_client_action_url('/', True), 'test_link_to_document', login="admin")
+
+    def test_04_image_srcset(self):
+        self.start_tour(self.env['website'].get_client_action_url('/', True), 'website_image_srcset', login="admin")

@@ -1,16 +1,32 @@
-/** @odoo-module **/
-
+import { useRef, useState } from "@web/owl2/utils";
+import { _t } from "@web/core/l10n/translation";
 import { useService } from "@web/core/utils/hooks";
-import { sprintf } from "@web/core/utils/strings";
 import { getDataURLFromFile } from "@web/core/utils/urls";
-import { session } from "@web/session";
-import { formatFloat } from "./formatters";
+import { checkFileSize } from "@web/core/utils/files";
 
-import { Component, useRef, useState } from "@odoo/owl";
-
-const DEFAULT_MAX_FILE_SIZE = 128 * 1024 * 1024;
+import { Component } from "@odoo/owl";
 
 export class FileUploader extends Component {
+    static template = "web.FileUploader";
+    static props = {
+        onClick: { type: Function, optional: true },
+        onUploaded: Function,
+        onUploadComplete: { type: Function, optional: true },
+        multiUpload: { type: Boolean, optional: true },
+        checkSize: { type: Boolean, optional: true },
+        inputName: { type: String, optional: true },
+        fileUploadClass: { type: String, optional: true },
+        acceptedFileExtensions: { type: String, optional: true },
+        slots: { type: Object, optional: true },
+        showUploadingText: { type: Boolean, optional: true },
+        // See https://www.iana.org/assignments/media-types/media-types.xhtml
+        allowedMIMETypes: { type: String, optional: true },
+    };
+    static defaultProps = {
+        checkSize: true,
+        showUploadingText: true,
+    };
+
     setup() {
         this.notification = useService("notification");
         this.fileInputRef = useRef("fileInput");
@@ -19,39 +35,26 @@ export class FileUploader extends Component {
         });
     }
 
-    get maxUploadSize() {
-        return session.max_file_upload_size || DEFAULT_MAX_FILE_SIZE;
-    }
     /**
      * @param {Event} ev
      */
     async onFileChange(ev) {
-        if (!ev.target.files.length) {
+        const files = [...ev.target.files].filter(file => this.validFileType(file));
+        if (!files. length) {
             return;
         }
-        for (const file of ev.target.files) {
-            if (file.size > this.maxUploadSize) {
-                this.notification.add(
-                    sprintf(
-                        this.env._t("The selected file exceed the maximum file size of %s."),
-                        formatFloat(this.maxUploadSize, { humanReadable: true })
-                    ),
-                    {
-                        title: this.env._t("File upload"),
-                        type: "danger",
-                    }
-                );
+        const { target } = ev;
+        for (const file of files) {
+            if (this.props.checkSize && !checkFileSize(file.size, this.notification)) {
+                return null;
             }
             this.state.isUploading = true;
             const data = await getDataURLFromFile(file);
             if (!file.size) {
                 console.warn(`Error while uploading file : ${file.name}`);
-                this.notification.add(
-                    this.env._t("There was a problem while uploading your file."),
-                    {
-                        type: "danger",
-                    }
-                );
+                this.notification.add(_t("There was a problem while uploading your file."), {
+                    type: "danger",
+                });
             }
             try {
                 await this.props.onUploaded({
@@ -65,10 +68,33 @@ export class FileUploader extends Component {
                 this.state.isUploading = false;
             }
         }
-        ev.target.value = null;
+        target.value = null;
         if (this.props.multiUpload && this.props.onUploadComplete) {
             this.props.onUploadComplete({});
         }
+    }
+
+    /**
+     * The `allowedMIMETypes` props can restrict the file types users are guided to select.
+     * However, the `acceptedFileExtensions` attribute doesn't enforce strict validation;
+     * it only suggests file types for browsers.
+     *
+     * @param {File} file
+     * @returns Whether the upload file's type is in the whitelist (`allowedMIMETypes`).
+     */
+     validFileType(file) {
+        if (this.props.allowedMIMETypes && !this.props.allowedMIMETypes.includes(file.type)) {
+            this.notification.add(
+                _t(`Oops! '%(fileName)s' didn’t upload since its format isn’t allowed.`, {
+                    fileName: file.name,
+                }),
+                {
+                    type: "danger",
+                }
+            );
+            return false;
+        }
+        return true;
     }
 
     async onSelectFileButtonClick(ev) {
@@ -81,19 +107,3 @@ export class FileUploader extends Component {
         this.fileInputRef.el.click();
     }
 }
-
-FileUploader.template = "web.FileUploader";
-FileUploader.props = {
-    onClick: { type: Function, optional: true },
-    onUploaded: Function,
-    onUploadComplete: { type: Function, optional: true },
-    multiUpload: { type: Boolean, optional: true },
-    inputName: { type: String, optional: true },
-    fileUploadClass: { type: String, optional: true },
-    acceptedFileExtensions: { type: String, optional: true },
-    slots: { type: Object, optional: true },
-    showUploadingText: { type: Boolean, optional: true },
-};
-FileUploader.defaultProps = {
-    showUploadingText: true,
-};

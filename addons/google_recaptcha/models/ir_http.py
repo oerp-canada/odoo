@@ -10,7 +10,7 @@ from odoo.exceptions import UserError, ValidationError
 logger = logging.getLogger(__name__)
 
 
-class Http(models.AbstractModel):
+class IrHttp(models.AbstractModel):
     _inherit = 'ir.http'
 
     def session_info(self):
@@ -25,8 +25,10 @@ class Http(models.AbstractModel):
     @api.model
     def _add_public_key_to_session_info(self, session_info):
         """Add the ReCaptcha public key to the given session_info object"""
-        public_key = self.env['ir.config_parameter'].sudo().get_param('recaptcha_public_key')
-        if public_key:
+        config_params = self.env['ir.config_parameter'].sudo()
+        recaptcha_enabled = config_params.get_bool('enable_recaptcha', True)
+        public_key = config_params.get_str('recaptcha_public_key')
+        if public_key and recaptcha_enabled:
             session_info['recaptcha_public_key'] = public_key
         return session_info
 
@@ -36,16 +38,16 @@ class Http(models.AbstractModel):
             If no recaptcha private key is set the recaptcha verification
             is considered inactive and this method will return True.
         """
-        res = super()._verify_request_recaptcha_token(action)
-
-        if not res:
-            return res
-
+        super()._verify_request_recaptcha_token(action)
+        config_params = request.env['ir.config_parameter'].sudo()
+        recaptcha_enabled = config_params.get_bool('enable_recaptcha', True)
+        if not recaptcha_enabled:
+            return
         ip_addr = request.httprequest.remote_addr
         token = request.params.pop('recaptcha_token_response', False)
         recaptcha_result = request.env['ir.http']._verify_recaptcha_token(ip_addr, token, action)
         if recaptcha_result in ['is_human', 'no_secret']:
-            return True
+            return
         if recaptcha_result == 'wrong_secret':
             raise ValidationError(_("The reCaptcha private key is invalid."))
         elif recaptcha_result == 'wrong_token':
@@ -55,7 +57,7 @@ class Http(models.AbstractModel):
         elif recaptcha_result == 'bad_request':
             raise UserError(_("The request is invalid or malformed."))
         else:
-            return False
+            raise UserError(_("Suspicious activity detected by google reCAPTCHA."))
 
     @api.model
     def _verify_recaptcha_token(self, ip_addr, token, action=False):
@@ -74,10 +76,10 @@ class Http(models.AbstractModel):
                      bad_request: The request is invalid or malformed.
             :rtype: str
         """
-        private_key = request.env['ir.config_parameter'].sudo().get_param('recaptcha_private_key')
+        private_key = request.env['ir.config_parameter'].sudo().get_str('recaptcha_private_key')
         if not private_key:
             return 'no_secret'
-        min_score = request.env['ir.config_parameter'].sudo().get_param('recaptcha_min_score')
+        min_score = request.env['ir.config_parameter'].sudo().get_float('recaptcha_min_score', 0.7)
         try:
             r = requests.post('https://www.recaptcha.net/recaptcha/api/siteverify', {
                 'secret': private_key,
@@ -96,7 +98,7 @@ class Http(models.AbstractModel):
 
         if res_success:
             score = result.get('score', False)
-            if score < float(min_score):
+            if score < min_score:
                 logger.warning("Trial captcha verification for ip address %s failed with score %f.", ip_addr, score)
                 return 'is_bot'
             if res_action and res_action != action:

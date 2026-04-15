@@ -1,14 +1,13 @@
-# Part of Odoo. See LICENSE file for full copyright and licensing details.
 {
     'name': 'Italy - Accounting',
-    'icon': '/account/static/description/l10n.png',
     'countries': ['it'],
-    'version': '0.3',
+    'version': '0.9',
     'depends': [
         'account',
-        'base_iban',
         'base_vat',
+        'account_edi_ubl_cii',
     ],
+    'auto_install': ['account'],
     'author': 'OpenERP Italian Community',
     'description': """
 Piano dei conti italiano di un'impresa generica.
@@ -17,11 +16,19 @@ Piano dei conti italiano di un'impresa generica.
 Italian accounting chart and localization.
     """,
     'category': 'Accounting/Localizations/Account Charts',
-    'website': 'https://www.odoo.com/documentation/master/applications/finance/fiscal_localizations/italy.html',
+    'website': 'https://www.odoo.com/documentation/latest/applications/finance/fiscal_localizations/italy.html',
     'data': [
         'data/account_account_tag.xml',
-        'data/account_tax_report_data.xml',
-        'data/report_invoice.xml',
+        'data/tax_report/annual_report_sections/va.xml',
+        'data/tax_report/annual_report_sections/ve.xml',
+        'data/tax_report/annual_report_sections/vf.xml',
+        'data/tax_report/annual_report_sections/vh.xml',
+        'data/tax_report/annual_report_sections/vj.xml',
+        'data/tax_report/annual_report_sections/vl.xml',
+        'data/tax_report/account_annual_tax_report_data.xml',
+        'data/tax_report/account_monthly_tax_report_data.xml',
+        'data/tax_report/account_withholding_report_data.xml',
+        'views/account_tax_views.xml'
     ],
     'demo': [
         'demo/demo_company.xml',

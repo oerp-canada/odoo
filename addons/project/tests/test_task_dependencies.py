@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 
-from odoo.fields import Command
+from odoo.fields import Command, Datetime
 from odoo.exceptions import ValidationError
 from odoo.tests import tagged
 
@@ -15,7 +15,7 @@ class TestTaskDependencies(TestProjectCommon):
     @classmethod
     def setUpClass(cls):
         super().setUpClass()
-
+        cls.env.user.group_ids |= cls.env.ref('project.group_project_task_dependencies')
         cls.project_pigs.write({
             'allow_task_dependencies': True,
         })
@@ -80,52 +80,37 @@ class TestTaskDependencies(TestProjectCommon):
         self.assertEqual(len(self.task_2.depend_on_ids), 1, "The task 2 should have one dependency.")
 
         # 4) Add task1 as dependency in task3 and check a validation error is raised
-        with self.assertRaises(ValidationError), self.cr.savepoint():
+        with self.assertRaises(ValidationError):
             self.task_3.write({
                 'depend_on_ids': [Command.link(self.task_1.id)],
             })
         self.assertEqual(len(self.task_3.depend_on_ids), 0, "The dependency should not be added in the task 3 because of a cyclic dependency.")
 
         # 5) Add task1 as dependency in task2 and check a validation error is raised
-        with self.assertRaises(ValidationError), self.cr.savepoint():
+        with self.assertRaises(ValidationError):
             self.task_2.write({
                 'depend_on_ids': [Command.link(self.task_1.id)],
             })
         self.assertEqual(len(self.task_2.depend_on_ids), 1, "The number of dependencies should no change in the task 2 because of a cyclic dependency.")
 
     def test_task_dependencies_settings_change(self):
-
-        def set_task_dependencies_setting(enabled):
-            features_config = self.env["res.config.settings"].create({'group_project_task_dependencies': enabled})
-            features_config.execute()
-
-        self.project_pigs.write({
-            'allow_task_dependencies': False,
-        })
-
-        # As the Project General Setting group_project_task_dependencies needs to be toggled in order
-        # to be applied on the existing projects we need to force it so that it does not depends on anything
-        # (like demo data for instance)
-        set_task_dependencies_setting(False)
-        set_task_dependencies_setting(True)
-        self.assertTrue(self.project_pigs.allow_task_dependencies, "Projects allow_task_dependencies should follow group_project_task_dependencies setting changes")
-
+        # set group_project_task_dependencies(True)
         self.project_chickens = self.env['project.project'].create({
             'name': 'My Chicken Project'
         })
-        self.assertTrue(self.project_chickens.allow_task_dependencies, "New Projects allow_task_dependencies should default to group_project_task_dependencies")
+        self.assertFalse(self.project_chickens.allow_task_dependencies, "New Projects allow_task_dependencies should default to False")
 
-        set_task_dependencies_setting(False)
-        self.assertFalse(self.project_pigs.allow_task_dependencies, "Projects allow_task_dependencies should follow group_project_task_dependencies setting changes")
-
+        # set group_project_task_dependencies(False)
+        self.env.user.group_ids -= self.env.ref('project.group_project_task_dependencies')
         self.project_ducks = self.env['project.project'].create({
             'name': 'My Ducks Project'
         })
-        self.assertFalse(self.project_ducks.allow_task_dependencies, "New Projects allow_task_dependencies should default to group_project_task_dependencies")
+        self.assertFalse(self.project_ducks.allow_task_dependencies, "New Projects allow_task_dependencies should still default to False")
 
     def test_duplicate_project_with_task_dependencies(self):
         self.project_pigs.allow_task_dependencies = True
         self.task_1.depend_on_ids = self.task_2
+        self.task_1.date_deadline = Datetime.now()
         pigs_copy = self.project_pigs.copy()
 
         task1_copy = pigs_copy.task_ids.filtered(lambda t: t.name == 'Pigs UserTask')
@@ -144,6 +129,12 @@ class TestTaskDependencies(TestProjectCommon):
 
         self.assertEqual(task1_copy_copy.depend_on_ids.ids, [self.task_1.id],
                          "Copy should not alter the relation if the other task is in a different project")
+
+        self.project_pigs.allow_task_dependencies = False
+        project_pigs_no_dep = self.project_pigs.copy()
+        self.assertFalse(project_pigs_no_dep.allow_task_dependencies, 'The copied project should have the dependencies feature disabled')
+        self.assertFalse(project_pigs_no_dep.task_ids.depend_on_ids, 'The copied task should not have any dependencies')
+        self.assertFalse(project_pigs_no_dep.task_ids.dependent_ids, 'The copied task should not have any dependencies')
 
     def test_duplicate_project_with_subtask_dependencies(self):
         self.project_goats.allow_task_dependencies = True

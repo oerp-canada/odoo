@@ -1,16 +1,12 @@
-/** @odoo-module **/
-
-import { _lt } from "@web/core/l10n/translation";
-import { evaluateExpr } from "@web/core/py_js/py";
-import { evalDomain } from "@web/views/utils";
+import { _t } from "@web/core/l10n/translation";
+import { evaluateBooleanExpr } from "@web/core/py_js/py";
 import { registry } from "@web/core/registry";
 import { omit } from "@web/core/utils/objects";
 
-import { CopyButton } from "./copy_button";
-import { UrlField } from "../url/url_field";
+import { CopyButton } from "@web/core/copy_button/copy_button";
 import { CharField } from "../char/char_field";
-import { TextField } from "../text/text_field";
 import { standardFieldProps } from "../standard_field_props";
+import { UrlField } from "../url/url_field";
 
 import { Component } from "@odoo/owl";
 
@@ -23,12 +19,12 @@ class CopyClipboardField extends Component {
     };
 
     setup() {
-        this.copyText = this.props.string || this.env._t("Copy");
-        this.successText = this.env._t("Copied");
+        this.copyText = this.props.string || _t("Copy");
+        this.successText = _t("Copied");
     }
 
     get copyButtonClassName() {
-        return `o_btn_${this.type}_copy btn-sm`;
+        return `o_btn_${this.type}_copy btn-link btn-link-inline`;
     }
     get fieldProps() {
         return omit(this.props, "string", "disabledExpr");
@@ -37,74 +33,80 @@ class CopyClipboardField extends Component {
         return this.props.record.fields[this.props.name].type;
     }
     get disabled() {
-        const context = this.props.record.evalContext;
-        const evaluated = this.props.disabledExpr ? evaluateExpr(this.props.disabledExpr) : false;
-        if (evaluated instanceof Array) {
-            return evalDomain(evaluated, context);
-        }
-        return Boolean(evaluated);
+        return this.props.disabledExpr
+            ? evaluateBooleanExpr(
+                  this.props.disabledExpr,
+                  this.props.record.evalContextWithVirtualIds
+              )
+            : false;
     }
 }
 
 export class CopyClipboardButtonField extends CopyClipboardField {
     static template = "web.CopyClipboardButtonField";
     static components = { CopyButton };
+    static props = {
+        ...CopyClipboardField.props,
+        btnClass: { type: String, optional: true },
+    };
+    static defaultProps = {
+        ...CopyClipboardField.defaultProps,
+        btnClass: "primary",
+    };
 
     get copyButtonClassName() {
-        return `o_btn_${this.type}_copy rounded-2`;
+        return `o_btn_${this.type}_copy btn-${this.props.btnClass} rounded-2`;
     }
 }
 
 export class CopyClipboardCharField extends CopyClipboardField {
     static components = { Field: CharField, CopyButton };
-}
 
-export class CopyClipboardTextField extends CopyClipboardField {
-    static components = { Field: TextField, CopyButton };
+    get copyButtonIcon() {
+        return "fa-clipboard";
+    }
 }
 
 export class CopyClipboardURLField extends CopyClipboardField {
     static components = { Field: UrlField, CopyButton };
+
+    get copyButtonIcon() {
+        return "fa-link";
+    }
 }
 
 // ----------------------------------------------------------------------------
 
-function extractProps({ attrs }) {
+function extractProps({ string, attrs }) {
     return {
-        string: attrs.string,
+        string,
         disabledExpr: attrs.disabled,
     };
 }
 
 export const copyClipboardButtonField = {
     component: CopyClipboardButtonField,
-    displayName: _lt("Copy to Clipboard"),
-    extractProps,
+    displayName: _t("Copy to Clipboard"),
+    extractProps: (fieldInfo) => ({
+        ...extractProps(fieldInfo),
+        btnClass: fieldInfo.options.btn_class,
+    }),
 };
 
 registry.category("fields").add("CopyClipboardButton", copyClipboardButtonField);
 
 export const copyClipboardCharField = {
     component: CopyClipboardCharField,
-    displayName: _lt("Copy Text to Clipboard"),
+    displayName: _t("Copy Text to Clipboard"),
     supportedTypes: ["char"],
     extractProps,
 };
 
 registry.category("fields").add("CopyClipboardChar", copyClipboardCharField);
 
-export const copyClipboardTextField = {
-    component: CopyClipboardTextField,
-    displayName: _lt("Copy Multiline Text to Clipboard"),
-    supportedTypes: ["text"],
-    extractProps,
-};
-
-registry.category("fields").add("CopyClipboardText", copyClipboardTextField);
-
 export const copyClipboardURLField = {
     component: CopyClipboardURLField,
-    displayName: _lt("Copy URL to Clipboard"),
+    displayName: _t("Copy URL to Clipboard"),
     supportedTypes: ["char"],
     extractProps,
 };

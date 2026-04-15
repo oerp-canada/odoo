@@ -2,28 +2,29 @@
 <odoo>
     <template id="report_delivery_document2" inherit_id="stock.report_delivery_document">
         <xpath expr="//div[@name='div_sched_date']" position="after">
-            <div t-if="o.picking_type_id.code == 'outgoing' and o.carrier_id" class="col-auto">
-                <strong>Carrier:</strong>
-                <p t-field="o.carrier_id"/>
+            <div t-if="o.carrier_id" class="col col-3 mw-100 mb-2">
+                <strong>Carrier</strong>
+                <div t-field="o.carrier_id" class="m-0"/>
             </div>
-            <div t-if="o.shipping_weight" class="col-auto">
-                <strong>Total Weight:</strong>
-                <br/>
-                <span t-field="o.shipping_weight"/>
-                <span t-field="o.weight_uom_name"/>
+            <div t-if="o.shipping_weight" class="col col-3 mw-100 mb-2">
+                <strong>Total Weight</strong>
+                <div>
+                    <span t-field="o.shipping_weight"/>
+                    <span t-field="o.weight_uom_name"/>
+                </div>
             </div>
-            <div t-if="o.carrier_tracking_ref" class="col-auto">
-                <strong>Tracking Number:</strong>
-                <p t-field="o.carrier_tracking_ref"/>
+            <div t-if="o.carrier_tracking_ref" class="col col-3 mw-100 mb-2" style="max-width:30%;">
+                <strong>Tracking Number</strong>
+                <div t-field="o.carrier_tracking_ref" class="m-0"/>
             </div>
             <t t-set="has_hs_code" t-value="o.move_ids.filtered(lambda l: l.product_id.hs_code)"/>
         </xpath>
 
         <xpath expr="//table[@name='stock_move_line_table']/thead/tr" position="inside">
-            <th t-if="has_hs_code"><strong>HS Code</strong></th>
+            <th t-if="has_hs_code">HS Code</th>
         </xpath>
         <xpath expr="//table[@name='stock_move_table']/thead/tr" position="inside">
-            <th t-if="has_hs_code"><strong>HS Code</strong></th>
+            <th t-if="has_hs_code">HS Code</th>
         </xpath>
         <xpath expr="//table[@name='stock_move_table']/tbody/tr" position="inside">
             <td t-if="has_hs_code">
@@ -34,13 +35,13 @@
 
     <!--  HS Code to table rows-->
     <template id="stock_report_delivery_has_serial_move_line_inherit_delivery" inherit_id="stock.stock_report_delivery_has_serial_move_line">
-        <xpath expr="//td[@name='move_line_lot_qty_done']" position="after">
+        <xpath expr="//td[@name='move_line_lot_quantity']" position="after">
             <td t-if="has_hs_code"><span t-field="move_line.product_id.hs_code"/></td>
         </xpath>
     </template>
     <template id="stock_report_delivery_aggregated_move_lines_inherit_delivery" inherit_id="stock.stock_report_delivery_aggregated_move_lines">
-        <xpath expr="//td[@name='move_line_aggregated_qty_done']" position="after">
-            <td t-if="has_hs_code"><span t-esc="aggregated_lines[line]['hs_code']"/></td>
+        <xpath expr="//td[@name='move_line_aggregated_quantity']" position="after">
+            <td t-if="has_hs_code"><span t-out="aggregated_lines[line]['hs_code']"/></td>
         </xpath>
     </template>
 

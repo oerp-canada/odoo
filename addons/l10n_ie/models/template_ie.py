@@ -9,15 +9,6 @@ class AccountChartTemplate(models.AbstractModel):
     @template('ie')
     def _get_ie_template_data(self):
         return {
-            'property_account_receivable_id': 'l10n_ie_account_2100',
-            'property_account_payable_id': 'l10n_ie_account_34',
-            'property_account_expense_categ_id': 'l10n_ie_account_60',
-            'property_account_income_categ_id': 'l10n_ie_account_70',
-            'property_stock_valuation_account_id': 'l10n_ie_account_630',
-            'property_advance_tax_payment_account_id': 'l10n_ie_account_2132',
-            'property_tax_payable_account_id': 'l10n_ie_account_3804',
-            'property_tax_receivable_account_id': 'l10n_ie_account_2131',
-            'use_anglo_saxon': False,
             'code_digits': '6',
         }
 
@@ -32,11 +23,24 @@ class AccountChartTemplate(models.AbstractModel):
                 'account_default_pos_receivable_account_id': 'l10n_ie_account_2101',
                 'income_currency_exchange_account_id': 'l10n_ie_account_761',
                 'expense_currency_exchange_account_id': 'l10n_ie_account_661',
-                'deferred_expense_account_id': 'l10n_ie_account_2161',
-                'deferred_revenue_account_id': 'l10n_ie_account_39',
                 'account_journal_early_pay_discount_loss_account_id': 'l10n_ie_account_640',
                 'account_journal_early_pay_discount_gain_account_id': 'l10n_ie_account_730',
                 'default_cash_difference_expense_account_id': 'l10n_ie_account_641',
                 'default_cash_difference_income_account_id': 'l10n_ie_account_731',
+                'account_sale_tax_id': 'ie_tax_sale_goods_23',
+                'account_purchase_tax_id': 'ie_tax_purchase_goods_23',
+                'expense_account_id': 'l10n_ie_account_60',
+                'income_account_id': 'l10n_ie_account_70',
+                'receivable_account_id': 'l10n_ie_account_2100',
+                'payable_account_id': 'l10n_ie_account_34',
+                'account_stock_valuation_id': 'l10n_ie_account_2000',
+            },
+        }
+
+    @template('ie', 'account.account')
+    def _get_ie_account_account(self):
+        return {
+            'l10n_ie_account_2000': {
+                'account_stock_variation_id': 'l10n_ie_account_60',
             },
         }

@@ -1,21 +1,93 @@
-/** @odoo-module **/
-
-import { _lt } from "@web/core/l10n/translation";
-import { getBorderWhite, DEFAULT_BG, getColor, hexToRGBA } from "@web/core/colors/colors";
-import { formatFloat } from "@web/views/fields/formatters";
+import { useLayoutEffect, useRef } from "@web/owl2/utils";
+import { _t } from "@web/core/l10n/translation";
+import {
+    getBorderWhite,
+    DEFAULT_BG,
+    getColor,
+    getCustomColor,
+    lightenColor,
+    darkenColor,
+} from "@web/core/colors/colors";
+import { registry } from "@web/core/registry";
+import { formatFloat, formatMonetary } from "@web/views/fields/formatters";
 import { SEP } from "./graph_model";
 import { sortBy } from "@web/core/utils/arrays";
-import { loadJS } from "@web/core/assets";
-import { renderToString } from "@web/core/utils/render";
+import { loadBundle } from "@web/core/assets";
+import { renderToMarkup } from "@web/core/utils/render";
 import { useService } from "@web/core/utils/hooks";
 
-import { Component, onWillUnmount, useEffect, useRef, onWillStart } from "@odoo/owl";
+import { Component, onWillUnmount, onWillStart, markup } from "@odoo/owl";
 import { Dropdown } from "@web/core/dropdown/dropdown";
 import { DropdownItem } from "@web/core/dropdown/dropdown_item";
+import { cookie } from "@web/core/browser/cookie";
+import { createElementWithContent } from "@web/core/utils/html";
+import { ReportViewMeasures } from "@web/views/view_components/report_view_measures";
+import { Widget } from "@web/views/widgets/widget";
 
-const NO_DATA = _lt("No data");
+const NO_DATA = _t("No data");
+const formatters = registry.category("formatters");
 
-export const LINE_FILL_TRANSPARENCY = 0.4;
+const colorScheme = cookie.get("color_scheme");
+const GRAPH_LEGEND_COLOR = getCustomColor(colorScheme, "#111827", "#ffffff");
+const GRAPH_GRID_COLOR = getCustomColor(colorScheme, "rgba(0,0,0,.1)", "rgba(255,255,255,.15");
+const GRAPH_LABEL_COLOR = getCustomColor(colorScheme, "#111827", "#E4E4E4");
+const NO_DATA_COLOR = getCustomColor(colorScheme, DEFAULT_BG, "#3C3E4B");
+
+/**
+ * Custom Plugin for Line chart:
+ * Draw the scale grid on top of the chart to
+ * see this last one correctly.
+ */
+const gridOnTop = {
+    id: "gridOnTop",
+    afterDraw: (chart) => {
+        const elements = chart.getDatasetMeta(0).data || [];
+        const ctx = chart.ctx;
+        const chartArea = chart.chartArea;
+        const yAxis = chart.scales.y;
+        const xAxis = chart.scales.x;
+
+        ctx.lineWidth = 1;
+        ctx.strokeStyle = GRAPH_GRID_COLOR;
+
+        // Draw Y axis scale
+        yAxis.ticks.forEach((value, index) => {
+            const y = yAxis.getPixelForTick(index);
+            ctx.beginPath();
+            // Draw the line scale
+            ctx.moveTo(chartArea.left, y);
+            ctx.lineTo(chartArea.right, y);
+            // Draw the tick mark
+            ctx.moveTo(chartArea.left - 8, y);
+            ctx.lineTo(chartArea.left, y);
+            ctx.setLineDash([]);
+            ctx.stroke();
+        });
+
+        // Draw X axis tick marks
+        xAxis.ticks.forEach((value, tickIndex) => {
+            const x = xAxis.getPixelForTick(tickIndex);
+            ctx.beginPath();
+            ctx.moveTo(x, chartArea.bottom);
+            ctx.lineTo(x, chartArea.bottom + 8);
+            ctx.stroke();
+        });
+
+        // Draw the X axis dashed line
+        elements.forEach((point, eltIndex) => {
+            xAxis.ticks.forEach((value, tickIndex) => {
+                if (point.active && eltIndex === tickIndex) {
+                    const x = xAxis.getPixelForTick(tickIndex);
+                    ctx.beginPath();
+                    ctx.moveTo(x, chartArea.top);
+                    ctx.lineTo(x, chartArea.bottom);
+                    ctx.strokeStyle = GRAPH_GRID_COLOR;
+                    ctx.stroke();
+                }
+            });
+        });
+    },
+};
 
 /**
  * @param {Object} chartArea
@@ -44,22 +116,27 @@ function shortenLabel(label) {
 }
 
 export class GraphRenderer extends Component {
+    static template = "web.GraphRenderer";
+    static components = { Dropdown, DropdownItem, ReportViewMeasures, Widget };
+    static props = ["class?", "model", "buttonTemplate"];
+
     setup() {
         this.model = this.props.model;
 
         this.rootRef = useRef("root");
         this.canvasRef = useRef("canvas");
         this.containerRef = useRef("container");
-        this.cookies = useService("cookie");
         this.actionService = useService("action");
 
         this.chart = null;
         this.tooltip = null;
         this.legendTooltip = null;
 
-        onWillStart(() => loadJS("/web/static/lib/Chart/Chart.js"));
+        onWillStart(async () => {
+            await loadBundle("web.chartjs_lib");
+        });
 
-        useEffect(() => this.renderChart());
+        useLayoutEffect(() => this.renderChart());
         onWillUnmount(this.onWillUnmount);
     }
 
@@ -93,7 +170,7 @@ export class GraphRenderer extends Component {
             const td = document.createElement("td");
             tr.classList.add("o_show_more", "text-center", "fw-bold");
             td.setAttribute("colspan", "2");
-            td.innerText = this.env._t("...");
+            td.innerText = _t("...");
             tr.appendChild(td);
             tooltip.querySelector("tbody").appendChild(tr);
         }
@@ -103,27 +180,28 @@ export class GraphRenderer extends Component {
      * Creates a custom HTML tooltip.
      * @param {Object} data
      * @param {Object} metaData
-     * @param {Object} tooltipModel see chartjs documentation
+     * @param {Object} context see chartjs documentation
      */
-    customTooltip(data, metaData, tooltipModel) {
+    customTooltip(data, metaData, context) {
+        const tooltipModel = context.tooltip;
         const { measure, measures, disableLinking, mode } = metaData;
-        this.rootRef.el.style.cursor = "";
+        this.containerRef.el.style.cursor = "";
         this.removeTooltips();
         if (tooltipModel.opacity === 0 || tooltipModel.dataPoints.length === 0) {
             return;
         }
         if (!disableLinking && mode !== "line") {
-            this.rootRef.el.style.cursor = "pointer";
+            this.containerRef.el.style.cursor = "pointer";
         }
         const chartAreaTop = this.chart.chartArea.top;
-        const viewContentTop = this.rootRef.el.getBoundingClientRect().top;
-        const innerHTML = renderToString("web.GraphRenderer.CustomTooltip", {
+        const viewContentTop = this.containerRef.el.getBoundingClientRect().top;
+        const content = renderToMarkup("web.GraphRenderer.CustomTooltip", {
             maxWidth: getMaxWidth(this.chart.chartArea),
             measure: measures[measure].string,
             mode: this.model.metaData.mode,
             tooltipItems: this.getTooltipItems(data, metaData, tooltipModel),
         });
-        const template = Object.assign(document.createElement("template"), { innerHTML });
+        const template = createElementWithContent("template", content);
         const tooltip = template.content.firstChild;
         this.containerRef.el.prepend(tooltip);
 
@@ -185,13 +263,20 @@ export class GraphRenderer extends Component {
     }
 
     /**
-     * Used to format correctly the values in tooltips and yAxes.
+     * Used to format correctly the values in tooltip and y.
      * @param {number} value
      * @param {boolean} [allIntegers=true]
      * @returns {string}
      */
-    formatValue(value, allIntegers = true) {
+    formatValue(value, measure, allIntegers = true) {
         const largeNumber = Math.abs(value) >= 1000;
+        const widget = this.model.metaData.fieldAttrs[measure]?.widget
+        let options = this.model.metaData.fieldAttrs[measure]?.options
+        if (widget) {
+            const formatter = formatters.get(widget);
+            options = formatter.extractOptions ? formatter.extractOptions({ options }) : {};
+            return formatter(value, options);
+        }
         if (allIntegers && !largeNumber) {
             return String(value);
         }
@@ -207,32 +292,33 @@ export class GraphRenderer extends Component {
      */
     getBarChartData() {
         // style data
-        const { domains, stacked } = this.model.metaData;
+        const { stacked } = this.model.metaData;
         const { data, lineOverlayDataset } = this.model;
         for (let index = 0; index < data.datasets.length; ++index) {
             const dataset = data.datasets[index];
+            const itemColor = getColor(index, colorScheme, data.datasets.length);
             // used when stacked
             if (stacked) {
-                dataset.stack = domains[dataset.originIndex].description || "";
+                dataset.stack = "";
             }
             // set dataset color
-            dataset.backgroundColor = getColor(index, this.cookies.current.color_scheme);
+            dataset.backgroundColor = itemColor;
+            dataset.borderRadius = 4;
         }
         if (lineOverlayDataset) {
             // Mutate the lineOverlayDataset to include the config on how it will be displayed.
-            const color = this.cookies.current.color_scheme === "dark" ? "ffffff" : "000000";
             Object.assign(lineOverlayDataset, {
                 type: "line",
                 order: -1,
                 tension: 0,
                 fill: false,
-                borderWidth: 2,
-                borderDash: [5, 4],
-                borderColor: hexToRGBA(color, LINE_FILL_TRANSPARENCY),
-                pointHitRadius: 5,
+                pointHitRadius: 20,
                 pointRadius: 5,
                 pointHoverRadius: 10,
-                backgroundColor: hexToRGBA(color, LINE_FILL_TRANSPARENCY),
+                backgroundColor: getCustomColor(colorScheme, "#343a40", "#e9ecef"),
+                borderColor: getCustomColor(colorScheme, "rgba(0,0,0,.3)", "rgba(255,255,255,.5)"),
+                borderWidth: 2,
+                lineWidth: 3,
             });
             // We're not mutating the original datasets (`this.model.data.datasets`)
             // because some part of the code depends on it.
@@ -263,7 +349,41 @@ export class GraphRenderer extends Component {
                 data = this.getPieChartData();
         }
         const options = this.prepareOptions();
-        return { data, options, type: mode };
+        const config = { data, options, type: mode };
+        if (mode === "line") {
+            config.plugins = [gridOnTop];
+        }
+        return config;
+    }
+
+    /**
+     * Returns the animation options.
+     * 1. This adds progressive animation for Bar & Line charts.
+     * 2. Reduce animation duration for Pie chart.
+     * @returns {Object}
+     */
+    getAnimationOptions() {
+        let delayed;
+        const { mode } = this.model.metaData;
+        const labelsCount = this.model.data.labels.length;
+        const gap = 350;
+        const animationOptions = {};
+        if (mode === "pie") {
+            animationOptions.offset = { duration: 200 };
+        } else {
+            animationOptions.duration = 600;
+            animationOptions.onComplete = () => {
+                delayed = true;
+            };
+            animationOptions.delay = (context) => {
+                let delay = 0;
+                if ((mode === "bar" || mode === "line") && !delayed) {
+                    delay = context.dataIndex * (gap / labelsCount);
+                }
+                return delay;
+            };
+        }
+        return animationOptions;
     }
 
     /**
@@ -275,7 +395,7 @@ export class GraphRenderer extends Component {
         const { mode, stacked } = this.model.metaData;
         const elementOptions = {};
         if (mode === "bar") {
-            elementOptions.rectangle = { borderWidth: 1 };
+            elementOptions.bar = { borderWidth: 1 };
         } else if (mode === "line") {
             elementOptions.line = { fill: stacked, tension: 0 };
         }
@@ -286,13 +406,9 @@ export class GraphRenderer extends Component {
      * @returns {Object}
      */
     getLegendOptions() {
-        const { mode } = this.model.metaData;
-        const data = this.model.data;
-        const refLength = mode === "pie" ? data.labels.length : data.datasets.length;
+        const { mode, groupBy } = this.model.metaData;
         const legendOptions = {
-            display: refLength <= 20,
-            position: "top",
-            onHover: this.onlegendHover.bind(this),
+            onHover: this.onLegendHover.bind(this),
             onLeave: this.onLegendLeave.bind(this),
         };
         if (mode === "line") {
@@ -300,45 +416,52 @@ export class GraphRenderer extends Component {
         }
         if (mode === "pie") {
             legendOptions.labels = {
-                generateLabels: (chart) => {
-                    const { data } = chart;
-                    const metaData = data.datasets.map(
-                        (_, index) => chart.getDatasetMeta(index).data
-                    );
-                    const labels = data.labels.map((label, index) => {
-                        const hidden = metaData.some((data) => data[index] && data[index].hidden);
+                generateLabels: (chart) =>
+                    chart.data.labels.map((label, index) => {
+                        const hidden = !chart.getDataVisibility(index);
                         const fullText = label;
                         const text = shortenLabel(fullText);
                         const fillStyle =
                             label === NO_DATA
-                                ? DEFAULT_BG
-                                : getColor(index, this.cookies.current.color_scheme);
-                        return { text, fullText, fillStyle, hidden, index };
-                    });
-                    return labels;
-                },
+                                ? NO_DATA_COLOR
+                                : getColor(index, colorScheme, chart.data.labels.length);
+                        return {
+                            text,
+                            fullText,
+                            fillStyle,
+                            hidden,
+                            index,
+                            fontColor: GRAPH_LEGEND_COLOR,
+                            lineWidth: 0,
+                        };
+                    }),
             };
         } else {
+            legendOptions.position = "bottom";
+            legendOptions.align = "middle";
             const referenceColor = mode === "bar" ? "backgroundColor" : "borderColor";
             legendOptions.labels = {
                 generateLabels: (chart) => {
+                    // if no more than one groupBy, the legend is implicitly displayed inside the measure
+                    if (groupBy.length <= 1) {
+                        return [];
+                    }
                     const { data } = chart;
-                    const labels = data.datasets.map((dataset, index) => {
-                        return {
-                            text: shortenLabel(dataset.label),
-                            fullText: dataset.label,
-                            fillStyle: dataset[referenceColor],
-                            hidden: !chart.isDatasetVisible(index),
-                            lineCap: dataset.borderCapStyle,
-                            lineDash: dataset.borderDash,
-                            lineDashOffset: dataset.borderDashOffset,
-                            lineJoin: dataset.borderJoinStyle,
-                            lineWidth: dataset.borderWidth,
-                            strokeStyle: dataset[referenceColor],
-                            pointStyle: dataset.pointStyle,
-                            datasetIndex: index,
-                        };
-                    });
+                    const labels = data.datasets.map((dataset, index) => ({
+                        text: shortenLabel(dataset.label),
+                        fullText: dataset.label,
+                        fillStyle: dataset[referenceColor],
+                        hidden: !chart.isDatasetVisible(index),
+                        lineCap: dataset.borderCapStyle,
+                        lineDash: dataset.borderDash,
+                        lineDashOffset: dataset.borderDashOffset,
+                        lineJoin: dataset.borderJoinStyle,
+                        lineWidth: dataset.borderWidth,
+                        strokeStyle: dataset[referenceColor],
+                        pointStyle: dataset.pointStyle,
+                        datasetIndex: index,
+                        fontColor: GRAPH_LEGEND_COLOR,
+                    }));
                     return labels;
                 },
             };
@@ -351,24 +474,28 @@ export class GraphRenderer extends Component {
      * @returns {Object}
      */
     getLineChartData() {
-        const { groupBy, domains, stacked, cumulated } = this.model.metaData;
+        const { cumulated } = this.model.metaData;
         const data = this.model.data;
-        const color0 = getColor(0, this.cookies.current.color_scheme);
-        const color1 = getColor(1, this.cookies.current.color_scheme);
         for (let index = 0; index < data.datasets.length; ++index) {
             const dataset = data.datasets[index];
-            if (groupBy.length <= 1 && domains.length > 1) {
-                if (dataset.originIndex === 0) {
-                    dataset.fill = "origin";
-                    dataset.backgroundColor = hexToRGBA(color0, LINE_FILL_TRANSPARENCY);
-                    dataset.borderColor = color0;
-                } else if (dataset.originIndex === 1) {
-                    dataset.borderColor = color1;
-                } else {
-                    dataset.borderColor = getColor(index, this.cookies.current.color_scheme);
-                }
-            } else {
-                dataset.borderColor = getColor(index, this.cookies.current.color_scheme);
+            const itemColor = getColor(index, colorScheme, data.datasets.length);
+            dataset.backgroundColor = getCustomColor(
+                colorScheme,
+                lightenColor(itemColor, 0.5),
+                darkenColor(itemColor, 0.5)
+            );
+            dataset.cubicInterpolationMode = "monotone";
+            dataset.borderColor = itemColor;
+            dataset.borderWidth = 2;
+            dataset.hoverBackgroundColor = dataset.borderColor;
+            dataset.pointRadius = 3;
+            dataset.pointHoverRadius = 6;
+            if (cumulated) {
+                let accumulator = dataset.cumulatedStart;
+                dataset.data = dataset.data.map((value) => {
+                    accumulator += value;
+                    return accumulator;
+                });
             }
             if (data.labels.length === 1) {
                 // shift of the real value to right. This is done to
@@ -379,27 +506,10 @@ export class GraphRenderer extends Component {
                 dataset.domains.unshift(undefined);
             }
             dataset.pointBackgroundColor = dataset.borderColor;
-            dataset.pointBorderColor = "rgba(0,0,0,0.2)";
-            if (stacked) {
-                dataset.backgroundColor = hexToRGBA(dataset.borderColor, LINE_FILL_TRANSPARENCY);
-            }
-            if (cumulated) {
-                let accumulator = dataset.cumulatedStart;
-                dataset.data = dataset.data.map((value) => {
-                    accumulator += value;
-                    return accumulator;
-                });
-            }
-        }
-        if (data.datasets.length === 1 && data.datasets[0].originIndex === 0) {
-            const dataset = data.datasets[0];
-            dataset.fill = "origin";
-            dataset.backgroundColor = hexToRGBA(color0, LINE_FILL_TRANSPARENCY);
         }
         // center the points in the chart (without that code they are put
         // on the left and the graph seems empty)
         data.labels = data.labels.length > 1 ? data.labels : ["", ...data.labels, ""];
-
         return data;
     }
 
@@ -408,38 +518,33 @@ export class GraphRenderer extends Component {
      * @returns {Object}
      */
     getPieChartData() {
-        const { domains } = this.model.metaData;
         const data = this.model.data;
         // style/complete data
         // give same color to same groups from different origins
         const colors = data.labels.map((_, index) =>
-            getColor(index, this.cookies.current.color_scheme)
+            getColor(index, colorScheme, data.labels.length)
         );
-        const borderColor = getBorderWhite(this.cookies.current.color_scheme);
+        const borderColor = getBorderWhite(colorScheme);
         for (const dataset of data.datasets) {
             dataset.backgroundColor = colors;
+            dataset.hoverBackgroundColor = colors;
             dataset.borderColor = borderColor;
+            dataset.hoverOffset = 60;
         }
-        // make sure there is a zone associated with every origin
-        const representedOriginIndexes = new Set(
-            data.datasets.map((dataset) => dataset.originIndex)
-        );
         let addNoDataToLegend = false;
-        const fakeData = new Array(data.labels.length + 1);
-        fakeData[data.labels.length] = 1;
-        const fakeTrueLabels = new Array(data.labels.length + 1);
-        fakeTrueLabels[data.labels.length] = NO_DATA;
-        for (let index = 0; index < domains.length; ++index) {
-            if (!representedOriginIndexes.has(index)) {
-                data.datasets.push({
-                    label: domains[index].description,
-                    data: fakeData,
-                    trueLabels: fakeTrueLabels,
-                    backgroundColor: [...colors, DEFAULT_BG],
-                    borderColor,
-                });
-                addNoDataToLegend = true;
-            }
+        if (data.datasets.length === 0) {
+            const fakeData = new Array(data.labels.length + 1);
+            fakeData[data.labels.length] = 1;
+            const fakeTrueLabels = new Array(data.labels.length + 1);
+            fakeTrueLabels[data.labels.length] = NO_DATA;
+            data.datasets.push({
+                label: "",
+                data: fakeData,
+                trueLabels: fakeTrueLabels,
+                backgroundColor: [...colors, NO_DATA_COLOR],
+                borderColor,
+            });
+            addNoDataToLegend = true;
         }
         if (addNoDataToLegend) {
             data.labels.push(NO_DATA);
@@ -453,32 +558,53 @@ export class GraphRenderer extends Component {
      * @returns {Object}
      */
     getScaleOptions() {
-        const { allIntegers, fields, groupBy, measure, measures, mode, stacked } =
-            this.model.metaData;
+        const { labels } = this.model.data;
+        const { measure, measures, mode, stacked } = this.model.metaData;
         if (mode === "pie") {
             return {};
         }
         const xAxe = {
             type: "category",
-            scaleLabel: {
-                display: Boolean(groupBy.length),
-                labelString: groupBy.length ? fields[groupBy[0].fieldName].string : "",
+            ticks: {
+                callback: (val, index) => {
+                    const value = labels[index];
+                    return shortenLabel(value);
+                },
+                color: GRAPH_LABEL_COLOR,
             },
-            ticks: { callback: (value) => shortenLabel(value) },
+            grid: {
+                color: "transparent",
+            },
+            border: {
+                display: false,
+            },
         };
         const yAxe = {
+            beginAtZero: true,
             type: "linear",
-            scaleLabel: {
-                labelString: measures[measure].string,
+            title: {
+                text: measures[measure].string,
+                color:
+                    cookie.get("color_scheme") === "dark"
+                        ? getColor(15, cookie.get("color_scheme"))
+                        : null,
             },
             ticks: {
-                callback: (value) => this.formatValue(value, allIntegers),
-                suggestedMax: 0,
-                suggestedMin: 0,
+                callback: (value) => this.formatValue(value, measure, false),
+                color: GRAPH_LABEL_COLOR,
             },
             stacked: mode === "line" && stacked ? stacked : undefined,
+            grid: {
+                display: mode === "line" ? false : true,
+                color: GRAPH_GRID_COLOR,
+            },
+            border: {
+                display: false,
+            },
+            suggestedMax: 0,
+            suggestedMin: 0,
         };
-        return { xAxes: [xAxe], yAxes: [yAxe] };
+        return { x: xAxe, y: yAxe };
     }
 
     /**
@@ -492,29 +618,33 @@ export class GraphRenderer extends Component {
      * @returns {Object[]}
      */
     getTooltipItems(data, metaData, tooltipModel) {
-        const { allIntegers, domains, mode, groupBy } = metaData;
-        const sortedDataPoints = sortBy(tooltipModel.dataPoints, "yLabel", "desc");
+        const { allIntegers, mode, groupBy, measure } = metaData;
+        const sortedDataPoints = sortBy(tooltipModel.dataPoints, "raw", "desc");
         const items = [];
         for (const item of sortedDataPoints) {
-            const index = item.index;
+            const index = item.dataIndex;
             // If `datasetIndex` is not found in the `datasets`, then it refers to the `lineOverlayDataset`.
             const dataset = data.datasets[item.datasetIndex] || this.model.lineOverlayDataset;
             let label = dataset.trueLabels[index];
-            let value = this.formatValue(dataset.data[index], allIntegers);
+            let value = dataset.data[index];
+            if (dataset.currencyIds?.[index]) {
+                value = formatMonetary(value, { currencyId: dataset.currencyIds[index] });
+            } else if (dataset.currencyIds?.[index] === false) {
+                value = markup`${formatMonetary(value)}<sup class="ms-1 fw-bolder">?</sup>`;
+            } else {
+                value = this.formatValue(value, measure, allIntegers);
+            }
             let boxColor;
             let percentage;
             if (mode === "pie") {
                 if (label === NO_DATA) {
-                    value = this.formatValue(0, allIntegers);
-                }
-                if (domains.length > 1) {
-                    label = `${dataset.label} / ${label}`;
+                    value = this.formatValue(0, measure, allIntegers);
                 }
                 boxColor = dataset.backgroundColor[index];
                 const totalData = dataset.data.reduce((a, b) => a + b, 0);
-                percentage = totalData && ((dataset.data[item.index] * 100) / totalData).toFixed(2);
+                percentage = totalData && ((dataset.data[index] * 100) / totalData).toFixed(2);
             } else {
-                if (groupBy.length > 1 || domains.length > 1) {
+                if (groupBy.length > 1) {
                     label = `${label} / ${dataset.label}`;
                 }
                 boxColor = mode === "bar" ? dataset.backgroundColor : dataset.borderColor;
@@ -533,11 +663,20 @@ export class GraphRenderer extends Component {
         const { mode } = metaData;
         const tooltipOptions = {
             enabled: false,
-            custom: this.customTooltip.bind(this, data, metaData),
+            external: this.customTooltip.bind(this, data, metaData),
         };
         if (mode === "line") {
             tooltipOptions.mode = "index";
             tooltipOptions.intersect = false;
+            tooltipOptions.position = "average";
+        }
+        if (mode === "bar") {
+            tooltipOptions.xAlign = "center";
+            tooltipOptions.yAlign = "bottom";
+        }
+        if (mode === "pie") {
+            tooltipOptions.xAlign = "center";
+            tooltipOptions.yAlign = "center";
         }
         return tooltipOptions;
     }
@@ -546,15 +685,24 @@ export class GraphRenderer extends Component {
      * If a group has been clicked on, display a view of its records.
      * @param {MouseEvent} ev
      */
-    onGraphClicked(ev) {
-        const [activeElement] = this.chart.getElementAtEvent(ev);
+    onGraphClicked(ev, isMiddleClick) {
+        const { disableLinking, mode } = this.model.metaData;
+        if (disableLinking || mode === "line") {
+            return;
+        }
+        const [activeElement] = this.chart.getElementsAtEventForMode(
+            ev,
+            "nearest",
+            { intersect: true },
+            false
+        );
         if (!activeElement) {
             return;
         }
-        const { _datasetIndex, _index } = activeElement;
-        const { domains } = this.chart.data.datasets[_datasetIndex];
+        const { datasetIndex, index } = activeElement;
+        const { domains } = this.chart.data.datasets[datasetIndex];
         if (domains) {
-            this.onGraphClickedFinal(domains[_index]);
+            this.onGraphClickedFinal(domains[index], isMiddleClick);
         }
     }
 
@@ -580,7 +728,8 @@ export class GraphRenderer extends Component {
      * @param {Event} ev
      * @param {Object} legendItem
      */
-    onlegendHover(ev, legendItem) {
+    onLegendHover(ev, legendItem) {
+        ev = ev.native;
         this.canvasRef.el.style.cursor = "pointer";
         /**
          * The string legendItem.text is an initial segment of legendItem.fullText.
@@ -592,9 +741,9 @@ export class GraphRenderer extends Component {
         if (this.legendTooltip || text === fullText) {
             return;
         }
-        const viewContentTop = this.rootRef.el.getBoundingClientRect().top;
+        const viewContentTop = this.canvasRef.el.getBoundingClientRect().top;
         const legendTooltip = Object.assign(document.createElement("div"), {
-            className: "o_tooltip_legend popover p-3 pe-none",
+            className: "o_tooltip_legend popover p-3 pe-none position-absolute",
             innerText: fullText,
         });
         legendTooltip.style.top = `${ev.clientY - viewContentTop}px`;
@@ -619,18 +768,47 @@ export class GraphRenderer extends Component {
      * instantiate the chart.
      */
     prepareOptions() {
-        const { disableLinking, mode } = this.model.metaData;
+        const { mode } = this.model.metaData;
         const options = {
             maintainAspectRatio: false,
             scales: this.getScaleOptions(),
-            legend: this.getLegendOptions(),
-            tooltips: this.getTooltipOptions(),
+            plugins: {
+                legend: this.getLegendOptions(),
+                tooltip: this.getTooltipOptions(),
+            },
             elements: this.getElementOptions(),
+            onResize: () => {
+                this.resizeChart(options);
+            },
+            animation: this.getAnimationOptions(),
         };
-        if (!disableLinking && mode !== "line") {
-            options.onClick = this.onGraphClicked.bind(this);
+        if (mode === "line") {
+            options.interaction = {
+                mode: "index",
+                intersect: false,
+            };
+        }
+        if (mode === "pie") {
+            options.radius = "90%";
         }
         return options;
+    }
+
+    /**
+     * Adapt Pie chart layout on mobile
+     * @param {Object} context
+     */
+    resizeChart(context) {
+        const { mode } = this.model.metaData;
+        if (mode === "pie") {
+            if (this.env.isSmall) {
+                context.plugins.legend.position = "bottom";
+                context.plugins.legend.align = "center";
+            } else {
+                context.plugins.legend.position = "right";
+                context.plugins.legend.align = "start";
+            }
+        }
     }
 
     /**
@@ -662,13 +840,10 @@ export class GraphRenderer extends Component {
         if (this.chart) {
             this.chart.destroy();
         }
-        const config = this.getChartConfig();
-        this.chart = new Chart(this.canvasRef.el, config);
-        // To perform its animations, ChartJS will perform each animation
-        // step in the next animation frame. The initial rendering itself
-        // is delayed for consistency. We can avoid this by manually
-        // advancing the animation service.
-        Chart.animationService.advance();
+        if (this.canvasRef.el) {
+            const config = this.getChartConfig();
+            this.chart = new Chart(this.canvasRef.el, config);
+        }
     }
 
     /**
@@ -678,18 +853,20 @@ export class GraphRenderer extends Component {
      * @param {Array} views
      * @param {Object} context
      */
-    openView(domain, views, context) {
+    openView(domain, views, context, newWindow) {
         this.actionService.doAction(
             {
                 context,
                 domain,
                 name: this.model.metaData.title,
                 res_model: this.model.metaData.resModel,
+                search_view_id: this.env.config.views?.find((v) => v[1] === "search"),
                 target: "current",
                 type: "ir.actions.act_window",
                 views,
             },
             {
+                newWindow,
                 viewType: "list",
             }
         );
@@ -697,7 +874,7 @@ export class GraphRenderer extends Component {
     /**
      * @param {string} domain the domain of the clicked area
      */
-    onGraphClickedFinal(domain) {
+    onGraphClickedFinal(domain, isMiddleClick = false) {
         const { context } = this.model.metaData;
 
         Object.keys(context).forEach((x) => {
@@ -714,7 +891,7 @@ export class GraphRenderer extends Component {
             return [views[viewType] || false, viewType];
         }
         const actionViews = [getView("list"), getView("form")];
-        this.openView(domain, actionViews, context);
+        this.openView(domain, actionViews, context, isMiddleClick);
     }
 
     /**
@@ -729,7 +906,9 @@ export class GraphRenderer extends Component {
      * @param {"bar"|"line"|"pie"} mode
      */
     onModeSelected(mode) {
-        this.model.updateMetaData({ mode });
+        if (this.model.metaData.mode != mode) {
+            this.model.updateMetaData({ mode });
+        }
     }
 
     /**
@@ -751,7 +930,3 @@ export class GraphRenderer extends Component {
         this.model.updateMetaData({ cumulated: !cumulated });
     }
 }
-
-GraphRenderer.template = "web.GraphRenderer";
-GraphRenderer.components = { Dropdown, DropdownItem };
-GraphRenderer.props = ["class?", "model", "buttonTemplate"];

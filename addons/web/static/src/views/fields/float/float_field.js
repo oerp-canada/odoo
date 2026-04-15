@@ -1,6 +1,5 @@
-/** @odoo-module **/
-
-import { _lt } from "@web/core/l10n/translation";
+import { useState } from "@web/owl2/utils";
+import { _t } from "@web/core/l10n/translation";
 import { registry } from "@web/core/registry";
 import { useInputField } from "../input_field_hook";
 import { useNumpadDecimal } from "../numpad_decimal_hook";
@@ -18,14 +17,23 @@ export class FloatField extends Component {
         inputType: { type: String, optional: true },
         step: { type: Number, optional: true },
         digits: { type: Array, optional: true },
-        placeholder: { type: String, optional: true },
+        minDigits: {type: Number, optional: true },
+        humanReadable: { type: Boolean, optional: true },
+        decimals: { type: Number, optional: true },
+        trailingZeros: { type: Boolean, optional: true },
     };
     static defaultProps = {
         formatNumber: true,
         inputType: "text",
+        humanReadable: false,
+        decimals: 0,
+        trailingZeros: true,
     };
 
     setup() {
+        this.state = useState({
+            hasFocus: false,
+        });
         this.inputRef = useInputField({
             getValue: () => this.formattedValue,
             refName: "numpadDecimal",
@@ -34,14 +42,20 @@ export class FloatField extends Component {
         useNumpadDecimal();
     }
 
-    parse(value) {
-        return this.props.inputType === "number" ? Number(value) : parseFloat(value);
+    onFocusIn() {
+        this.state.hasFocus = true;
     }
 
-    get digits() {
-        const fieldDigits = this.props.record.fields[this.props.name].digits;
-        return !this.props.digits && Array.isArray(fieldDigits) ? fieldDigits : this.props.digits;
+    onFocusOut() {
+        this.state.hasFocus = false;
     }
+
+    parse(value) {
+        return this.props.inputType === "number"
+            ? Number(value)
+            : parseFloat(value, { allowOperation: true });
+    }
+
     get formattedValue() {
         if (
             !this.props.formatNumber ||
@@ -49,7 +63,21 @@ export class FloatField extends Component {
         ) {
             return this.value;
         }
-        return formatFloat(this.value, { digits: this.digits });
+        const options = {
+            digits: this.props.digits,
+            minDigits: this.props.minDigits,
+            field: this.props.record.fields[this.props.name],
+            trailingZeros: this.props.trailingZeros,
+        };
+        if (this.props.humanReadable && !this.state.hasFocus) {
+            return formatFloat(this.value, {
+                ...options,
+                humanReadable: true,
+                decimals: this.props.decimals,
+            });
+        } else {
+            return formatFloat(this.value, { ...options, humanReadable: false });
+        }
     }
 
     get value() {
@@ -59,33 +87,59 @@ export class FloatField extends Component {
 
 export const floatField = {
     component: FloatField,
-    displayName: _lt("Float"),
+    displayName: _t("Float"),
     supportedOptions: [
         {
-            label: _lt("Format number"),
+            label: _t("Format number"),
             name: "enable_formatting",
             type: "boolean",
-            help: _lt("Format the value according to your language setup - e.g. thousand separators, rounding, etc."),
+            help: _t(
+                "Format the value according to your language setup - e.g. thousand separators, rounding, etc."
+            ),
             default: true,
         },
         {
-            label: _lt("Digits"),
+            label: _t("Digits"),
             name: "digits",
-            type: "string",
+            type: "digits",
         },
         {
-            label: _lt("Type"),
+            label: _t("Minimum Digits"),
+            name: "minDigits",
+            type: "digits",
+        },
+        {
+            label: _t("Type"),
             name: "type",
             type: "string",
         },
         {
-            label: _lt("Step"),
+            label: _t("Step"),
             name: "step",
             type: "number",
         },
+        {
+            label: _t("User-friendly format"),
+            name: "human_readable",
+            type: "boolean",
+            help: _t("Use a human readable format (e.g.: 500G instead of 500,000,000,000)."),
+        },
+        {
+            label: _t("Hide trailing zeros"),
+            name: "hide_trailing_zeros",
+            type: "boolean",
+            help: _t("Hide zeros to the right of the last non-zero digit, e.g. 1.20 becomes 1.2"),
+        },
+        {
+            label: _t("Decimals"),
+            name: "decimals",
+            type: "number",
+            default: 0,
+            help: _t("Use it with the 'User-friendly format' option to customize the formatting."),
+        },
     ],
-    supportedTypes: ["float"],
-    isEmpty: () => false,
+    supportedTypes: ["float", "monetary"],
+    isEmpty: (record, fieldName) => record.data[fieldName] === false,
     extractProps: ({ attrs, options }) => {
         // Sadly, digits param was available as an option and an attr.
         // The option version could be removed with some xml refactoring.
@@ -102,9 +156,12 @@ export const floatField = {
                     ? Boolean(options.enable_formatting)
                     : true,
             inputType: options.type,
+            humanReadable: !!options.human_readable,
             step: options.step,
             digits,
-            placeholder: attrs.placeholder,
+            minDigits: options.min_display_digits,
+            decimals: options.decimals || 0,
+            trailingZeros: !options.hide_trailing_zeros,
         };
     },
 };

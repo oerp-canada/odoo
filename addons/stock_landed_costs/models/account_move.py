@@ -24,14 +24,19 @@ class AccountMove(models.Model):
         """
         self.ensure_one()
         landed_costs_lines = self.line_ids.filtered(lambda line: line.is_landed_costs_line)
+        landed_cost_picking_ids = self.invoice_line_ids.purchase_order_id.picking_ids.filtered(
+            lambda picking: any(move.is_valued for move in picking.move_ids)
+        )
 
-        landed_costs = self.env['stock.landed.cost'].create({
+        sign = -1 if self.move_type in ['in_refund'] else 1
+        landed_costs = self.env['stock.landed.cost'].with_company(self.company_id).create({
             'vendor_bill_id': self.id,
+            'picking_ids': landed_cost_picking_ids.ids,
             'cost_lines': [(0, 0, {
                 'product_id': l.product_id.id,
                 'name': l.product_id.name,
-                'account_id': l.product_id.product_tmpl_id.get_product_accounts()['stock_input'].id,
-                'price_unit': l.currency_id._convert(l.price_subtotal, l.company_currency_id, l.company_id, l.move_id.date),
+                'account_id': l.product_id.product_tmpl_id.get_product_accounts()['expense'].id,
+                'price_unit': sign * l.currency_id._convert(l.price_subtotal, l.company_currency_id, l.company_id, self.invoice_date or fields.Date.context_today(l)),
                 'split_method': l.product_id.split_method_landed_cost or 'equal',
             }) for l in landed_costs_lines],
         })
@@ -40,17 +45,26 @@ class AccountMove(models.Model):
 
     def action_view_landed_costs(self):
         self.ensure_one()
-        action = self.env["ir.actions.actions"]._for_xml_id("stock_landed_costs.action_stock_landed_cost")
-        domain = [('id', 'in', self.landed_costs_ids.ids)]
-        context = dict(self.env.context, default_vendor_bill_id=self.id)
-        views = [(self.env.ref('stock_landed_costs.view_stock_landed_cost_tree2').id, 'tree'), (False, 'form'), (False, 'kanban')]
-        return dict(action, domain=domain, context=context, views=views)
+
+        views = [(False, 'form')] if len(self.landed_costs_ids) == 1 else [
+            (self.env.ref('stock_landed_costs.view_stock_landed_cost_tree2').id, 'list'), (False, 'form'), (False, 'kanban')
+        ]
+        return self.landed_costs_ids.with_context(
+            default_vendor_bill_id=self.id
+        )._get_records_action(name=self.env._("Landed Costs"), views=views)
+
+    def _update_order_line_info(self, product, quantity, uom, **kwargs):
+        price_unit = super()._update_order_line_info(product, quantity, uom, **kwargs)
+        move_line = self.line_ids.filtered(lambda line: line.product_id.id == product.id)
+        if move_line:
+            move_line.is_landed_costs_line = move_line.product_id.landed_cost_ok
+        return price_unit
 
 
 class AccountMoveLine(models.Model):
     _inherit = 'account.move.line'
 
-    product_type = fields.Selection(related='product_id.detailed_type', readonly=True)
+    product_type = fields.Selection(related='product_id.type', readonly=True)
     is_landed_costs_line = fields.Boolean()
 
     @api.onchange('product_id')
@@ -64,10 +78,3 @@ class AccountMoveLine(models.Model):
     def _onchange_is_landed_costs_line(self):
         if self.is_landed_costs_line and self.product_id and self.product_type != 'service':
             self.is_landed_costs_line = False
-
-    def _get_stock_valuation_layers(self, move):
-        layers = super()._get_stock_valuation_layers(move)
-        return layers.filtered(lambda svl: not svl.stock_landed_cost_id)
-
-    def _can_use_stock_accounts(self):
-        return super()._can_use_stock_accounts() or (self.product_id.type == 'service' and self.product_id.landed_cost_ok)

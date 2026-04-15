@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Part of Odoo. See LICENSE file for full copyright and licensing details.
 
 from werkzeug.exceptions import BadRequest
@@ -12,7 +11,7 @@ class IrHttp(models.AbstractModel):
 
     @classmethod
     def _auth_method_calendar(cls):
-        token = request.get_http_params().get('token', '')
+        token = request.httprequest.args.get('token', '')
 
         error_message = False
 

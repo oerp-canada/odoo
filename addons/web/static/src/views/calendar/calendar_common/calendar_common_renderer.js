@@ -1,14 +1,20 @@
-/** @odoo-module **/
-
-import { is24HourFormat } from "@web/core/l10n/dates";
+import { useLayoutEffect, useRef } from "@web/owl2/utils";
+import { browser } from "@web/core/browser/browser";
+import { getLocalYearAndWeek } from "@web/core/l10n/dates";
 import { localization } from "@web/core/l10n/localization";
-import { renderToString } from "@web/core/utils/render";
+import { is24HourFormat } from "@web/core/l10n/time";
+import { useBus } from "@web/core/utils/hooks";
+import { renderToFragment, renderToString } from "@web/core/utils/render";
 import { useDebounced } from "@web/core/utils/timing";
-import { getColor } from "../colors";
-import { useCalendarPopover, useClickHandler, useFullCalendar } from "../hooks";
-import { CalendarCommonPopover } from "./calendar_common_popover";
+import { makeWeekColumn } from "@web/views/calendar/calendar_common/calendar_common_week_column";
+import { CalendarCommonPopover } from "@web/views/calendar/calendar_common/calendar_common_popover";
+import { convertRecordToEvent, getColor } from "@web/views/calendar/utils";
+import { useCalendarPopover } from "@web/views/calendar/hooks/calendar_popover_hook";
+import { useFullCalendar } from "@web/views/calendar/hooks/full_calendar_hook";
+import { useSquareSelection } from "@web/views/calendar/hooks/square_selection_hook";
+import { TOUCH_SELECTION_THRESHOLD } from "@web/views/utils";
 
-import { Component, useEffect } from "@odoo/owl";
+import { Component } from "@odoo/owl";
 
 const SCALE_TO_FC_VIEW = {
     day: "timeGridDay",
@@ -39,110 +45,220 @@ const HOUR_FORMATS = {
     },
 };
 
-export class CalendarCommonRenderer extends Component {
-    setup() {
-        this.fc = useFullCalendar("fullCalendar", this.options);
-        this.click = useClickHandler(this.onClick, this.onDblClick);
-        this.popover = useCalendarPopover(this.constructor.components.Popover);
-        this.onWindowResizeDebounced = useDebounced(this.onWindowResize, 200);
+const { DateTime } = luxon;
 
-        useEffect(() => {
-            this.updateSize();
+export class CalendarCommonRenderer extends Component {
+    static components = {
+        Popover: CalendarCommonPopover,
+    };
+    static template = "web.CalendarCommonRenderer";
+    static eventTemplate = "web.CalendarCommonRenderer.event";
+    static headerTemplate = "web.CalendarCommonRendererHeader";
+    static props = {
+        model: Object,
+        initialDate: Object,
+        isDisabled: { type: Boolean, optional: true },
+        isWeekendVisible: { type: Boolean, optional: true },
+        createRecord: Function,
+        editRecord: Function,
+        deleteRecord: Function,
+        setDate: { type: Function, optional: true },
+        callbackRecorder: Object,
+        onSquareSelection: Function,
+        cleanSquareSelection: Function,
+    };
+
+    setup() {
+        this.fc = useFullCalendar(
+            "fullCalendar",
+            this.props.isDisabled ? this.disabledOptions : this.interactiveOptions
+        );
+        this.clickTimeoutId = null;
+        this.popover = useCalendarPopover(this.constructor.components.Popover);
+        this.timeFormat = is24HourFormat() ? "HH:mm" : "hh:mm a";
+        this.dayHeaderListeners = {};
+        useBus(this.props.model.bus, "SCROLL_TO_CURRENT_HOUR", () =>
+            this.fc.api.scrollToTime(`${luxon.DateTime.local().hour - 2}:00:00`)
+        );
+
+        const fullCalendarRenderDebounced = useDebounced(() => this.fc.api.updateSize(), 100, {
+            immediate: true,
+            trailing: true,
         });
+        const fullCalendarResizeObserver = new ResizeObserver(fullCalendarRenderDebounced);
+        useLayoutEffect(
+            (el) => {
+                fullCalendarResizeObserver.observe(el);
+                return () => fullCalendarResizeObserver.unobserve(el);
+            },
+            () => [this.fc.el]
+        );
+
+        this.ref = useRef("fullCalendar");
+        useSquareSelection();
     }
 
-    get options() {
+    get disabledOptions() {
         return {
-            allDaySlot: this.props.model.hasAllDaySlot,
-            allDayText: this.env._t("All day"),
-            columnHeaderFormat: this.env.isSmall
-                ? SHORT_SCALE_TO_HEADER_FORMAT[this.props.model.scale]
-                : SCALE_TO_HEADER_FORMAT[this.props.model.scale],
-            dateClick: this.onDateClick,
-            dayRender: this.onDayRender,
-            defaultDate: this.props.model.date.toISO(),
-            defaultView: SCALE_TO_FC_VIEW[this.props.model.scale],
-            dir: localization.direction,
+            ...this.options,
+            editable: false,
+            selectable: false,
+            eventStartEditable: false,
+            eventDurationEditable: false,
+            droppable: false,
+        };
+    }
+
+    get interactiveOptions() {
+        return {
+            ...this.options,
+            dayMaxEventRows: this.props.model.eventLimit,
+            dragRevertDuration: 0,
             droppable: true,
             editable: this.props.model.canEdit,
             eventClick: this.onEventClick,
             eventDragStart: this.onEventDragStart,
+            eventDragStop: this.onEventDragStop,
             eventDrop: this.onEventDrop,
-            eventLimit: this.props.model.eventLimit,
-            eventLimitClick: this.onEventLimitClick,
-            eventMouseEnter: this.onEventMouseEnter,
-            eventMouseLeave: this.onEventMouseLeave,
-            eventRender: this.onEventRender,
+            eventClassNames: this.eventClassNames,
+            eventDidMount: this.onEventDidMount,
+            eventContent: this.onEventContent,
+            eventReceive: this.onEventScheduled,
             eventResizableFromStart: true,
             eventResize: this.onEventResize,
             eventResizeStart: this.onEventResizeStart,
-            events: (_, successCb) => successCb(this.mapRecordsToEvents()),
-            firstDay: this.props.model.firstDayOfWeek % 7,
-            header: false,
-            height: "parent",
-            locale: luxon.Settings.defaultLocale,
-            longPressDelay: 500,
-            navLinks: false,
-            nowIndicator: true,
-            plugins: ["dayGrid", "interaction", "timeGrid", "luxon"],
+            longPressDelay: TOUCH_SELECTION_THRESHOLD,
+            moreLinkClick: this.onEventLimitClick,
             select: this.onSelect,
             selectAllow: this.isSelectionAllowed,
             selectMinDistance: 5, // needed to not trigger select when click
             selectMirror: true,
-            selectable: this.props.model.canCreate,
-            slotLabelFormat: is24HourFormat() ? HOUR_FORMATS[24] : HOUR_FORMATS[12],
-            snapDuration: { minutes: 15 },
-            timeZone: luxon.Settings.defaultZone.name,
+            selectable: !this.props.model.hasMultiCreate && this.props.model.canCreate,
             unselectAuto: false,
-            weekLabel:
-                this.props.model.scale === "month" && this.env.isSmall ? "" : this.env._t("Week"),
-            weekNumberCalculation: "ISO",
-            weekNumbers: true,
-            weekNumbersWithinDays: !this.env.isSmall,
-            windowResize: this.onWindowResizeDebounced,
         };
     }
 
+    get options() {
+        return {
+            allDaySlot: true,
+            allDayContent: "",
+            dayHeaderFormat: this.env.isSmall
+                ? SHORT_SCALE_TO_HEADER_FORMAT[this.props.model.scale]
+                : SCALE_TO_HEADER_FORMAT[this.props.model.scale],
+            dayHeaderDidMount: this.onDayHeaderDidMount,
+            dayHeaderWillUnmount: this.onDayHeaderWillUnmount,
+            dateClick: this.handleDateClick,
+            dayCellClassNames: this.getDayCellClassNames,
+            events: (_, successCb) => successCb(this.mapRecordsToEvents()),
+            initialDate: this.props.initialDate.toISO(),
+            initialView: SCALE_TO_FC_VIEW[this.props.model.scale],
+            direction: localization.direction,
+            firstDay: this.props.model.firstDayOfWeek,
+            headerToolbar: false,
+            height: "100%",
+            locale: luxon.Settings.defaultLocale,
+            navLinks: false,
+            nowIndicator: true,
+            nowIndicatorContent: {
+                html: `
+                    <div class="o_calendar_time_indicator_now"></div>
+                `,
+            },
+            showNonCurrentDates: this.props.model.monthOverflow,
+            slotLabelFormat: is24HourFormat() ? HOUR_FORMATS[24] : HOUR_FORMATS[12],
+            snapDuration: { minutes: 15 },
+            timeZone: luxon.Settings.defaultZone.name,
+            weekNumberFormat: {
+                week: this.props.model.scale === "month" || this.env.isSmall ? "numeric" : "long",
+            },
+            weekends: this.props.isWeekendVisible,
+            weekNumberCalculation: (date) => getLocalYearAndWeek(date).week,
+            weekNumbers: true,
+            dayHeaderContent: this.getHeaderHtml,
+            eventDisplay: "block", // Restore old render in daygrid view for single-day timed events
+            eventTimeFormat: is24HourFormat() ? HOUR_FORMATS[24] : HOUR_FORMATS[12],
+            viewDidMount: this.viewDidMount,
+            moreLinkDidMount: this.wrapMoreLink,
+            fixedWeekCount: false,
+        };
+    }
+
+    get customOptions() {
+        return {
+            weekNumbersWithinDays: !this.env.isSmall,
+        };
+    }
+
+    viewDidMount({ el, view }) {
+        const showWeek = view.calendar.currentData.options.weekNumbers;
+        const weekText = view.calendar.currentData.options.weekText;
+        const weekColumn = !this.customOptions.weekNumbersWithinDays;
+        if (showWeek && weekColumn) {
+            makeWeekColumn({ el, weekText });
+        }
+    }
+
     getStartTime(record) {
-        const timeFormat = is24HourFormat() ? "HH:mm" : "hh:mm a";
-        return record.start.toFormat(timeFormat);
+        return record.start.toFormat(this.timeFormat);
     }
 
     getEndTime(record) {
-        const timeFormat = is24HourFormat() ? "HH:mm" : "hh:mm a";
-        return record.end.toFormat(timeFormat);
+        return record.end.toFormat(this.timeFormat);
+    }
+    /**
+     * Register an event listener, to create all day events when the day header is clicked in week/day view
+     * @param info Object passed from the fullcalendar library. See https://fullcalendar.io/docs/day-header-render-hooks
+     */
+    onDayHeaderDidMount(info) {
+        if (["day", "week"].includes(this.props.model.scale)) {
+            const date = DateTime.fromJSDate(info.date);
+            const handler = (event) => {
+                this.onDateClick({
+                    date: info.date,
+                    dateStr: date.toISODate(),
+                    allDay: true,
+                    jsEvent: event,
+                });
+            };
+            this.dayHeaderListeners[date] = handler;
+            info.el.addEventListener("click", handler);
+        }
+    }
+
+    onDayHeaderWillUnmount(info) {
+        if (["day", "week"].includes(this.props.model.scale)) {
+            const date = DateTime.fromJSDate(info.date);
+            const customListener = this.dayHeaderListeners[date];
+            if (customListener) {
+                info.el.removeEventListener("click", customListener);
+                delete this.dayHeaderListeners[date];
+            }
+        }
     }
 
     computeEventSelector(event) {
         return `[data-event-id="${event.id}"]`;
     }
+    handleDateClick(info) {
+        if (!info.jsEvent || info.jsEvent.defaultPrevented) {
+            // The event might be fired after a touch pointerup without any jsEvent
+            return;
+        }
+        if (!this.props.model.hasMultiCreate) {
+            this.onDateClick(info);
+        }
+    }
     highlightEvent(event, className) {
-        for (const el of this.fc.el.querySelectorAll(this.computeEventSelector(event))) {
+        for (const el of this.fc.api.el.querySelectorAll(this.computeEventSelector(event))) {
             el.classList.add(className);
         }
     }
-    unhighlightEvent(event, className) {
-        for (const el of this.fc.el.querySelectorAll(this.computeEventSelector(event))) {
-            el.classList.remove(className);
-        }
-    }
     mapRecordsToEvents() {
-        return Object.values(this.props.model.records).map((r) => this.convertRecordToEvent(r));
+        const { records } = this.props.model.data;
+        return Object.values(records).map((r) => this.convertRecordToEvent(r));
     }
     convertRecordToEvent(record) {
-        const allDay = record.isAllDay || record.end.diff(record.start, "hours").hours >= 24;
-        return {
-            id: record.id,
-            title: record.title,
-            start: record.start.toISO(),
-            end:
-                ["week", "month"].includes(this.props.model.scale) &&
-                (record.isAllDay ||
-                    (allDay && record.end.toMillis() !== record.end.startOf("day").toMillis()))
-                    ? record.end.plus({ days: 1 }).toISO()
-                    : record.end.toISO(),
-            allDay: allDay,
-        };
+        return convertRecordToEvent(record);
     }
     getPopoverProps(record) {
         return {
@@ -154,88 +270,120 @@ export class CalendarCommonRenderer extends Component {
         };
     }
     openPopover(target, record) {
+        const color = getColor(record.colorIndex);
         this.popover.open(
             target,
             this.getPopoverProps(record),
-            `o_cw_popover o_calendar_color_${record.colorIndex}`
+            `o_cw_popover card o_calendar_color_${typeof color === "number" ? color : 0}`
         );
-    }
-    updateSize() {
-        const height = window.innerHeight - this.fc.el.getBoundingClientRect().top;
-        this.fc.el.style.height = `${height}px`;
-        this.fc.api.updateSize();
     }
 
     onClick(info) {
         this.openPopover(info.el, this.props.model.records[info.event.id]);
-        this.highlightEvent(info.event, "o_cw_custom_highlight");
     }
     onDateClick(info) {
-        if (this.env.isSmall && this.props.model.scale === "month") {
-            this.props.model.load({
-                date: luxon.DateTime.fromISO(info.dateStr),
-                scale: "day",
-            });
-            return;
-        }
         this.props.createRecord(this.fcEventToRecord(info));
     }
-    onDayRender(info) {
+    getDayCellClassNames(info) {
         const date = luxon.DateTime.fromJSDate(info.date).toISODate();
         if (this.props.model.unusualDays.includes(date)) {
-            info.el.classList.add("o_calendar_disabled");
+            return ["o_calendar_disabled"];
         }
+        return [];
     }
     onDblClick(info) {
         this.props.editRecord(this.props.model.records[info.event.id]);
     }
     onEventClick(info) {
-        this.click(info);
+        if (this.clickTimeoutId) {
+            this.onDblClick(info);
+            browser.clearTimeout(this.clickTimeoutId);
+            this.clickTimeoutId = null;
+        } else {
+            this.clickTimeoutId = browser.setTimeout(() => {
+                this.onClick(info);
+                this.clickTimeoutId = null;
+            }, 250);
+        }
     }
-    onEventRender(info) {
-        const { el, event } = info;
-        el.dataset.eventId = event.id;
-        el.classList.add("o_event", "py-0");
+    onEventContent(arg) {
+        const { event } = arg;
+        if (event.start && event.end) {
+            const dateFmt = (date) => luxon.DateTime.fromJSDate(date).toFormat(this.timeFormat);
+            arg.timeText = `${dateFmt(event.start)} - ${dateFmt(event.end)}`;
+        }
         const record = this.props.model.records[event.id];
-
         if (record) {
             // This is needed in order to give the possibility to change the event template.
-            const injectedContentStr = renderToString(this.constructor.eventTemplate, {
+            const fragment = renderToFragment(this.constructor.eventTemplate, {
                 ...record,
                 startTime: this.getStartTime(record),
                 endTime: this.getEndTime(record),
             });
-            const domParser = new DOMParser();
-            const { children } = domParser.parseFromString(injectedContentStr, "text/html").body;
-            el.querySelector(".fc-content").replaceWith(...children);
+            return { domNodes: fragment.children };
+        }
+        return true;
+    }
+    eventClassNames({ el, event }) {
+        const classesToAdd = [];
+        classesToAdd.push("o_event");
+        const record = this.props.model.records[event.id];
 
+        if (record) {
             const color = getColor(record.colorIndex);
-            if (typeof color === "string") {
-                el.style.backgroundColor = color;
-            } else if (typeof color === "number") {
-                el.classList.add(`o_calendar_color_${color}`);
-            } else {
-                el.classList.add("o_calendar_color_0");
+            if (typeof color === "number") {
+                classesToAdd.push(`o_calendar_color_${color}`);
+            } else if (typeof color !== "string") {
+                classesToAdd.push("o_calendar_color_0");
             }
 
             if (record.isHatched) {
-                el.classList.add("o_event_hatched");
+                classesToAdd.push("o_event_hatched");
             }
             if (record.isStriked) {
-                el.classList.add("o_event_striked");
+                classesToAdd.push("o_event_striked");
             }
             if (record.duration <= 0.25) {
-                el.classList.add("o_event_oneliner");
+                classesToAdd.push("o_event_oneliner");
+            }
+            if (DateTime.now() >= record.end) {
+                classesToAdd.push("o_past_event");
+            }
+
+            if (!record.isAllDay && !record.isTimeHidden && record.isMonth) {
+                classesToAdd.push("o_event_dot");
+            } else if (record.isAllDay) {
+                classesToAdd.push("o_event_allday");
             }
         }
+        return classesToAdd;
+    }
+    onEventDidMount({ el, event }) {
+        el.dataset.eventId = event.id;
+        const record = this.props.model.records[event.id];
 
-        if (!el.querySelector(".fc-bg")) {
-            const bg = document.createElement("div");
-            bg.classList.add("fc-bg");
-            el.appendChild(bg);
+        if (record) {
+            if (record.isMonth) {
+                el.querySelector(".fc-event-main").classList.add(
+                    "d-flex",
+                    "gap-1",
+                    "text-truncate"
+                );
+            }
+            const color = getColor(record.colorIndex);
+            if (typeof color === "string") {
+                el.style.backgroundColor = color;
+            }
+
+            if (!el.classList.contains("fc-bg")) {
+                const bg = document.createElement("div");
+                bg.classList.add("fc-bg");
+                el.appendChild(bg);
+            }
         }
     }
     async onSelect(info) {
+        info.jsEvent.preventDefault();
         this.popover.close();
         await this.props.createRecord(this.fcEventToRecord(info));
         this.fc.api.unselect();
@@ -243,13 +391,39 @@ export class CalendarCommonRenderer extends Component {
     isSelectionAllowed(event) {
         return event.end.getDate() === event.start.getDate() || event.allDay;
     }
+    onEventDragStop(info) {
+        this.ref.el.classList.remove("o_interacting", "o_grabbing");
+        if (!this.env.isSmall) {
+            const x = info.jsEvent.clientX;
+            const y = info.jsEvent.clientY;
+            const dropTarget = document.elementFromPoint(x, y);
+            if (dropTarget && dropTarget.closest(".o_calendar_unschedule_zone")) {
+                info.event.remove();
+                this.props.model.unscheduleEvent(Number(info.event.id));
+            }
+            this.props.model.bus.trigger("CALENDAR_EVENT_DRAG", { dragging: false });
+        }
+    }
     onEventDrop(info) {
         this.fc.api.unselect();
-        this.props.model.updateRecord(this.fcEventToRecord(info.event), { moved: true });
+        this.props.model.updateRecord(this.fcEventToRecord(info.event)).catch((e) => {
+            info.revert();
+            throw e;
+        });
     }
     onEventResize(info) {
         this.fc.api.unselect();
-        this.props.model.updateRecord(this.fcEventToRecord(info.event));
+        this.props.model.updateRecord(this.fcEventToRecord(info.event)).catch((e) => {
+            info.revert();
+            throw e;
+        });
+    }
+    async onEventScheduled(info) {
+        const original = info.event;
+        const date = DateTime.fromJSDate(original.start);
+        const resId = Number(original.id);
+        await this.props.model.scheduleEvent(resId, date);
+        original.remove();
     }
     fcEventToRecord(event) {
         const { id, allDay, date, start, end } = event;
@@ -264,25 +438,35 @@ export class CalendarCommonRenderer extends Component {
             }
         }
         if (id) {
-            res.id = this.props.model.records[id].id;
+            const existingRecord = this.props.model.records[id];
+            if (this.props.model.scale === "month") {
+                res.start = res.start?.set({
+                    hour: existingRecord.start.hour,
+                    minute: existingRecord.start.minute,
+                });
+                if (existingRecord.end) {
+                    res.end = res.end?.set({
+                        hour: existingRecord.end.hour,
+                        minute: existingRecord.end.minute,
+                    });
+                }
+            }
+            res.id = existingRecord.id;
         }
         return res;
     }
-    onEventMouseEnter(info) {
-        this.highlightEvent(info.event, "o_cw_custom_highlight");
-    }
-    onEventMouseLeave(info) {
-        if (!info.event.id) {
-            return;
-        }
-        this.unhighlightEvent(info.event, "o_cw_custom_highlight");
-    }
     onEventDragStart(info) {
+        this.props.cleanSquareSelection();
         info.el.classList.add(info.view.type);
         this.fc.api.unselect();
         this.highlightEvent(info.event, "o_cw_custom_highlight");
+        this.ref.el.classList.add("o_interacting", "o_grabbing");
+        if (!this.env.isSmall) {
+            this.props.model.bus.trigger("CALENDAR_EVENT_DRAG", { dragging: true });
+        }
     }
     onEventResizeStart(info) {
+        this.props.cleanSquareSelection();
         this.fc.api.unselect();
         this.highlightEvent(info.event, "o_cw_custom_highlight");
     }
@@ -293,9 +477,31 @@ export class CalendarCommonRenderer extends Component {
     onWindowResize() {
         this.updateSize();
     }
+
+    getHeaderHtml({ date }) {
+        return {
+            html: renderToString(this.constructor.headerTemplate, this.headerTemplateProps(date)),
+        };
+    }
+
+    headerTemplateProps(date) {
+        const scale = this.props.model.scale;
+        // when rendering months, FullCalendar uses a date w/out tz
+        // so use UTC instead of local tz when converting to DateTime
+        const options = scale === "month" ? { zone: "UTC" } : {};
+        const { weekdayShort, weekdayLong, day } = DateTime.fromJSDate(date, options);
+        return {
+            weekdayShort,
+            weekdayLong,
+            day,
+            scale,
+        };
+    }
+
+    wrapMoreLink({ el }) {
+        const wrapper = document.createElement("div");
+        wrapper.classList.add("fc-more-cell");
+        el.parentNode.insertBefore(wrapper, el);
+        wrapper.appendChild(el);
+    }
 }
-CalendarCommonRenderer.components = {
-    Popover: CalendarCommonPopover,
-};
-CalendarCommonRenderer.template = "web.CalendarCommonRenderer";
-CalendarCommonRenderer.eventTemplate = "web.CalendarCommonRenderer.event";

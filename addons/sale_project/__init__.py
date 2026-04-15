@@ -4,6 +4,7 @@
 from . import models
 from . import controllers
 from . import report
+from . import wizard
 
 def _set_allow_billable_in_project(env):
     Project = env['project.project']
@@ -16,3 +17,11 @@ def _set_allow_billable_in_project(env):
     )[0]
     projects += non_billable_projects
     projects.allow_billable = True
+
+
+def uninstall_hook(env):
+    actions = env['ir.embedded.actions'].search([
+        ('parent_res_model', '=', 'project.project'),
+        ('python_method', 'in', ['action_open_project_invoices', 'action_view_sos'])
+    ])
+    actions.domain = [(0, '=', 1)]

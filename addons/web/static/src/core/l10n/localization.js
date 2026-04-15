@@ -1,5 +1,3 @@
-/** @odoo-module **/
-
 /**
  * @typedef Localization
  * @property {string} dateFormat
@@ -11,14 +9,8 @@
  * @property {boolean} multiLang
  * @property {string} thousandsSep
  * @property {number} weekStart
+ * @property {string} code
  */
-
-/**
- * @type {any}
- */
-const notReadyError = new Error(
-    "Localization parameters not ready yet. Maybe add 'localization' to your dependencies?"
-);
 
 /**
  * This is the main object holding user specific data about the localization. Its basically
@@ -31,14 +23,18 @@ const notReadyError = new Error(
  *   const dateFormat = localization.dateFormat; // dateFormat isn't set yet
  * @type {Localization}
  */
-export const localization = {
-    dateFormat: notReadyError,
-    dateTimeFormat: notReadyError,
-    timeFormat: notReadyError,
-    decimalPoint: notReadyError,
-    direction: notReadyError,
-    grouping: notReadyError,
-    multiLang: notReadyError,
-    thousandsSep: notReadyError,
-    weekStart: notReadyError,
-};
+export const localization = new Proxy(
+    {},
+    {
+        get: (target, p) => {
+            // "then" can be called implicitly if the object is returned in an
+            // `async` function, so we need to allow it.
+            if (p in target || p === "then") {
+                return Reflect.get(target, p);
+            }
+            throw new Error(
+                `could not access localization parameter "${p}": parameters are not ready yet. Maybe add 'localization' to your dependencies?`
+            );
+        },
+    }
+);

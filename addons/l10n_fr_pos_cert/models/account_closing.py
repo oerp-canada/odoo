@@ -1,15 +1,14 @@
-# -*- coding: utf-8 -*-
 # Part of Odoo. See LICENSE file for full copyright and licensing details.
 from datetime import datetime, timedelta
 
 from odoo import models, api, fields
-from odoo.fields import Datetime as FieldDateTime
+from odoo.fields import Datetime as FieldDateTime, Domain
+from dateutil.relativedelta import relativedelta
 from odoo.tools.translate import _
 from odoo.exceptions import UserError
-from odoo.osv.expression import AND
 
 
-class AccountClosing(models.Model):
+class AccountSaleClosing(models.Model):
     """
     This object holds an interval total and a grand total of the accounts of type receivable for a company,
     as well as the last account_move that has been counted in a previous object
@@ -41,8 +40,9 @@ class AccountClosing(models.Model):
             JOIN account_journal j ON aml.journal_id = j.id
             JOIN account_account acc ON acc.id = aml.account_id
             JOIN account_move m ON m.id = aml.move_id
+            JOIN res_company move_company ON move_company.id = m.company_id
             WHERE j.type = 'sale'
-                AND aml.company_id = %(company_id)s
+                AND SPLIT_PART(move_company.parent_path, '/', 1)::int = %(company_id)s
                 AND m.state = 'posted'
                 AND acc.account_type = 'asset_receivable' '''
 
@@ -86,12 +86,12 @@ class AccountClosing(models.Model):
             date_start = previous_closing.create_date
             cumulative_total += previous_closing.cumulative_total
 
-        domain = [('company_id', '=', company.id), ('state', 'in', ('paid', 'done', 'invoiced'))]
+        domain = Domain('company_id', '=', company.id) & Domain('state', 'in', ('paid', 'done'))
         if first_order.l10n_fr_secure_sequence_number is not False and first_order.l10n_fr_secure_sequence_number is not None:
-            domain = AND([domain, [('l10n_fr_secure_sequence_number', '>', first_order.l10n_fr_secure_sequence_number)]])
+            domain &= Domain('l10n_fr_secure_sequence_number', '>', first_order.l10n_fr_secure_sequence_number)
         elif date_start:
-            #the first time we compute the closing, we consider only from the installation of the module
-            domain = AND([domain, [('date_order', '>=', date_start)]])
+            # the first time we compute the closing, we consider only from the installation of the module
+            domain &= Domain('date_order', '>=', date_start)
 
         orders = self.env['pos.order'].search(domain, order='date_order desc')
 
@@ -128,13 +128,10 @@ class AccountClosing(models.Model):
             interval_from = date_stop - timedelta(days=1)
             name_interval = _('Daily Closing')
         elif frequency == 'monthly':
-            month_target = date_stop.month > 1 and date_stop.month - 1 or 12
-            year_target = month_target < 12 and date_stop.year or date_stop.year - 1
-            interval_from = date_stop.replace(year=year_target, month=month_target)
+            interval_from = date_stop - relativedelta(months=1)
             name_interval = _('Monthly Closing')
         elif frequency == 'annually':
-            year_target = date_stop.year - 1
-            interval_from = date_stop.replace(year=year_target)
+            interval_from = date_stop - relativedelta(years=1)
             name_interval = _('Annual Closing')
 
         return {'interval_from': FieldDateTime.to_string(interval_from),

@@ -2,6 +2,7 @@
 # Part of Odoo. See LICENSE file for full copyright and licensing details.
 
 from odoo.tests import common
+from odoo.tools import mute_logger
 
 KARMA = {
     'ask': 5, 'ans': 10,
@@ -41,22 +42,30 @@ class TestForumCommon(common.TransactionCase):
             'login': 'Armande',
             'email': 'armande.employee@example.com',
             'karma': 0,
-            'groups_id': [(6, 0, [group_employee_id])]
+            'group_ids': [(6, 0, [group_employee_id])]
+        })
+        cls.user_employee_2 = cls.env['res.users'].create({
+            'name': 'Merlin Employee',
+            'login': 'Merlin',
+            'email': 'merlin.employee@example.com',
+            'karma': KARMA['ask'],
+            'group_ids': [(6, 0, [cls.env.ref('base.group_user').id])],
         })
         cls.user_portal = TestUsersEnv.create({
             'name': 'Beatrice Portal',
             'login': 'Beatrice',
             'email': 'beatrice.employee@example.com',
             'karma': 0,
-            'groups_id': [(6, 0, [group_portal_id])]
+            'group_ids': [(6, 0, [group_portal_id])]
         })
         cls.user_public = TestUsersEnv.create({
             'name': 'Cedric Public',
             'login': 'Cedric',
             'email': 'cedric.employee@example.com',
             'karma': 0,
-            'groups_id': [(6, 0, [group_public_id])]
+            'group_ids': [(6, 0, [group_public_id])]
         })
+        cls.user_admin = cls.env.ref('base.user_admin')
 
         # Test forum
         cls.forum = Forum.create({
@@ -104,3 +113,14 @@ class TestForumCommon(common.TransactionCase):
         cls.website_2 = cls.env['website'].create({
             'name': 'Second Website on same company',
         })
+
+    @mute_logger("odoo.models.unlink")
+    def _activate_tags_for_counts(self):
+        self.env['forum.tag'].search([]).unlink()
+        self.tags = self.env['forum.tag'].create(
+            [
+                {'forum_id': forum_id.id, 'name': f'Test Tag {tag_idx}'}
+                for forum_id in self.forum | self.base_forum
+                for tag_idx in range(1, 8)
+            ]
+        )

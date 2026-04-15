@@ -6,7 +6,9 @@ import itertools
 import os
 
 from . import lint_case
+from odoo.tests import tagged
 
+from odoo.tools.misc import file_open
 
 class L10nChecker(lint_case.NodeVisitor):
     def matches_tagged(self, node):
@@ -39,12 +41,13 @@ class L10nChecker(lint_case.NodeVisitor):
         return []
 
 
+@tagged('at_install', '-post_install')  # LEGACY at_install
 class L10nLinter(lint_case.LintCase):
     def test_l10n_test_tags(self):
         checker = L10nChecker()
         rs = []
         for path in self.iter_module_files('**/l10n_*/tests/*.py'):
-            with open(path, 'rb') as f:
+            with file_open(path, 'rb') as f:
                 t = ast.parse(f.read(), path)
             rs.extend(zip(itertools.repeat(os.path.relpath(path)), checker.visit(t)))
 

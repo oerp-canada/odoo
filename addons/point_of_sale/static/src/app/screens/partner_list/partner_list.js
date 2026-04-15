@@ -1,212 +1,227 @@
-/** @odoo-module */
-
-import { registry } from "@web/core/registry";
-import { debounce } from "@web/core/utils/timing";
-import { useService } from "@web/core/utils/hooks";
-
+import { useLayoutEffect, useState } from "@web/owl2/utils";
+import { _t } from "@web/core/l10n/translation";
+import { useChildRef, useService } from "@web/core/utils/hooks";
+import { Dialog } from "@web/core/dialog/dialog";
 import { PartnerLine } from "@point_of_sale/app/screens/partner_list/partner_line/partner_line";
-import { PartnerDetailsEdit } from "@point_of_sale/app/screens/partner_list/partner_editor/partner_editor";
-import { usePos } from "@point_of_sale/app/store/pos_hook";
-import { Component, onWillUnmount, useRef, useState } from "@odoo/owl";
-import { sprintf } from "@web/core/utils/strings";
+import { usePos } from "@point_of_sale/app/hooks/pos_hook";
+import { Input } from "@point_of_sale/app/components/inputs/input/input";
+import { Component } from "@odoo/owl";
+import { useHotkey } from "@web/core/hotkeys/hotkey_hook";
+import { normalize } from "@web/core/l10n/utils";
+import { debounce } from "@web/core/utils/timing";
 
-/**
- * Render this screen using `showTempScreen` to select partner.
- * When the shown screen is confirmed ('Set Customer' or 'Deselect Customer'
- * button is clicked), the call to `showTempScreen` resolves to the
- * selected partner. E.g.
- *
- * ```js
- * const { confirmed, payload: selectedPartner } = await showTempScreen('PartnerListScreen');
- * if (confirmed) {
- *   // do something with the selectedPartner
- * }
- * ```
- *
- * @props partner - originally selected partner
- */
-export class PartnerListScreen extends Component {
-    static components = { PartnerDetailsEdit, PartnerLine };
-    static template = "point_of_sale.PartnerListScreen";
+export class PartnerList extends Component {
+    static components = { PartnerLine, Dialog, Input };
+    static template = "point_of_sale.PartnerList";
+    static props = {
+        partner: {
+            optional: true,
+            type: [{ value: null }, Object],
+        },
+        getPayload: { type: Function },
+        close: { type: Function },
+    };
 
     setup() {
         this.pos = usePos();
-        this.ui = useState(useService("ui"));
-        this.orm = useService("orm");
-        this.notification = useService("pos_notification");
-        this.searchWordInputRef = useRef("search-word-input-partner");
-
+        this.ui = useService("ui");
+        this.notification = useService("notification");
+        this.dialog = useService("dialog");
+        this.modalRef = useChildRef();
+        this.modalContent = null;
         this.state = useState({
-            query: null,
-            selectedPartner: this.props.partner,
-            detailIsShown: this.props.editModeProps ? true : false,
-            editModeProps: {
-                partner: this.props.editModeProps ? this.props.partner : null,
-                missingFields: this.props.missingFields ? this.props.missingFields : null,
-            },
-            previousQuery: "",
-            currentOffset: 0,
+            initialPartners: this.pos.models["res.partner"].filter((p) => {
+                const par = p.property_account_receivable_id;
+                return !par || par.non_trade !== true;
+            }),
+            loadedPartners: [],
+            query: "",
+            loading: false,
         });
-        this.updatePartnerList = debounce(this.updatePartnerList, 70);
-        onWillUnmount(this.updatePartnerList.cancel);
-        this.partnerEditor = {}; // create an imperative handle for PartnerDetailsEdit
+        this.loadedPartnerIds = new Set(this.state.initialPartners.map((p) => p.id));
+        useHotkey("enter", () => this.onEnter(), {
+            bypassEditableProtection: true,
+        });
+        this.onScroll = debounce(this.onScroll.bind(this), 200);
+
+        useLayoutEffect(
+            () => {
+                if (this.state.loading || !this.modalRef.el) {
+                    return;
+                } else if (!this.modalContent) {
+                    this.modalContent = this.modalRef.el.querySelector(".modal-body");
+                }
+
+                const scrollMethod = this.onScroll.bind(this);
+                this.modalContent.addEventListener("scroll", scrollMethod);
+                return () => {
+                    this.modalContent.removeEventListener("scroll", scrollMethod);
+                };
+            },
+            () => [this.modalRef.el]
+        );
     }
-    // Lifecycle hooks
-    back(force = false) {
-        if (this.state.detailIsShown && !force) {
-            this.state.detailIsShown = false;
-        } else {
-            this.props.resolve({ confirmed: false, payload: false });
-            this.pos.closeTempScreen();
+    get globalState() {
+        return this.pos.screenState.partnerList;
+    }
+    onScroll(ev) {
+        if (this.state.loading || !this.modalContent) {
+            return;
+        }
+        const height = this.modalContent.offsetHeight;
+        const scrollTop = this.modalContent.scrollTop;
+        const scrollHeight = this.modalContent.scrollHeight;
+
+        if (scrollTop + height >= scrollHeight * 0.8) {
+            this.getNewPartners();
         }
     }
-
-    goToOrders() {
-        this.back(true);
-        const partner = this.state.editModeProps.partner;
-        const partnerHasActiveOrders = this.pos
-            .get_order_list()
-            .some((order) => order.partner?.id === partner.id);
-        const ui = {
-            searchDetails: {
-                fieldName: "PARTNER",
-                searchTerm: partner.name,
-            },
-            filter: partnerHasActiveOrders ? "" : "SYNCED",
-        };
-        this.pos.showScreen("TicketScreen", { ui });
-    }
-
-    confirm() {
-        this.props.resolve({ confirmed: true, payload: this.state.selectedPartner });
-        this.pos.closeTempScreen();
-    }
-    activateEditMode() {
-        this.state.detailIsShown = true;
-    }
-    // Getters
-
-    get currentOrder() {
-        return this.pos.get_order();
-    }
-
-    get partners() {
-        let res;
-        if (this.state.query && this.state.query.trim() !== "") {
-            res = this.pos.db.search_partner(this.state.query.trim());
-        } else {
-            res = this.pos.db.get_partners_sorted(1000);
+    async editPartner(p = false) {
+        if (this.state.query) {
+            this.pos.partnerSearchContext = this.state.query;
         }
-        res.sort(function (a, b) {
-            return (a.name || "").localeCompare(b.name || "");
-        });
-        // the selected partner (if any) is displayed at the top of the list
-        if (this.state.selectedPartner) {
-            const indexOfSelectedPartner = res.findIndex(
-                (partner) => partner.id === this.state.selectedPartner.id
-            );
-            if (indexOfSelectedPartner !== -1) {
-                res.splice(indexOfSelectedPartner, 1);
-                res.unshift(this.state.selectedPartner);
+        try {
+            const partner = await this.pos.editPartner(p);
+            if (partner) {
+                this.clickPartner(partner);
             }
+        } finally {
+            delete this.pos.partnerSearchContext;
         }
-        return res;
     }
-    get isBalanceDisplayed() {
-        return false;
-    }
-    get partnerLink() {
-        return `/web#model=res.partner&id=${this.state.editModeProps.partner.id}`;
-    }
-
-    // Methods
-
-    async _onPressEnterKey() {
+    async onEnter() {
         if (!this.state.query) {
             return;
         }
         const result = await this.searchPartner();
         if (result.length > 0) {
             this.notification.add(
-                sprintf(
-                    this.env._t('%s customer(s) found for "%s".'),
-                    result.length,
-                    this.state.query
-                ),
+                _t('%s customer(s) found for "%s".', result.length, this.state.query),
                 3000
             );
         } else {
-            this.notification.add(
-                sprintf(this.env._t('No more customer found for "%s".'), this.state.query),
-                3000
-            );
+            this.notification.add(_t('No more customer found for "%s".', this.state.query));
         }
     }
-    _clearSearch() {
-        this.searchWordInputRef.el.value = "";
-        this.state.query = "";
+
+    goToOrders(partner) {
+        this.clickPartner(this.props.partner);
+        const partnerHasActiveOrders = this.pos
+            .getOpenOrders()
+            .some((order) => order.partner?.id === partner.id);
+        const stateOverride = {
+            search: {
+                fieldName: "PARTNER",
+                searchTerm: partner.name,
+                partnerId: partner.id,
+            },
+            filter: partnerHasActiveOrders ? "" : "SYNCED",
+        };
+        this.pos.navigate("TicketScreen", { stateOverride });
     }
-    // We declare this event handler as a debounce function in
-    // order to lower its trigger rate.
-    async updatePartnerList(event) {
-        this.state.query = event.target.value;
+
+    confirm() {
+        this.props.resolve({ confirmed: true, payload: this.state.selectedPartner });
+        this.pos.closeTempScreen();
+    }
+    getPartners(partners) {
+        const searchWord = normalize(this.state.query?.trim() ?? "");
+        const exactMatches = partners.filter((partner) => partner.exactMatch(searchWord));
+
+        if (exactMatches.length > 0) {
+            return exactMatches;
+        }
+        const numberString = searchWord.replace(/[+\s()-]/g, "");
+        const isSearchWordNumber = /^[0-9]+$/.test(numberString);
+
+        const patternBase = isSearchWordNumber ? numberString : searchWord;
+        // Build a RegExp that mimics SQL ILIKE behavior:
+        // 1) Escape all RegExp metacharacters so user input is treated literally
+        //    (e.g. '.', '+', '[', ']' should not change regex meaning or cause errors)
+        // 2) Replace SQL wildcard '%' with RegExp wildcard '.*'
+        const regex = new RegExp(
+            patternBase
+                .replace(/[.*+?^${}()|[\]\\]/g, "\\$&") // escape regex special characters
+                .replace(/%/g, ".*") // convert SQL wildcard to regex wildcard
+        );
+
+        const availablePartners = searchWord
+            ? partners.filter((p) => regex.test(normalize(p.searchString)))
+            : partners
+                  .slice(0, 1000)
+                  .toSorted((a, b) =>
+                      this.props.partner?.id === a.id
+                          ? -1
+                          : this.props.partner?.id === b.id
+                          ? 1
+                          : (a.name || "").localeCompare(b.name || "")
+                  );
+
+        return availablePartners;
+    }
+    get isBalanceDisplayed() {
+        return false;
     }
     clickPartner(partner) {
-        if (this.state.selectedPartner && this.state.selectedPartner.id === partner.id) {
-            this.state.selectedPartner = null;
-        } else {
-            this.state.selectedPartner = partner;
-        }
-        this.confirm();
-    }
-    editPartner(partner) {
-        this.state.editModeProps.partner = partner;
-        this.activateEditMode();
-    }
-    createPartner() {
-        // initialize the edit screen with default details about country & state
-        const { country_id, state_id } = this.pos.company;
-        this.state.editModeProps.partner = { country_id, state_id };
-        this.activateEditMode();
-    }
-    async saveChanges(processedChanges) {
-        const partnerId = await this.orm.call("res.partner", "create_from_ui", [processedChanges]);
-        await this.pos.load_new_partners();
-        this.state.selectedPartner = this.pos.db.get_partner_by_id(partnerId);
-        this.confirm();
+        this.props.getPayload(partner);
+        this.state.query = "";
+        delete this.pos.partnerSearchContext;
+        this.props.close();
     }
     async searchPartner() {
-        if (this.state.previousQuery != this.state.query) {
-            this.state.currentOffset = 0;
-        }
-        const result = await this.getNewPartners();
-        this.pos.addPartners(result);
-        if (this.state.previousQuery == this.state.query) {
-            this.state.currentOffset += result.length;
-        } else {
-            this.state.previousQuery = this.state.query;
-            this.state.currentOffset = result.length;
-        }
-        return result;
+        const partner = await this.getNewPartners();
+        return partner;
     }
     async getNewPartners() {
         let domain = [];
-        const limit = 30;
+        const offset = this.globalState.offsetBySearch[this.state.query] || 0;
+        if (offset > this.loadedPartnerIds.size) {
+            return [];
+        }
         if (this.state.query) {
+            const search_fields = [
+                "name",
+                "parent_name",
+                "phone_mobile_search",
+                "email",
+                "barcode",
+                "street",
+                "zip",
+                "city",
+                "state_id",
+                "country_id",
+                "vat",
+            ];
             domain = [
-                "|",
-                ["name", "ilike", this.state.query + "%"],
-                ["parent_name", "ilike", this.state.query + "%"],
+                ...Array(search_fields.length - 1).fill("|"),
+                ...search_fields.map((field) => [field, "ilike", this.state.query + "%"]),
             ];
         }
-        // FIXME POSREF timeout
-        const result = await this.orm.silent.call(
-            "pos.session",
-            "get_pos_ui_res_partner_by_params",
-            [[odoo.pos_session_id], { domain, limit: limit, offset: this.state.currentOffset }]
-        );
-        return result;
+
+        try {
+            this.state.loading = true;
+
+            const result = await this.pos.data.callRelated("res.partner", "get_new_partner", [
+                this.pos.config.id,
+                domain,
+                offset,
+            ]);
+
+            this.globalState.offsetBySearch[this.state.query] =
+                offset + (result["res.partner"].length || 100);
+
+            for (const partner of result["res.partner"]) {
+                if (!this.loadedPartnerIds.has(partner.id)) {
+                    this.loadedPartnerIds.add(partner.id);
+                    this.state.loadedPartners.push(partner);
+                }
+            }
+
+            return result["res.partner"];
+        } catch {
+            return [];
+        } finally {
+            this.state.loading = false;
+        }
     }
 }
-
-registry.category("pos_screens").add("PartnerListScreen", PartnerListScreen);

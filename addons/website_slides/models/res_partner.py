@@ -1,8 +1,7 @@
-# -*- coding: utf-8 -*-
 # Part of Odoo. See LICENSE file for full copyright and licensing details.
 
 from odoo import api, fields, models, _
-from odoo.osv import expression
+from odoo.fields import Domain
 
 
 class ResPartner(models.Model):
@@ -13,10 +12,6 @@ class ResPartner(models.Model):
         compute='_compute_slide_channel_values',
         search='_search_slide_channel_ids',
         groups="website_slides.group_website_slides_officer")
-    slide_channel_all_ids = fields.Many2many(
-        'slide.channel', 'slide_channel_partner', 'partner_id', 'channel_id',
-        string='eLearning Courses and Invitations',
-        groups="website_slides.group_website_slides_officer", copy=False)
     slide_channel_completed_ids = fields.One2many(
         'slide.channel', string='Completed Courses',
         compute='_compute_slide_channel_values',
@@ -46,11 +41,11 @@ class ResPartner(models.Model):
             partner.slide_channel_count = len(slide_channel_ids)
 
     def _search_slide_channel_completed_ids(self, operator, value):
-        cp_done = self.env['slide.channel.partner'].sudo().search([
+        subquery = self.env['slide.channel.partner'].sudo()._search([
             ('channel_id', operator, value),
             ('member_status', '=', 'completed')
         ])
-        return [('id', 'in', cp_done.partner_id.ids)]
+        return [('id', 'in', subquery.subselect('partner_id'))]
 
     def _search_slide_channel_ids(self, operator, value):
         cp_enrolled = self.env['slide.channel.partner'].search([
@@ -78,9 +73,9 @@ class ResPartner(models.Model):
         action['display_name'] = _('Courses')
         action['domain'] = [('member_status', '!=', 'invited')]
         if len(self) == 1 and self.is_company:
-            action['domain'] = expression.AND([action['domain'], [('partner_id', 'in', self.child_ids.ids)]])
+            action['domain'] = Domain.AND([action['domain'], [('partner_id', 'in', self.child_ids.ids)]])
         elif len(self) == 1:
             action['context'] = {'search_default_partner_id': self.id}
         else:
-            action['domain'] = expression.AND([action['domain'], [('partner_id', 'in', self.ids)]])
+            action['domain'] = Domain.AND([action['domain'], [('partner_id', 'in', self.ids)]])
         return action

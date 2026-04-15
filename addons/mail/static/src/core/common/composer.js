@@ -1,114 +1,162 @@
-/* @odoo-module */
-
-import { AttachmentList } from "@mail/core/common/attachment_list";
-import { useAttachmentUploader } from "@mail/core/common/attachment_uploader_hook";
-import { useDropzone } from "@mail/core/common/dropzone_hook";
-import { EmojiPicker, useEmojiPicker } from "@web/core/emoji_picker/emoji_picker";
-import { MessageConfirmDialog } from "@mail/core/common/message_confirm_dialog";
-import { useMessaging, useStore } from "@mail/core/common/messaging_hook";
-import { NavigableList } from "@mail/core/common/navigable_list";
-import { useSuggestion } from "@mail/core/common/suggestion_hook";
-import { escapeAndCompactTextContent } from "@mail/utils/common/format";
-import { useSelection } from "@mail/utils/common/hooks";
-import { isDragSourceExternalFile } from "@mail/utils/common/misc";
-import { isEventHandled, markEventHandled } from "@web/core/utils/misc";
-
 import {
-    Component,
-    markup,
-    onMounted,
+    reactive,
     useChildSubEnv,
-    useEffect,
     useExternalListener,
+    useLayoutEffect,
     useRef,
     useState,
-} from "@odoo/owl";
+} from "@web/owl2/utils";
+import { AttachmentList } from "@mail/core/common/attachment_list";
+import { useAttachmentUploader } from "@mail/core/common/attachment_uploader_hook";
+import { useCustomDropzone } from "@web/core/dropzone/dropzone_hook";
+import { MailAttachmentDropzone } from "@mail/core/common/mail_attachment_dropzone";
+import { NavigableList } from "@mail/core/common/navigable_list";
+import { MAIL_PLUGINS, MAIL_SMALL_UI_PLUGINS } from "@mail/core/common/plugin/plugin_sets";
+import { useSuggestion } from "@mail/core/common/suggestion_hook";
+import { useSelection } from "@mail/utils/common/hooks";
+import { isDragSourceExternalFile } from "@mail/utils/common/misc";
+import { Wysiwyg } from "@html_editor/wysiwyg";
 
+import { rpc } from "@web/core/network/rpc";
+import { isEventHandled, markEventHandled } from "@web/core/utils/misc";
 import { browser } from "@web/core/browser/browser";
+import { useDebounced } from "@web/core/utils/timing";
+
+import { Component, markup, onMounted, onWillUnmount, toRaw, EventBus } from "@odoo/owl";
+
 import { _t } from "@web/core/l10n/translation";
 import { useService } from "@web/core/utils/hooks";
-import { sprintf } from "@web/core/utils/strings";
+import {
+    htmlFormatList,
+    htmlJoin,
+    isHtmlEmpty,
+    isMarkup,
+    setElementContent,
+} from "@web/core/utils/html";
 import { FileUploader } from "@web/views/fields/file_handler";
+import { isEmail } from "@web/core/utils/strings";
+import {
+    isDisplayStandalone,
+    isIOS,
+    isMobileOS,
+    isMacOS,
+} from "@web/core/browser/feature_detection";
+import { Dropdown } from "@web/core/dropdown/dropdown";
+import { DropdownItem } from "@web/core/dropdown/dropdown_item";
+import { useComposerActions } from "@mail/core/common/composer_actions";
+import { ActionList } from "@mail/core/common/action_list";
+import { closestElement, lastLeaf } from "@html_editor/utils/dom_traversal";
+import { rightPos } from "@html_editor/utils/position";
+import { ConfirmationDialog } from "@web/core/confirmation_dialog/confirmation_dialog";
+import { usePopover } from "@web/core/popover/popover_hook";
 
 const EDIT_CLICK_TYPE = {
     CANCEL: "cancel",
     SAVE: "save",
 };
+export const MENTION_AMOUNT_WARNING = 50;
+
+class FullComposerRecoveryPopover extends Component {
+    static props = ["composer", "onClickFullRecover", "onClickTextRecover", "close?"];
+    static template = "mail.FullComposerRecoveryPopover";
+
+    onClickFullRecover() {
+        this.props.onClickFullRecover();
+        this.props.close();
+    }
+
+    onClickTextRecover() {
+        this.props.onClickTextRecover();
+        this.props.close();
+    }
+}
 
 /**
  * @typedef {Object} Props
- * @property {import("@mail/core/common/composer_model").Composer} composer
- * @property {import("@mail/utils/common/hooks").MessageToReplyTo} messageToReplyTo
- * @property {import("@mail/utils/common/hooks").MessageEdition} [messageEdition]
+ * @property {import("models").Composer} composer
  * @property {'compact'|'normal'|'extended'} [mode] default: 'normal'
+ * @property {'message'|'note'|false} [type] default: false
  * @property {string} [placeholder]
  * @property {string} [className]
  * @property {function} [onDiscardCallback]
  * @property {function} [onPostCallback]
- * @property {Component} [messageComponent]
  * @property {number} [autofocus]
  * @property {import("@web/core/utils/hooks").Ref} [dropzoneRef]
  * @extends {Component<Props, Env>}
  */
 export class Composer extends Component {
     static components = {
+        ActionList,
         AttachmentList,
-        EmojiPicker,
+        Dropdown,
+        DropdownItem,
         FileUploader,
         NavigableList,
+        Wysiwyg,
     };
     static defaultProps = {
         mode: "normal",
         className: "",
         sidebar: true,
+        showFullComposer: true,
+        allowUpload: true,
     };
     static props = [
         "composer",
         "autofocus?",
-        "messageToReplyTo?",
+        "onCloseFullComposerCallback?",
         "onDiscardCallback?",
         "onPostCallback?",
         "mode?",
         "placeholder?",
         "dropzoneRef?",
-        "messageEdition?",
-        "messageComponent?",
         "className?",
         "sidebar?",
+        "type?",
+        "showFullComposer?",
+        "allowUpload?",
+        "disabled?",
     ];
     static template = "mail.Composer";
 
     setup() {
-        this.SEND_KEYBIND_TO_SEND = markup(
-            sprintf(_t("<samp>%(send_keybind)s</samp><i> to send</i>"), {
-                send_keybind: this.sendKeybind,
-            })
+        super.setup();
+        this.dialogService = useService("dialog");
+        /** @type {import("@html_editor/editor").Editor} */
+        this.editor = undefined;
+        this.isMobileOS = isMobileOS();
+        this.isIosPwa = isIOS() && isDisplayStandalone();
+        this.store = useService("mail.store");
+        this.composerActions = useComposerActions(this.composerActionsParams);
+        this.EDIT_CLICK_TYPE = EDIT_CLICK_TYPE;
+        this.OR_PRESS_SEND_KEYBIND = _t("or press %(send_keybind)s", {
+            send_keybind: htmlJoin(
+                this.sendKeybinds.map((key) => markup`<samp>${key}</samp>`),
+                " + "
+            ),
+        });
+        this.attachmentUploader = useAttachmentUploader(
+            this.thread ?? this.props.composer.message.thread,
+            { composer: this.props.composer }
         );
-        this.KEYBOARD = {
-            NONE: "None",
-            EMOJI: "Emoji",
-        };
-        this.messaging = useMessaging();
-        this.store = useStore();
-        if (this.allowUpload) {
-            this.attachmentUploader = useAttachmentUploader(
-                this.props.messageToReplyTo?.message?.originThread ??
-                    this.props.composer.thread ??
-                    this.props.composer.message.originThread,
-                { composer: this.props.composer }
-            );
-        }
-        this.messageService = useState(useService("mail.message"));
-        /** @type {import("@mail/core/common/thread_service").ThreadService} */
-        this.threadService = useService("mail.thread");
-        this.ui = useState(useService("ui"));
+        this.ui = useService("ui");
+        this.composerService = useService("mail.composer");
         this.ref = useRef("textarea");
         this.fakeTextarea = useRef("fakeTextarea");
+        this.inputContainerRef = useRef("input-container");
+        this.pickerContainerRef = useRef("picker-container");
         this.state = useState({
-            autofocus: 0,
             active: true,
-            keyboard: this.KEYBOARD.NONE,
+            isFullComposerOpen: false,
         });
+        this.root = useRef("root");
+        this.fullComposerRecoveryPopover = usePopover(FullComposerRecoveryPopover, {
+            closeOnClickAway: false,
+            closeOnEscape: false,
+            position: "top-end",
+            popoverClass: "dropdown-menu bg-view overflow-visible o-rounded-bubble mx-1",
+        });
+        this.fullComposerBus = new EventBus();
         this.selection = useSelection({
             refName: "textarea",
             model: this.props.composer.selection,
@@ -117,79 +165,92 @@ export class Composer extends Component {
                 await new Promise(setTimeout);
                 return (
                     !this.isEventTrusted(ev) ||
-                    isEventHandled(ev, "sidebar.openThread") ||
+                    isEventHandled(ev, "sidebar.openChannel") ||
                     isEventHandled(ev, "emoji.selectEmoji") ||
                     isEventHandled(ev, "Composer.onClickAddEmoji") ||
                     isEventHandled(ev, "composer.clickOnAddAttachment") ||
-                    isEventHandled(ev, "composer.selectSuggestion")
+                    isEventHandled(ev, "composer.selectSuggestion") ||
+                    isEventHandled(ev, "composer.clickInsertCannedResponse")
                 );
             },
         });
-        this.suggestion = this.store.user ? useSuggestion() : undefined;
+        this.suggestion = useSuggestion();
         this.markEventHandled = markEventHandled;
-        if (this.props.dropzoneRef && this.allowUpload) {
-            useDropzone(
-                this.props.dropzoneRef,
-                (ev) => {
-                    if (isDragSourceExternalFile(ev.dataTransfer)) {
-                        for (const file of ev.dataTransfer.files) {
-                            this.attachmentUploader.uploadFile(file);
-                        }
-                    }
-                },
-                "o-mail-Composer-dropzone"
-            );
-        }
-        if (this.props.messageEdition) {
-            this.props.messageEdition.composerOfThread = this;
-        }
-        useChildSubEnv({
-            inComposer: true,
+        this.onDropFile = this.onDropFile.bind(this);
+        this.saveContentDebounced = useDebounced(this.saveContent, 5000, {
+            execBeforeUnmount: true,
         });
-        if (!this.ui.isSmall) {
-            useEmojiPicker(useRef("emoji-button"), {
-                onSelect: (str) => this.addEmoji(str),
-                onClose: () => this.state.autofocus++,
-            });
-        }
+        this.updateFromEditor = false;
+        useExternalListener(window, "beforeunload", this.saveContent.bind(this));
         useExternalListener(
-            browser,
+            window,
             "click",
-            async (ev) => {
-                if (this.state.keyboard === this.KEYBOARD.NONE) {
-                    return;
-                }
-                await new Promise(setTimeout); // let bubbling to catch marked event handled
-                if (!this.isEventHandledByPicker(ev)) {
-                    this.state.keyboard = this.KEYBOARD.NONE;
+            (ev) => {
+                if (
+                    this.ui.isSmall &&
+                    this.composerActions.activePicker &&
+                    this.pickerContainerRef.el &&
+                    ev.target !== this.pickerContainerRef.el &&
+                    !this.pickerContainerRef.el.contains(ev.target)
+                ) {
+                    this.composerActions.activePicker.close?.();
                 }
             },
-            true
+            { capture: true }
         );
-        useEffect(
+        if (this.props.dropzoneRef) {
+            useCustomDropzone(
+                this.props.dropzoneRef,
+                MailAttachmentDropzone,
+                {
+                    extraClass: "o-mail-Composer-dropzone",
+                    onDrop: this.onDropFile,
+                },
+                () =>
+                    this.props.allowUpload &&
+                    (!this.store.rtc.isFullscreen || this.env.inMeetingView)
+            );
+        }
+        useChildSubEnv({ inComposer: true });
+        useLayoutEffect(
             (focus) => {
                 if (focus && this.ref.el) {
                     this.selection.restore();
                     this.ref.el.focus();
                 }
-            },
-            () => [this.props.autofocus + this.state.autofocus, this.props.placeholder]
-        );
-        useEffect(
-            (rThread, cThread) => {
-                if (cThread && rThread === cThread) {
-                    this.state.autofocus++;
+                if (focus && this.editor) {
+                    this.editor.shared.selection.focusEditable();
+                    this.editor.shared.selection.selectAroundNonEditable();
                 }
             },
-            () => [this.props.messageToReplyTo?.thread, this.props.composer.thread]
+            () => [this.props.autofocus + this.props.composer.autofocus, this.props.placeholder]
         );
-        useEffect(
+        useLayoutEffect(
             () => {
-                this.ref.el.style.height = this.fakeTextarea.el.scrollHeight + "px";
+                if (this.props.composer.replyToMessage) {
+                    this.props.composer.autofocus++;
+                }
             },
-            () => [this.props.composer.textInputContent, this.ref.el]
+            () => [this.props.composer.replyToMessage]
         );
-        useEffect(
+        useLayoutEffect(
+            () => {
+                if (this.fakeTextarea.el?.scrollHeight) {
+                    let wasEmpty = false;
+                    if (!this.fakeTextarea.el.value) {
+                        wasEmpty = true;
+                        this.fakeTextarea.el.value = "0";
+                    }
+                    this.ref.el.style.height = this.fakeTextarea.el.scrollHeight + "px";
+                    if (wasEmpty) {
+                        this.fakeTextarea.el.value = "";
+                    }
+                }
+                this.saveContentDebounced();
+            },
+            () => [this.props.composer.composerText, this.ref.el]
+        );
+        useLayoutEffect(
             () => {
                 if (!this.props.composer.forceCursorMove) {
                     return;
@@ -199,89 +260,224 @@ export class Composer extends Component {
             },
             () => [this.props.composer.forceCursorMove]
         );
+        useLayoutEffect(
+            (isFullComposerOpen, restoredFromFullComposer, fullComposerButtonEl) => {
+                if (isFullComposerOpen || !restoredFromFullComposer || !fullComposerButtonEl) {
+                    this.fullComposerRecoveryPopover.close();
+                    return;
+                }
+                if (this.fullComposerRecoveryPopover.isOpen) {
+                    return;
+                }
+                this.fullComposerRecoveryPopover.open(fullComposerButtonEl, {
+                    composer: this.props.composer,
+                    onClickFullRecover: () => {
+                        this.onClickFullComposer();
+                        this.props.composer.restoredFromFullComposer = false;
+                    },
+                    onClickTextRecover: () => {
+                        this.props.composer.restoredFromFullComposer = false;
+                    },
+                });
+            },
+            () => [
+                this.state.isFullComposerOpen,
+                this.props.composer.restoredFromFullComposer,
+                this.root.el?.querySelector("button[name='open-full-composer']"),
+            ]
+        );
         onMounted(() => {
-            this.ref.el.scrollTo({ top: 0, behavior: "instant" });
+            this.ref.el?.scrollTo({ top: 0, behavior: "instant" });
+            if (!this.props.composer.composerText) {
+                this.restoreContent();
+            }
         });
+        onWillUnmount(() => {
+            this.props.composer.isFocused = false;
+        });
+        const composerProxy = reactive(this.props.composer, () => {
+            if (this.status === 2 /* DESTROYED */) {
+                return;
+            }
+            const composerHtml = composerProxy.composerHtml;
+            if (this.updateFromEditor) {
+                return;
+            }
+            if (!this.editor?.editable) {
+                return;
+            }
+            setElementContent(this.editor.editable, composerHtml);
+            this.setEditorCursorEnd();
+            this.editor.shared.history.addStep();
+        });
+        void composerProxy.composerHtml; // start observing
+    }
+
+    setEditorCursorEnd() {
+        const lastNode = lastLeaf(this.editor?.editable);
+        if (!lastNode) {
+            return;
+        }
+        const nonEditableAncestor = closestElement(lastNode, (el) => !el.isContentEditable);
+        if (nonEditableAncestor && this.editor.editable.contains(nonEditableAncestor)) {
+            const [anchorNode, anchorOffset] = rightPos(nonEditableAncestor);
+            this.editor.shared.selection.setSelection({ anchorNode, anchorOffset });
+        } else {
+            this.editor.shared.selection.setCursorEnd(lastNode);
+        }
+        this.editor.shared.selection.selectAroundNonEditable();
+    }
+
+    get areAllActionsDisabled() {
+        return this.props.disabled;
+    }
+
+    get composerActionsParams() {
+        return { composer: () => this.props.composer };
+    }
+
+    /** @param {import("@mail/core/common/action").PartitionedActions} partitionedActions */
+    computeMoreActions(partitionedActions) {
+        if (this.props.mode === "extended" || partitionedActions.other.length === 0) {
+            this.moreActions = undefined;
+            return;
+        }
+        this.moreActions = this.composerActions.more(this.composerActionsParams, {
+            actions: partitionedActions.other,
+            disabledCondition: this.areAllActionsDisabled,
+            dropdownPosition: "top-start",
+            icon: "fa fa-plus-circle",
+            name: _t("More Actions"),
+        });
+    }
+
+    get isMultiUpload() {
+        return true;
     }
 
     get placeholder() {
         if (this.props.placeholder) {
             return this.props.placeholder;
         }
-        if (this.thread) {
-            if (this.thread.type === "channel") {
-                return sprintf(_t("Message #%(thread name)s…"), {
-                    "thread name": this.thread.displayName,
-                });
+        if (this.thread?.channel) {
+            if (this.thread.channel.channel_type === "channel") {
+                const channelName = this.thread.channel.displayName;
+                if (this.thread.channel.parent_channel_id) {
+                    return _t('Message "%(subChannelName)s"', {
+                        subChannelName: channelName,
+                    });
+                }
+                return _t("Message #%(channelName)s…", { channelName });
             }
-            return sprintf(_t("Message %(thread name)s…"), {
-                "thread name": this.thread.displayName,
+            return _t("Message %(thread name)s…", {
+                "thread name": this.thread.channel.displayName,
             });
         }
         return "";
     }
 
+    get wysiwygConfig() {
+        return {
+            content: this.props.composer.composerHtml,
+            placeholder: this.placeholder,
+            Plugins: this.ui.isSmall ? MAIL_SMALL_UI_PLUGINS : MAIL_PLUGINS,
+            composerPluginDependencies: {
+                onBeforePaste: (selection, ev) => this.onPaste(ev),
+                onFocusin: this.onFocusin.bind(this),
+                onFocusout: this.onFocusout.bind(this),
+                onInput: this.onInput.bind(this),
+                onKeydown: this.onKeydown.bind(this),
+            },
+            classList: ["o-mail-Composer-html"],
+            onChange: () => this.onChangeWysiwygContent(),
+            onEditorReady: () => {
+                this.setEditorCursorEnd();
+                this.editor.shared.history.addStep();
+            },
+        };
+    }
+
     onClickCancelOrSaveEditText(ev) {
-        if (this.props.composer.message && ev.target.dataset?.type === EDIT_CLICK_TYPE.CANCEL) {
+        const composer = toRaw(this.props.composer);
+        if (composer.message && ev.target.dataset?.type === EDIT_CLICK_TYPE.CANCEL) {
             this.props.onDiscardCallback(ev);
         }
-        if (this.props.composer.message && ev.target.dataset?.type === EDIT_CLICK_TYPE.SAVE) {
+        if (composer.message && ev.target.dataset?.type === EDIT_CLICK_TYPE.SAVE) {
             this.editMessage(ev);
         }
     }
 
+    get compact() {
+        return this.props.mode === "compact";
+    }
+
+    get normal() {
+        return this.props.mode === "normal";
+    }
+
+    get extended() {
+        return this.props.mode === "extended";
+    }
+
     get CANCEL_OR_SAVE_EDIT_TEXT() {
-        return markup(
-            sprintf(
-                _t(
-                    "<samp>%(cancel_keybind)s</samp><i> to <a href='#' data-type='%(cancel_type)s'>cancel</a></i>, <samp>%(save_keybind)s</samp><i> to <a href='#' data-type='%(save_type)s'>save</a></i>"
-                ),
-                {
-                    cancel_keybind: _t("Escape"),
-                    cancel_type: EDIT_CLICK_TYPE.CANCEL,
-                    save_keybind: this.sendKeybind,
-                    save_type: EDIT_CLICK_TYPE.SAVE,
-                }
-            )
-        );
+        const tags = {
+            open_samp: markup`<samp>`,
+            close_samp: markup`</samp>`,
+            open_em: markup`<em>`,
+            close_em: markup`</em>`,
+            open_cancel: markup`<button class="btn btn-link fst-italic p-0 align-baseline" data-type="${EDIT_CLICK_TYPE.CANCEL}">`,
+            close_cancel: markup`</button>`,
+            open_save: markup`<button class="btn btn-link fst-italic p-0 align-baseline" data-type="${EDIT_CLICK_TYPE.SAVE}">`,
+            close_save: markup`</button>`,
+        };
+        return this.env.inChatter
+            ? _t(
+                  "Press %(open_samp)sESC%(close_samp)s %(open_em)sto %(open_cancel)scancel%(close_cancel)s%(close_em)s, %(open_samp)sCTRL-Enter%(close_samp)s %(open_em)sto %(open_save)ssave%(close_save)s%(close_em)s",
+                  tags
+              )
+            : _t(
+                  "Press %(open_samp)sESC%(close_samp)s %(open_em)sto %(open_cancel)scancel%(close_cancel)s%(close_em)s, %(open_samp)sEnter%(close_samp)s %(open_em)sto %(open_save)ssave%(close_save)s%(close_em)s",
+                  tags
+              );
     }
 
     get SEND_TEXT() {
-        return this.props.composer.type === "note" ? _t("Log") : _t("Send");
+        if (this.props.composer.message) {
+            return _t("Save editing");
+        }
+        return this.props.type === "note" ? _t("Log") : _t("Send");
     }
 
-    get sendKeybind() {
-        return this.props.mode === "extended" ? _t("CTRL-Enter") : _t("Enter");
+    get sendKeybinds() {
+        const modifierKey = isMacOS() ? _t("CMD") : _t("CTRL");
+        return this.env.inChatter ? [modifierKey, _t("Enter")] : [_t("Enter")];
     }
 
-    /**
-     * @param {Event} ev
-     * @returns {boolean}
-     */
-    isEventHandledByPicker(ev) {
-        return (
-            isEventHandled(ev, "Composer.onClickAddEmoji") ||
-            isEventHandled(ev, "EmojiPicker.onClick")
-        );
+    get showComposerAvatar() {
+        return !this.compact && this.props.sidebar;
     }
 
     get thread() {
-        return this.props.composer.thread ?? null;
+        return this.props.composer.targetThread;
     }
 
     get allowUpload() {
-        return true;
+        return this.props.allowUpload;
     }
 
     get message() {
         return this.props.composer.message ?? null;
     }
 
+    get extraData() {
+        return this.thread.rpcParams;
+    }
+
     get isSendButtonDisabled() {
         const attachments = this.props.composer.attachments;
         return (
             !this.state.active ||
-            (!this.props.composer.textInputContent && attachments.length === 0) ||
+            (isHtmlEmpty(this.props.composer.composerHtml) && attachments.length === 0) ||
             attachments.some(({ uploading }) => Boolean(uploading))
         );
     }
@@ -292,74 +488,115 @@ export class Composer extends Component {
 
     get navigableListProps() {
         const props = {
-            anchorRef: this.ref.el,
-            position: this.thread?.type === "chatter" ? "bottom-fit" : "top-fit",
-            placeholder: _t("Loading"),
+            anchorRef: this.inputContainerRef.el,
+            position: this.env.inChatter ? "bottom-fit" : "top-fit",
             onSelect: (ev, option) => {
                 this.suggestion.insert(option);
                 markEventHandled(ev, "composer.selectSuggestion");
             },
+            isLoading: !!this.suggestion.search.term && this.suggestion.state.isFetching,
             options: [],
         };
         if (!this.hasSuggestions) {
             return props;
         }
-        const suggestions = Array(
-            ...this.suggestion.state.items.mainSuggestions,
-            ...this.suggestion.state.items.extraSuggestions
-        );
+        const suggestions = this.suggestion.state.items.suggestions;
         switch (this.suggestion.state.items.type) {
             case "Partner":
                 return {
                     ...props,
                     optionTemplate: "mail.Composer.suggestionPartner",
                     options: suggestions.map((suggestion) => {
-                        return {
-                            label: suggestion.name,
-                            partner: suggestion,
-                            classList: "o-mail-Composer-suggestion",
-                        };
+                        if (suggestion.isSpecial) {
+                            return {
+                                ...suggestion,
+                                group: 1,
+                                optionTemplate: "mail.Composer.suggestionSpecial",
+                                classList: "o-mail-Composer-suggestion",
+                            };
+                        } else if (suggestion.Model.getName() === "res.role") {
+                            return {
+                                label: suggestion.name,
+                                role: suggestion,
+                                thread: this.thread,
+                                optionTemplate: "mail.Composer.suggestionRole",
+                                classList: "o-mail-Composer-suggestion",
+                            };
+                        } else {
+                            return {
+                                label: this.thread?.getPersonaName(suggestion) ?? suggestion.name,
+                                thread: this.thread,
+                                partner: suggestion,
+                                classList: "o-mail-Composer-suggestion",
+                            };
+                        }
                     }),
                 };
-            case "Thread":
+            case "discuss.channel":
                 return {
                     ...props,
-                    optionTemplate: "mail.Composer.suggestionThread",
-                    options: suggestions.map((suggestion) => {
-                        return {
-                            label: suggestion.displayName,
-                            thread: suggestion,
-                            classList: "o-mail-Composer-suggestion",
-                        };
-                    }),
+                    optionTemplate: "mail.Composer.suggestionChannel",
+                    options: suggestions.map((suggestion) => ({
+                        label: suggestion.fullNameWithParent,
+                        channel: suggestion,
+                        classList: "o-mail-Composer-suggestion",
+                    })),
                 };
             case "ChannelCommand":
                 return {
                     ...props,
                     optionTemplate: "mail.Composer.suggestionChannelCommand",
-                    options: suggestions.map((suggestion) => {
-                        return {
-                            label: suggestion.name,
-                            help: suggestion.help,
-                            classList: "o-mail-Composer-suggestion",
-                        };
-                    }),
+                    options: suggestions.map((suggestion) => ({
+                        label: suggestion.name,
+                        help: suggestion.help,
+                        classList: "o-mail-Composer-suggestion",
+                    })),
                 };
-            case "CannedResponse":
+            case "mail.canned.response":
                 return {
                     ...props,
                     optionTemplate: "mail.Composer.suggestionCannedResponse",
-                    options: suggestions.map((suggestion) => {
-                        return {
-                            cannedResponse: suggestion,
-                            name: suggestion.name,
-                            label: suggestion.substitution,
-                            classList: "o-mail-Composer-suggestion",
-                        };
-                    }),
+                    options: suggestions.map((suggestion) => ({
+                        cannedResponse: suggestion,
+                        label: suggestion.substitution,
+                        source: suggestion.source,
+                        title: suggestion.substitution,
+                        classList: "o-mail-Composer-suggestion",
+                    })),
+                };
+            case "emoji":
+                return {
+                    ...props,
+                    optionTemplate: "mail.Composer.suggestionEmoji",
+                    options: suggestions.map((suggestion) => ({
+                        emoji: suggestion,
+                        label: suggestion.codepoints,
+                    })),
                 };
             default:
                 return props;
+        }
+    }
+
+    onDropFile(ev) {
+        if (isDragSourceExternalFile(ev.dataTransfer)) {
+            for (const file of ev.dataTransfer.files) {
+                this.attachmentUploader.uploadFile(file);
+            }
+        }
+    }
+
+    onCloseFullComposerCallback(isDiscard) {
+        if (this.props.onCloseFullComposerCallback) {
+            this.props.onCloseFullComposerCallback(isDiscard);
+        } else {
+            this.thread?.fetchNewMessages();
+        }
+    }
+
+    onInput(ev) {
+        if (!this.props.composer.isDirty) {
+            this.props.composer.isDirty = true;
         }
     }
 
@@ -383,12 +620,13 @@ export class Composer extends Component {
     }
 
     onKeydown(ev) {
+        const composer = toRaw(this.props.composer);
         switch (ev.key) {
             case "ArrowUp":
-                if (this.props.messageEdition && this.props.composer.textInputContent === "") {
-                    const messageToEdit = this.props.composer.thread.lastEditableMessageOfSelf;
+                if (!this.env.inChatter && composer.composerText === "" && composer.thread) {
+                    const messageToEdit = composer.thread.lastEditableMessageOfSelf;
                     if (messageToEdit) {
-                        this.props.messageEdition.editingMessage = messageToEdit;
+                        messageToEdit.enterEditMode(this.props.composer.thread);
                     }
                 }
                 break;
@@ -397,12 +635,16 @@ export class Composer extends Component {
                     ev.preventDefault();
                     return;
                 }
-                const shouldPost = this.props.mode === "extended" ? ev.ctrlKey : !ev.shiftKey;
+                if (this.isMobileOS || ev.isComposing) {
+                    return;
+                }
+                const modKey = isMacOS() ? ev.metaKey : ev.ctrlKey;
+                const shouldPost = this.env.inChatter ? modKey : !ev.shiftKey;
                 if (!shouldPost) {
                     return;
                 }
                 ev.preventDefault(); // to prevent useless return
-                if (this.props.composer.message) {
+                if (composer.message) {
                     this.editMessage();
                 } else {
                     this.sendMessage();
@@ -421,27 +663,66 @@ export class Composer extends Component {
         }
     }
 
-    onClickAddAttachment(ev) {
-        markEventHandled(ev, "composer.clickOnAddAttachment");
-        this.state.autofocus++;
+    get fullComposerAdditionalContext() {
+        // To be overridden by inheriting classes
+        return {};
     }
 
-    async onClickFullComposer(ev) {
+    async onClickFullComposerGetAction() {
+        this.props.composer.restoredFromFullComposer = false;
+        const allRecipients = [...this.thread.suggestedRecipients];
+        if (this.props.type !== "note") {
+            allRecipients.push(...this.thread.additionalRecipients);
+            // auto-create partners:
+            const newPartners = allRecipients.filter((recipient) => !recipient.partner_id);
+            if (newPartners.length !== 0) {
+                const recipientEmails = [];
+                newPartners.forEach((recipient) => {
+                    recipientEmails.push(recipient.email);
+                });
+                const partners = await rpc("/mail/partner/from_email", {
+                    thread_model: this.thread.model,
+                    thread_id: this.thread.id,
+                    emails: recipientEmails,
+                });
+                for (const index in partners) {
+                    const partnerData = partners[index];
+                    const partner = this.store["res.partner"].insert(partnerData);
+                    const email = recipientEmails[index];
+                    const recipient = allRecipients.find((recipient) => recipient.email === email);
+                    recipient.partner_id = partner.id;
+                }
+            }
+        }
         const attachmentIds = this.props.composer.attachments.map((attachment) => attachment.id);
+        let default_body = this.props.composer.composerHtml;
+        if (isHtmlEmpty(default_body)) {
+            const composer = toRaw(this.props.composer);
+            // Reset signature when recovering an empty body.
+            composer.emailAddSignature = true;
+        }
+        const signature = this.thread.effectiveSelf.main_user_id?.getSignatureBlock();
+        default_body = this.formatDefaultBodyForFullComposer(
+            default_body,
+            this.props.composer.emailAddSignature ? signature : ""
+        );
         const context = {
             default_attachment_ids: attachmentIds,
-            default_body: escapeAndCompactTextContent(this.props.composer.textInputContent),
-            default_model: this.props.composer.thread.model,
-            default_partner_ids: this.props.composer.thread.suggestedRecipients.map(
-                (partner) => partner.id
-            ),
-            default_res_ids: [this.props.composer.thread.id],
-            default_subtype_xmlid:
-                this.props.composer.type === "note" ? "mail.mt_note" : "mail.mt_comment",
-            mail_post_autofollow: this.props.composer.thread.hasWriteAccess,
+            default_body,
+            default_email_add_signature: false,
+            default_model: this.thread.model,
+            default_partner_ids:
+                this.props.type === "note"
+                    ? []
+                    : allRecipients.map((recipient) => recipient.partner_id),
+            default_res_ids: [this.thread.id],
+            default_subtype_xmlid: this.props.type === "note" ? "mail.mt_note" : "mail.mt_comment",
+            clicked_on_full_composer: true,
+            // Changed in 18.2+: finally get rid of autofollow, following should be done manually
+            ...this.fullComposerAdditionalContext,
         };
         const action = {
-            name: this.props.composer.type === "note" ? _t("Log note") : _t("Compose Email"),
+            name: this.props.type === "note" ? _t("Log note") : _t("Compose Email"),
             type: "ir.actions.act_window",
             res_model: "mail.compose.message",
             view_mode: "form",
@@ -450,25 +731,70 @@ export class Composer extends Component {
             context: context,
         };
         const options = {
-            onClose: () => {
-                this.clear();
-                if (this.props.composer.thread) {
-                    this.threadService.fetchNewMessages(this.props.composer.thread);
+            onClose: (args) => {
+                // args === { dismiss: true } : click on 'X' or press escape
+                // args === { special: true } : click on 'discard'
+                const accidentalDiscard = args?.dismiss;
+                const isDiscard = accidentalDiscard || args?.special;
+                // otherwise message is posted (args === [undefined])
+                if (!isDiscard && this.props.composer.thread.model === "mail.box") {
+                    this.notifySendFromMailbox();
                 }
+                if (accidentalDiscard) {
+                    this.fullComposerBus.trigger("ACCIDENTAL_DISCARD", {
+                        onAccidentalDiscard: (isEmpty) => {
+                            if (!isEmpty) {
+                                this.state.isFullComposerOpen = true;
+                                this.saveContent();
+                                this.restoreContent();
+                                this.state.isFullComposerOpen = false;
+                            }
+                        },
+                    });
+                } else {
+                    this.clear();
+                }
+                this.props.composer.replyToMessage = undefined;
+                this.onCloseFullComposerCallback(isDiscard);
+                this.state.isFullComposerOpen = false;
+                // Use another event bus so that no message is sent to the
+                // closed composer.
+                this.fullComposerBus = new EventBus();
+            },
+            props: {
+                fullComposerBus: this.fullComposerBus,
             },
         };
+        return { action, options };
+    }
+
+    async onClickFullComposer(ev) {
+        const { action, options } = await this.onClickFullComposerGetAction();
         await this.env.services.action.doAction(action, options);
+        this.state.isFullComposerOpen = true;
+    }
+
+    /**
+     * @param {string|ReturnType<markup>} defaultBody
+     * @param {string|ReturnType<markup>} [signature=""]
+     * @returns {ReturnType<markup>}
+     */
+    formatDefaultBodyForFullComposer(defaultBody, signature = "") {
+        if (signature) {
+            defaultBody = markup`${defaultBody}<br>${signature}`;
+        }
+        return markup`<div>${defaultBody}</div>`; // as to not wrap in <p> by html_sanitize
     }
 
     clear() {
-        this.attachmentUploader?.clear();
-        this.threadService.clearComposer(this.props.composer);
+        this.props.composer.clear();
+        browser.localStorage.removeItem(this.props.composer.localId);
     }
 
-    onClickAddEmoji(ev) {
-        markEventHandled(ev, "Composer.onClickAddEmoji");
-        this.state.keyboard =
-            this.state.keyboard === this.KEYBOARD.EMOJI ? this.KEYBOARD.NONE : this.KEYBOARD.EMOJI;
+    notifySendFromMailbox() {
+        this.env.services.notification.add(_t('Message posted on "%s"', this.thread.displayName), {
+            type: "info",
+        });
     }
 
     isEventTrusted(ev) {
@@ -477,108 +803,294 @@ export class Composer extends Component {
     }
 
     async processMessage(cb) {
-        const el = this.ref.el;
-        const attachments = this.props.composer.attachments;
-        if (
-            el.value.trim() ||
-            (attachments.length > 0 && attachments.every(({ uploading }) => !uploading)) ||
-            (this.message && this.message.attachments.length > 0)
-        ) {
+        if (this.props.composer.attachments.some(({ uploading }) => uploading)) {
+            this.env.services.notification.add(_t("Please wait while the file is uploading."), {
+                type: "warning",
+            });
+        } else if (this.canProcessMessage) {
             if (!this.state.active) {
                 return;
             }
             this.state.active = false;
-            await cb(el.value);
+            await cb(this.props.composer.composerHtml);
             if (this.props.onPostCallback) {
                 this.props.onPostCallback();
             }
             this.clear();
             this.state.active = true;
-            el.focus();
-        } else if (attachments.some(({ uploading }) => Boolean(uploading))) {
-            this.env.services.notification.add(
-                this.env._t("Please wait while the file is uploading."),
-                { type: "warning" }
-            );
+            this.ref.el?.focus();
         }
     }
 
+    get canProcessMessage() {
+        return (
+            !isHtmlEmpty(this.props.composer.composerHtml) ||
+            this.props.composer.attachments.length > 0 ||
+            (this.message && this.message.attachment_ids.length > 0)
+        );
+    }
+
     async sendMessage() {
-        await this.processMessage(async (value) => {
-            const postData = {
-                attachments: this.props.composer.attachments,
-                isNote:
-                    this.props.composer.type === "note" ||
-                    this.props.messageToReplyTo?.message?.isNote,
-                rawMentions: this.props.composer.rawMentions,
-                cannedResponseIds: [...this.props.composer.cannedResponseIds],
-                parentId: this.props.messageToReplyTo?.message?.id,
-            };
-            await this._sendMessage(value, postData);
+        const composer = toRaw(this.props.composer);
+        this.composerActions.activePicker?.close?.();
+        if (composer.message) {
+            this.editMessage();
+            return;
+        }
+        if (this.props.type !== "note") {
+            const allRecipients = [
+                ...composer.thread.suggestedRecipients,
+                ...composer.thread.additionalRecipients,
+            ];
+            if (allRecipients.some((recipient) => !recipient.email || !isEmail(recipient.email))) {
+                return;
+            }
+        }
+        const { specialMentions, roles } = this.store.getMentionsFromText(composer.composerHtml, {
+            mentionedRoles: composer.mentionedRoles,
         });
+        const hasEveryoneBigMention =
+            specialMentions.includes("everyone") &&
+            composer.thread.channel?.member_count > MENTION_AMOUNT_WARNING;
+        const rolesMentionAmount = roles.reduce((sum, role) => sum + (role.user_ids_count || 0), 0);
+        if (hasEveryoneBigMention || rolesMentionAmount > MENTION_AMOUNT_WARNING) {
+            const confirmDef = Promise.withResolvers();
+            this.store.env.services.dialog.add(ConfirmationDialog, {
+                body: _t(
+                    "You're about to notify %(amount)s people with %(mention)s. Do you want to continue?",
+                    {
+                        amount: hasEveryoneBigMention
+                            ? composer.thread.channel.member_count
+                            : rolesMentionAmount,
+                        mention: hasEveryoneBigMention
+                            ? markup`<a class="o-discuss-mention pe-none">@everyone</a>`
+                            : htmlFormatList(
+                                  roles.map(
+                                      (r) =>
+                                          markup`<a class="o-discuss-mention pe-none">@${r.name}</a>`
+                                  )
+                              ),
+                    }
+                ),
+                confirmLabel: _t("Send Message"),
+                confirm: () => confirmDef.resolve(true),
+                cancel: () => confirmDef.resolve(false),
+            });
+            if (!(await confirmDef.promise)) {
+                return false;
+            }
+        }
+        await this.processMessage(async (value) => {
+            await this._sendMessage(value, this.postData, this.extraData);
+        });
+    }
+
+    get postData() {
+        const composer = toRaw(this.props.composer);
+        return {
+            attachments: composer.attachments || [],
+            emailAddSignature: composer.emailAddSignature,
+            isNote: this.props.type === "note",
+            mentionedChannels: composer.mentionedChannels || [],
+            mentionedPartners: composer.mentionedPartners || [],
+            mentionedRoles: composer.mentionedRoles || [],
+            cannedResponseIds: composer.cannedResponses.map((c) => c.id),
+            parentId: this.props.composer.replyToMessage?.id,
+        };
     }
 
     /**
      * @typedef postData
-     * @property {import('@mail/attachments/attachment_model').Attachment[]} attachments
+     * @property {import("models").Attachment[]} attachments
      * @property {boolean} isNote
      * @property {number} parentId
-     * @property {import("@mail/composer/composer_model").RawMentions} rawMentions
+     * @property {integer[]} mentionedChannelIds
+     * @property {integer[]} mentionedPartnerIds
      */
 
     /**
-     * @param {string} value message body
+     * @param {ReturnType<markup>} value message body
      * @param {postData} postData Message meta data info
+     * @param {extraData} extraData Message extra meta data info needed by other modules
      */
-    async _sendMessage(value, postData) {
-        const thread =
-            this.props.messageToReplyTo?.message?.originThread ?? this.props.composer.thread;
-        const message = await this.threadService.post(thread, value, postData);
-        if (this.props.composer.thread.type === "mailbox") {
-            this.env.services.notification.add(
-                sprintf(_t('Message posted on "%s"'), message.originThread.displayName),
-                { type: "info" }
-            );
+    async _sendMessage(value, postData, extraData) {
+        const thread = toRaw(this.props.composer.thread);
+        const postThread = toRaw(this.thread);
+        const post = postThread.post.bind(postThread, value, postData, extraData);
+        let message;
+        if (postThread.channel) {
+            // feature of (optimistic) temp message
+            post();
+        } else {
+            message = await post();
+        }
+        if (thread.model === "mail.box") {
+            this.notifySendFromMailbox();
         }
         this.suggestion?.clearRawMentions();
-        this.suggestion?.clearCannedReponses();
-        this.props.messageToReplyTo?.cancel();
+        this.suggestion?.clearCannedResponses();
+        this.props.composer.replyToMessage = undefined;
+        this.props.composer.emailAddSignature = true;
+        this.props.composer.thread.additionalRecipients = [];
+        return message;
     }
 
     async editMessage() {
-        if (this.ref.el.value || this.props.composer.message.attachments.length > 0) {
+        const composer = toRaw(this.props.composer);
+        if (!this.askDeleteFromEdit) {
             await this.processMessage(async (value) =>
-                this.messageService.edit(
-                    this.props.composer.message,
-                    value,
-                    this.props.composer.attachments,
-                    this.props.composer.rawMentions
-                )
+                composer.message.edit(value, composer.attachments, {
+                    mentionedChannels: composer.mentionedChannels,
+                    mentionedPartners: composer.mentionedPartners,
+                    mentionedRoles: composer.mentionedRoles,
+                })
             );
         } else {
-            this.env.services.dialog.add(MessageConfirmDialog, {
-                message: this.props.composer.message,
-                messageComponent: this.props.messageComponent,
-                onConfirm: () => this.messageService.delete(this.message),
-                prompt: _t("Are you sure you want to delete this message?"),
-            });
+            composer.message.showDeleteConfirm(this);
         }
         this.suggestion?.clearRawMentions();
     }
 
+    get askDeleteFromEdit() {
+        const composer = toRaw(this.props.composer);
+        return !composer.composerText && composer.message.attachment_ids.length === 0;
+    }
+
+    onClickInsertCannedResponse(ev) {
+        markEventHandled(ev, "composer.clickInsertCannedResponse");
+        const composer = toRaw(this.props.composer);
+        if (this.editor) {
+            if (!isHtmlEmpty(this.props.composer.composerHtml)) {
+                this.editor.shared.dom.insert(" ");
+            }
+            this.editor.shared.dom.insert("::");
+            this.editor.shared.history.addStep();
+        } else {
+            const composerText = composer.composerText;
+            const firstPart = composerText.slice(0, composer.selection.start);
+            const secondPart = composerText.slice(composer.selection.end, composerText.length);
+            const toInsertPart = firstPart.length === 0 || firstPart.at(-1) === " " ? "::" : " ::";
+            composer.composerText = firstPart + toInsertPart + secondPart;
+            this.selection.moveCursor((firstPart + toInsertPart).length);
+        }
+        if (!this.ui.isSmall || !this.env.inChatter) {
+            composer.autofocus++;
+        }
+    }
+
+    onChangeWysiwygContent() {
+        this.updateFromEditor = true;
+        // markup: editor content is trusted
+        this.props.composer.composerHtml = markup(this.editor.getContent());
+        if (!this.props.composer.isDirty) {
+            this.props.composer.isDirty = true;
+        }
+        this.updateFromEditor = false;
+    }
+
+    onLoadWysiwyg(editor) {
+        this.editor = editor;
+    }
+
     addEmoji(str) {
-        const textContent = this.ref.el.value;
-        const firstPart = textContent.slice(0, this.props.composer.selection.start);
-        const secondPart = textContent.slice(this.props.composer.selection.end, textContent.length);
-        this.props.composer.textInputContent = firstPart + str + secondPart;
-        this.selection.moveCursor((firstPart + str).length);
-        this.state.autofocus++;
+        const composer = toRaw(this.props.composer);
+        if (this.editor) {
+            this.editor.shared.dom.insert(str);
+            this.editor.shared.history.addStep();
+        } else {
+            const composerText = composer.composerText;
+            const firstPart = composerText.slice(0, composer.selection.start);
+            const secondPart = composerText.slice(composer.selection.end, composerText.length);
+            composer.composerText = firstPart + str + secondPart;
+            this.selection.moveCursor((firstPart + str).length);
+        }
+        if (this.ui.isSmall && !this.env.inChatter) {
+            return false;
+        } else {
+            composer.autofocus++;
+        }
     }
 
     onFocusin() {
-        this.props.composer.isFocused = true;
-        if (this.props.composer.thread) {
-            this.threadService.markAsRead(this.props.composer.thread);
+        const composer = toRaw(this.props.composer);
+        composer.isFocused = true;
+        if (composer.thread?.shouldMarkAsReadOnFocus) {
+            composer.thread.markAsRead();
+        }
+    }
+
+    onFocusout(ev) {
+        if (
+            [EDIT_CLICK_TYPE.CANCEL, EDIT_CLICK_TYPE.SAVE].includes(ev.relatedTarget?.dataset?.type)
+        ) {
+            // Edit or Save most likely clicked: early return as to not re-render (which prevents click)
+            return;
+        }
+        this.props.composer.isFocused = false;
+    }
+
+    saveContent() {
+        const composer = toRaw(this.props.composer);
+        if (composer.restoredFromFullComposer && !this.state.isFullComposerOpen) {
+            return;
+        }
+        const saveContentToLocalStorage = ({
+            composerHtml,
+            emailAddSignature,
+            replyToMessageId,
+            fromFullComposer = composer.restoredFromFullComposer,
+        }) => {
+            if (isHtmlEmpty(composerHtml)) {
+                browser.localStorage.removeItem(composer.localId);
+            } else {
+                browser.localStorage.setItem(
+                    composer.localId,
+                    JSON.stringify({
+                        emailAddSignature,
+                        replyToMessageId,
+                        composerHtml: isMarkup(composerHtml)
+                            ? ["markup", composerHtml]
+                            : composerHtml,
+                        fromFullComposer,
+                    })
+                );
+            }
+        };
+        if (this.state.isFullComposerOpen) {
+            this.fullComposerBus.trigger("SAVE_CONTENT", {
+                onSaveContent: (...args) =>
+                    saveContentToLocalStorage({ ...args[0], fromFullComposer: true }),
+            });
+        } else {
+            saveContentToLocalStorage({
+                composerHtml: composer.composerHtml,
+                emailAddSignature: true,
+                replyToMessageId: composer.replyToMessage?.id,
+                fromFullComposer: false,
+            });
+        }
+    }
+
+    restoreContent() {
+        const composer = toRaw(this.props.composer);
+        let config;
+        try {
+            config = JSON.parse(browser.localStorage.getItem(composer.localId));
+        } catch {
+            browser.localStorage.removeItem(composer.localId);
+        }
+        if (!config) {
+            return;
+        }
+        if (!isHtmlEmpty(config.composerHtml)) {
+            if (composer.thread && !composer.thread.channel) {
+                composer.restoredFromFullComposer = config.fromFullComposer;
+            }
+            composer.emailAddSignature = config.emailAddSignature;
+            composer.composerHtml = config.composerHtml;
+        }
+        if (Number.isInteger(config.replyToMessageId)) {
+            composer.replyToMessage = this.store["mail.message"].insert(config.replyToMessageId);
         }
     }
 }

@@ -1,8 +1,9 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <templates xml:space="preserve">
-    <t t-inherit="mail.ChatWindow" t-inherit-mode="extension" owl="1">
+    <t t-inherit="mail.ChatWindow" t-inherit-mode="extension">
         <xpath expr="//Thread" position="before">
-            <Call t-if="Object.keys(thread.rtcSessions).length > 0" thread="thread" compact="true"/>
+            <PipBanner t-if="this.rtc.isPipMode and this.channel.eq(this.rtc.channel)" compact="true"/>
+            <Call t-elif="this.channel.showCallView" channel="this.channel" compact="true"/>
         </xpath>
     </t>
 </templates>

@@ -70,32 +70,32 @@
                 <NumeroLinea>1</NumeroLinea>
                 <Descrizione>no discount</Descrizione>
                 <Quantita>1.00</Quantita>
-                <PrezzoUnitario>800.400000</PrezzoUnitario>
-                <PrezzoTotale>800.40</PrezzoTotale>
+                <PrezzoUnitario>800.40000000</PrezzoUnitario>
+                <PrezzoTotale>800.40000000</PrezzoTotale>
                 <AliquotaIVA>22.00</AliquotaIVA>
             </DettaglioLinee>
             <DettaglioLinee>
                 <NumeroLinea>2</NumeroLinea>
                 <Descrizione>special discount</Descrizione>
                 <Quantita>1.00</Quantita>
-                <PrezzoUnitario>800.400000</PrezzoUnitario>
+                <PrezzoUnitario>800.40000000</PrezzoUnitario>
                 <ScontoMaggiorazione>
                     <Tipo>SC</Tipo>
                     <Percentuale>50.00</Percentuale>
                 </ScontoMaggiorazione>
-                <PrezzoTotale>400.20</PrezzoTotale>
+                <PrezzoTotale>400.20000000</PrezzoTotale>
                 <AliquotaIVA>22.00</AliquotaIVA>
             </DettaglioLinee>
             <DettaglioLinee>
                 <NumeroLinea>3</NumeroLinea>
                 <Descrizione>an offer you can&#39;t refuse</Descrizione>
                 <Quantita>1.00</Quantita>
-                <PrezzoUnitario>800.400000</PrezzoUnitario>
+                <PrezzoUnitario>800.40000000</PrezzoUnitario>
                 <ScontoMaggiorazione>
                     <Tipo>SC</Tipo>
                     <Percentuale>100.00</Percentuale>
                 </ScontoMaggiorazione>
-                <PrezzoTotale>0.00</PrezzoTotale>
+                <PrezzoTotale>0.00000000</PrezzoTotale>
                 <AliquotaIVA>22.00</AliquotaIVA>
             </DettaglioLinee>
             <DatiRiepilogo>
@@ -111,13 +111,10 @@
                 <ModalitaPagamento>MP05</ModalitaPagamento>
                 <DataScadenzaPagamento>2022-03-24</DataScadenzaPagamento>
                 <ImportoPagamento>1464.73</ImportoPagamento>
+                <IstitutoFinanziario>BIG BANK</IstitutoFinanziario>
+                <BIC>BIGGBANQ</BIC>
                 <CodicePagamento>INV/2022/00001</CodicePagamento>
             </DettaglioPagamento>
         </DatiPagamento>
-        <Allegati>
-            <NomeAttachment>INV202200001.pdf</NomeAttachment>
-            <FormatoAttachment>PDF</FormatoAttachment>
-            <Attachment>___ignore___</Attachment>
-        </Allegati>
     </FatturaElettronicaBody>
 </p:FatturaElettronica>

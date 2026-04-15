@@ -5,9 +5,9 @@ import time
 from odoo import api, fields, models
 
 
-class HolidaysSummaryEmployee(models.TransientModel):
-
+class HrHolidaysSummaryEmployee(models.TransientModel):
     _name = 'hr.holidays.summary.employee'
+
     _description = 'HR Time Off Summary Report By Employee'
 
     date_from = fields.Date(string='From', required=True, default=lambda *a: time.strftime('%Y-%m-01'))
@@ -16,7 +16,7 @@ class HolidaysSummaryEmployee(models.TransientModel):
         ('Approved', 'Approved'),
         ('Confirmed', 'Confirmed'),
         ('both', 'Both Approved and Confirmed')
-    ], string='Select Time Off Type', required=True, default='Approved')
+    ], string='Select Time Type', required=True, default='Approved')
 
     def print_report(self):
         self.ensure_one()

@@ -1,140 +1,134 @@
-/* @odoo-module */
-
+import { fields, Record } from "@mail/model/export";
 import { assignDefined } from "@mail/utils/common/misc";
+import { generatePdfThumbnail } from "@web/core/utils/pdfjs";
 
-import { url } from "@web/core/utils/urls";
+import { FileModelMixin } from "@web/core/file_viewer/file_model";
+import { _t } from "@web/core/l10n/translation";
+import { rpc } from "@web/core/network/rpc";
+import { imageUrl, url } from "@web/core/utils/urls";
 
-export class Attachment {
-    /** @type {import("@mail/core/common/store_service").Store} */
-    _store;
-    accessToken;
-    checksum;
-    extension;
-    filename;
-    id;
-    mimetype;
-    name;
-    originThreadLocalId;
-    type;
+export class Attachment extends FileModelMixin(Record) {
+    static _name = "ir.attachment";
+    static new() {
+        /** @type {import("models").Attachment} */
+        const attachment = super.new(...arguments);
+        Record.onChange(attachment, ["extension", "name"], () => {
+            if (!attachment.extension && attachment.name) {
+                attachment.extension = attachment.name.split(".").pop();
+            }
+        });
+        return attachment;
+    }
+
+    composer = fields.One("Composer", { inverse: "attachments" });
+    thread = fields.One("mail.thread", { inverse: "attachments" });
     /** @type {string} */
-    tmpUrl;
+    raw_access_token;
+    res_name;
     /** @type {string} */
-    url;
-    /** @type {boolean} */
-    uploading;
-    /** @type {import("@mail/core/common/message_model").Message} */
-    message;
+    thumbnail_access_token;
+    message = fields.One("mail.message", { inverse: "attachment_ids" });
+    /** @type {string} */
+    ownership_token;
+    create_date = fields.Datetime();
+    has_thumbnail = fields.Attr(undefined, {
+        onUpdate() {
+            if (
+                this.isPdf &&
+                !this.has_thumbnail &&
+                (this.ownership_token ||
+                    // If related to a record, must have write access to it
+                    ((!this.thread || this.thread.hasWriteAccess) &&
+                        this.store.self_user?.share === false))
+            ) {
+                this.setPdfThumbnail();
+            }
+        },
+    });
 
-    /** @type {import("@mail/core/common/thread_model").Thread} */
-    get originThread() {
-        return this._store.threads[this.originThreadLocalId];
+    get thumbnailUrl() {
+        return imageUrl(
+            "ir.attachment",
+            this.id,
+            "thumbnail",
+            assignDefined(
+                {},
+                {
+                    access_token: this.thumbnail_access_token,
+                    crop: "top",
+                    height: 110,
+                    unique: this.checksum,
+                    width: 180,
+                }
+            )
+        );
+    }
+
+    get gifPaused() {
+        return this.thread ? !this.thread.isFocused : !this.composer?.isFocused;
     }
 
     get isDeletable() {
+        if (this.message && this.store.self_user?.share !== false) {
+            return this.message.editable;
+        }
         return true;
     }
 
-    get displayName() {
-        return this.name || this.filename;
-    }
-
-    get isText() {
-        const textMimeType = [
-            "application/javascript",
-            "application/json",
-            "text/css",
-            "text/html",
-            "text/plain",
-        ];
-        return textMimeType.includes(this.mimetype);
-    }
-
-    get isPdf() {
-        return this.mimetype && this.mimetype.startsWith("application/pdf");
-    }
-
-    get isImage() {
-        const imageMimetypes = [
-            "image/bmp",
-            "image/gif",
-            "image/jpeg",
-            "image/png",
-            "image/svg+xml",
-            "image/tiff",
-            "image/x-icon",
-        ];
-        return imageMimetypes.includes(this.mimetype);
-    }
-
-    get isUrl() {
-        return this.type === "url" && this.url;
-    }
-
-    get isUrlYoutube() {
-        return !!this.url && this.url.includes("youtu");
-    }
-
-    get isVideo() {
-        const videoMimeTypes = ["audio/mpeg", "video/x-matroska", "video/mp4", "video/webm"];
-        return videoMimeTypes.includes(this.mimetype);
-    }
-
-    get isViewable() {
-        return (
-            (this.isText || this.isImage || this.isVideo || this.isPdf || this.isUrlYoutube) &&
-            !this.uploading
-        );
-    }
-
-    get defaultSource() {
-        const route = url(this.urlRoute, this.urlQueryParams);
-        const encodedRoute = encodeURIComponent(route);
-        if (this.isPdf) {
-            return `/web/static/lib/pdfjs/web/viewer.html?file=${encodedRoute}#pagemode=none`;
+    get monthYear() {
+        if (!this.create_date) {
+            return undefined;
         }
-        if (this.isUrlYoutube) {
-            const urlArr = this.url.split("/");
-            let token = urlArr[urlArr.length - 1];
-            if (token.includes("watch")) {
-                token = token.split("v=")[1];
-                const amp = token.indexOf("&");
-                if (amp !== -1) {
-                    token = token.substring(0, amp);
-                }
-            }
-            return `https://www.youtube.com/embed/${token}`;
-        }
-        return route;
+        return `${this.create_date.monthLong}, ${this.create_date.year}`;
     }
 
-    get downloadUrl() {
-        return url(this.urlRoute, { ...this.urlQueryParams, download: true });
+    get uploading() {
+        return this.id < 0;
+    }
+
+    /** Remove the given attachment globally. */
+    delete() {
+        if (this.tmpUrl) {
+            URL.revokeObjectURL(this.tmpUrl);
+        }
+        super.delete();
     }
 
     /**
-     * @returns {string}
+     * Delete the given attachment on the server as well as removing it
+     * globally.
      */
-    get urlRoute() {
-        if (this.uploading && this.tmpUrl) {
-            return this.tmpUrl;
+    async remove() {
+        if (this.id > 0) {
+            await rpc(
+                "/mail/attachment/delete",
+                assignDefined({ attachment_id: this.id }, { access_token: this.ownership_token })
+            );
         }
-        return this.isImage ? `/web/image/${this.id}` : `/web/content/${this.id}`;
+        this.delete();
     }
 
-    /**
-     * @returns {Object}
-     */
-    get urlQueryParams() {
-        if (this.uploading && this.tmpUrl) {
-            return {};
-        }
-        return assignDefined(
-            {},
-            {
-                access_token: this.accessToken,
-                filename: this.name || undefined,
-                unique: this.checksum,
-            }
+    get previewName() {
+        return this.voice ? _t("Voice Message") : this.name || "";
+    }
+
+    async setPdfThumbnail() {
+        const { isPdfValid, thumbnail } = await generatePdfThumbnail(
+            url(
+                `/mail/attachment/pdf_first_page/${this.id}`,
+                assignDefined({}, { access_token: this.ownership_token })
+            )
         );
+        if (isPdfValid) {
+            rpc(
+                `/mail/attachment/update_thumbnail`,
+                assignDefined(
+                    { attachment_id: this.id, thumbnail },
+                    { access_token: this.ownership_token }
+                )
+            );
+        }
     }
 }
+
+Attachment.register();

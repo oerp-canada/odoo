@@ -1,9 +1,4 @@
-/** @odoo-module */
-
-import { serializeDate } from "@web/core/l10n/dates";
-import { loadJS } from "@web/core/assets";
-
-const { DateTime } = luxon;
+// @ts-check
 
 /**
  * Get the intersection of two arrays
@@ -19,25 +14,6 @@ export function intersect(a, b) {
 }
 
 /**
- * Given an object of form {"1": {...}, "2": {...}, ...} get the maximum ID used
- * in this object
- * If the object has no keys, return 0
- *
- * @param {Object} o an object for which the keys are an ID
- *
- * @returns {number}
- */
-export function getMaxObjectId(o) {
-    const keys = Object.keys(o);
-    if (!keys.length) {
-        return 0;
-    }
-    const nums = keys.map((id) => parseInt(id, 10));
-    const max = Math.max(...nums);
-    return max;
-}
-
-/**
  * Convert a spreadsheet date representation to an odoo
  * server formatted date
  *
@@ -45,8 +21,7 @@ export function getMaxObjectId(o) {
  * @returns {string}
  */
 export function toServerDateString(value) {
-    const date = DateTime.fromJSDate(value);
-    return serializeDate(date);
+    return `${value.getFullYear()}-${value.getMonth() + 1}-${value.getDate()}`;
 }
 
 /**
@@ -57,6 +32,9 @@ export function sum(array) {
     return array.reduce((acc, n) => acc + n, 0);
 }
 
+/**
+ * @param {string} word
+ */
 function camelToSnakeKey(word) {
     const result = word.replace(/(.){1}([A-Z])/g, "$1 $2");
     return result.split(" ").join("_").toLowerCase();
@@ -97,11 +75,11 @@ export function isEmpty(item) {
 }
 
 /**
- * Load external libraries required for o-spreadsheet
- * @returns {Promise<void>}
+ * @param {import("@odoo/o-spreadsheet").Cell} cell
  */
-export async function loadSpreadsheetDependencies() {
-    await loadJS("/web/static/lib/Chart/Chart.js");
-    // chartjs-gauge should only be loaded when Chart.js is fully loaded !
-    await loadJS("/spreadsheet/static/lib/chartjs-gauge/chartjs-gauge.js");
+export function containsReferences(cell) {
+    if (!cell.isFormula) {
+        return false;
+    }
+    return cell.compiledFormula.hasDependencies;
 }

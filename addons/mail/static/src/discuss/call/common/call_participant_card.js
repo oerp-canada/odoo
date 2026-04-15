@@ -1,32 +1,46 @@
-/* @odoo-module */
-
-import { useStore } from "@mail/core/common/messaging_hook";
+import { useExternalListener, useRef } from "@web/owl2/utils";
 import { CallContextMenu } from "@mail/discuss/call/common/call_context_menu";
 import { CallParticipantVideo } from "@mail/discuss/call/common/call_participant_video";
-import { useRtc } from "@mail/discuss/call/common/rtc_hook";
+import { CallDropdown } from "@mail/discuss/call/common/call_dropdown";
+import { CONNECTION_TYPES } from "@mail/discuss/call/common/rtc_service";
 import { useHover } from "@mail/utils/common/hooks";
-import { isEventHandled, markEventHandled } from "@web/core/utils/misc";
+import { isEventHandled } from "@web/core/utils/misc";
+import { browser } from "@web/core/browser/browser";
+import { isMobileOS } from "@web/core/browser/feature_detection";
 
-import { Component, onMounted, onWillUnmount, useRef } from "@odoo/owl";
-
-import { usePopover } from "@web/core/popover/popover_hook";
+import { Component, onMounted, onWillUnmount } from "@odoo/owl";
 import { useService } from "@web/core/utils/hooks";
+import { rpc } from "@web/core/network/rpc";
 
 const HIDDEN_CONNECTION_STATES = new Set(["connected", "completed"]);
 
 export class CallParticipantCard extends Component {
-    static props = ["className", "cardData", "thread", "minimized?"];
-    static components = { CallParticipantVideo };
+    static props = [
+        "className",
+        "cardData",
+        "channel",
+        "minimized?",
+        "inset?",
+        "isSidebarItem?",
+        "compact?",
+    ];
+    static components = { CallParticipantVideo, CallContextMenu, CallDropdown };
     static template = "discuss.CallParticipantCard";
+    /** @type {import("models").Rtc} */
+    rtc;
 
     setup() {
+        super.setup();
         this.contextMenuAnchorRef = useRef("contextMenuAnchor");
-        this.popover = usePopover(CallContextMenu);
-        this.rpc = useService("rpc");
-        this.rtc = useRtc();
-        this.store = useStore();
+        this.root = useRef("root");
+        this.rtc = useService("discuss.rtc");
+        this.store = useService("mail.store");
+        this.ui = useService("ui");
         this.rootHover = useHover("root");
-        this.threadService = useService("mail.thread");
+        this.isMobileOS = isMobileOS();
+        this.dragPos = undefined;
+        this.isDrag = false;
+        this.parentBoundingRect = undefined;
         onMounted(() => {
             if (!this.rtcSession) {
                 return;
@@ -43,13 +57,56 @@ export class CallParticipantCard extends Component {
                 viewCountIncrement: -1,
             });
         });
+        useExternalListener(browser, "fullscreenchange", this.onFullScreenChange);
     }
 
     get isContextMenuAvailable() {
+        return (
+            this.isOfActiveCall &&
+            (this.rtcSession.notEq(this.rtc.selfSession) ||
+                (this.env.debug && this.rtc.connectionType === CONNECTION_TYPES.SERVER))
+        );
+    }
+
+    get isRemoteVideo() {
         if (!this.rtcSession) {
             return false;
         }
-        return this.rtcSession?.id !== this.rtc.state.selfSession?.id;
+        return (
+            this.rtc.isRemote &&
+            (this.rtcSession.is_screen_sharing_on || this.rtcSession.is_camera_on)
+        );
+    }
+
+    get isSmall() {
+        return Boolean(
+            this.props.isSidebarItem || this.ui.isSmall || this.props.minimized || this.props.inset
+        );
+    }
+
+    get window() {
+        return this.env.pipWindow || window;
+    }
+
+    get showLiveLabel() {
+        if (this.props.isSidebarItem) {
+            return false;
+        }
+        if (this.props.cardData.type === "screen") {
+            if (this.props.inset) {
+                return true;
+            } else {
+                return (
+                    !this.rtcSession.eq(this.rtcSession.channel.activeRtcSession) &&
+                    !this.props.minimized
+                );
+            }
+        }
+        return false;
+    }
+
+    get showRemoteWarning() {
+        return !this.props.minimized && !this.props.inset && this.isRemoteVideo;
     }
 
     get rtcSession() {
@@ -57,23 +114,31 @@ export class CallParticipantCard extends Component {
     }
 
     get channelMember() {
-        return this.rtcSession ? this.rtcSession.channelMember : this.props.cardData.member;
+        return this.rtcSession ? this.rtcSession.channel_member_id : this.props.cardData.member;
     }
 
     get isOfActiveCall() {
-        return Boolean(this.rtcSession && this.rtcSession.channelId === this.rtc.state.channel?.id);
+        return Boolean(this.rtcSession && this.rtcSession.channel?.eq(this.rtc.channel));
     }
 
     get showConnectionState() {
-        return Boolean(
-            this.isOfActiveCall &&
-                !(this.rtcSession.channelMember?.persona.localId === this.store.self?.localId) &&
-                !HIDDEN_CONNECTION_STATES.has(this.rtcSession.connectionState)
-        );
+        if (
+            !this.rtcSession ||
+            !this.rtc.isHost ||
+            !this.isOfActiveCall ||
+            HIDDEN_CONNECTION_STATES.has(this.rtcSession.connectionState)
+        ) {
+            return false;
+        }
+        if (this.rtc.connectionType === CONNECTION_TYPES.SERVER) {
+            return this.rtcSession.eq(this.rtc?.selfSession);
+        } else {
+            return this.rtcSession.notEq(this.rtc?.selfSession);
+        }
     }
 
     get name() {
-        return this.channelMember?.persona.name;
+        return this.channelMember?.name;
     }
 
     get hasMediaError() {
@@ -84,32 +149,54 @@ export class CallParticipantCard extends Component {
     }
 
     get hasVideo() {
-        return Boolean(this.rtcSession?.videoStream);
+        return Boolean(this.props.cardData.videoStream);
     }
 
     get isTalking() {
-        return Boolean(this.rtcSession && this.rtcSession.isTalking && !this.rtcSession.isMute);
+        return Boolean(
+            this.rtcSession && this.rtcSession.isActuallyTalking && !this.rtc.selfSession?.is_deaf
+        );
+    }
+
+    get hasRaisingHand() {
+        const screenStream = this.rtcSession.videoStreams.get("screen");
+        return Boolean(
+            this.rtcSession.raisingHand &&
+                (!screenStream || screenStream !== this.props.cardData.videoStream)
+        );
+    }
+
+    get isActiveRtcSession() {
+        return this.rtcSession && this.rtcSession.eq(this.rtcSession.channel?.activeRtcSession);
     }
 
     async onClick(ev) {
         if (isEventHandled(ev, "CallParticipantCard.clickVolumeAnchor")) {
             return;
         }
+        if (this.isDrag) {
+            this.isDrag = false;
+            return;
+        }
         if (this.rtcSession) {
             const channel = this.rtcSession.channel;
-            if (channel.activeRtcSession === this.rtcSession) {
+            this.rtcSession.mainVideoStreamType = this.props.cardData.type;
+            if (this.rtcSession.eq(channel.activeRtcSession) && !this.props.inset) {
                 channel.activeRtcSession = undefined;
+                this.rtcSession.mainVideoStreamType = undefined;
             } else {
+                const activeRtcSession = channel.activeRtcSession;
+                const currentMainVideoType = this.rtcSession.mainVideoStreamType;
                 channel.activeRtcSession = this.rtcSession;
+                if (this.props.inset && activeRtcSession) {
+                    this.props.inset(activeRtcSession, currentMainVideoType);
+                }
             }
             return;
         }
-        const channelData = await this.rpc("/mail/rtc/channel/cancel_call_invitation", {
-            channel_id: this.props.thread.id,
+        await rpc("/mail/rtc/channel/cancel_call_invitation", {
+            channel_id: this.props.channel.id,
             member_ids: [this.channelMember.id],
-        });
-        this.threadService.update(this.props.thread, {
-            invitedMembers: channelData.invitedMembers,
         });
     }
 
@@ -117,21 +204,70 @@ export class CallParticipantCard extends Component {
         this.env.bus.trigger("RTC-SERVICE:PLAY_MEDIA");
     }
 
-    /**
-     * @param {Event} ev
-     */
-    onContextMenu(ev) {
-        ev.preventDefault();
-        markEventHandled(ev, "CallParticipantCard.clickVolumeAnchor");
-        if (this.popover.isOpen) {
-            this.popover.close();
+    onMouseDown() {
+        if (!this.props.inset) {
             return;
         }
-        if (!this.contextMenuAnchorRef?.el) {
+        const onMousemove = (ev) => this.drag(ev);
+        const onMouseup = () => {
+            const insetEl = this.root.el;
+            const bottomOffset = this.env.inChatWindow ? this.window.innerHeight * 0.05 : 0; // 5vh in pixels
+            if (parseInt(insetEl.style.left) < insetEl.parentNode.offsetWidth / 2) {
+                insetEl.style.left = "1vh";
+                insetEl.style.right = "";
+            } else {
+                insetEl.style.left = "";
+                insetEl.style.right = "1vh";
+            }
+            if (
+                parseInt(insetEl.style.top) <
+                (insetEl.parentNode.offsetHeight - bottomOffset) / 2
+            ) {
+                insetEl.style.top = "1vh";
+                insetEl.style.bottom = "";
+            } else {
+                insetEl.style.bottom = this.env.inChatWindow ? "5vh" : "1vh";
+                insetEl.style.top = "unset";
+            }
+            this.dragPos = undefined;
+            this.parentBoundingRect = undefined;
+            document.removeEventListener("mouseup", onMouseup);
+            document.removeEventListener("mousemove", onMousemove);
+        };
+        document.addEventListener("mouseup", onMouseup);
+        document.addEventListener("mousemove", onMousemove);
+    }
+
+    onTouchMove(ev) {
+        if (!this.props.inset) {
             return;
         }
-        this.popover.open(this.contextMenuAnchorRef.el, {
-            rtcSession: this.rtcSession,
-        });
+        this.drag(ev);
+    }
+
+    drag(ev) {
+        this.isDrag = true;
+        const insetEl = this.root.el;
+        const parent = insetEl.parentNode;
+        const boundingRect =
+            this.parentBoundingRect || (this.parentBoundingRect = parent.getBoundingClientRect());
+        const bottomOffset = this.env.inChatWindow ? this.window.innerHeight * 0.05 : 0; // 5vh in pixels
+        const clientX = Math.max((ev.clientX ?? ev.touches[0].clientX) - boundingRect.left, 0);
+        const clientY = Math.max((ev.clientY ?? ev.touches[0].clientY) - boundingRect.top, 0);
+        if (!this.dragPos) {
+            this.dragPos = { posX: clientX, posY: clientY };
+        }
+        const dX = this.dragPos.posX - clientX;
+        const dY = this.dragPos.posY - clientY;
+        const widthOffset = parent.offsetWidth - insetEl.clientWidth;
+        const heightOffset = parent.offsetHeight - insetEl.clientHeight - bottomOffset;
+        this.dragPos.posX = Math.min(clientX, widthOffset);
+        this.dragPos.posY = Math.min(clientY, heightOffset);
+        insetEl.style.left = Math.min(Math.max(insetEl.offsetLeft - dX, 0), widthOffset) + "px";
+        insetEl.style.top = Math.min(Math.max(insetEl.offsetTop - dY, 0), heightOffset) + "px";
+    }
+
+    onFullScreenChange() {
+        this.root.el.style = "left:''; top:''";
     }
 }

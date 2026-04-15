@@ -1,108 +1,114 @@
-# -*- coding: utf-8 -*-
 # Part of Odoo. See LICENSE file for full copyright and licensing details.
-from typing import List, Dict, Optional
+from __future__ import annotations
 
-from odoo import models
+from odoo import api, fields, models
+from odoo.fields import Domain
 
-from odoo.addons.point_of_sale.models.pos_config import PosConfig
+
+class ProductTemplate(models.Model):
+    _inherit = 'product.template'
+
+    self_order_available = fields.Boolean(
+        string="Available in Self Order",
+        help="If this product is available in the Self Order screens",
+        default=True,
+    )
+
+    self_order_visible = fields.Boolean(compute='_compute_self_order_visible')
+
+    def _load_pos_self_data_read(self, data, config):
+        domain = self._load_pos_self_data_domain(data, config)
+        fields = set(self._load_pos_self_data_fields(config))
+        products = self.search_read(
+            domain,
+            fields,
+            limit=config.get_limited_product_count(),
+            order='is_favorite DESC,pos_sequence,name',
+            load=False
+        )
+
+        combo_products = self.browse(p['id'] for p in products if p["type"] == "combo")
+        combo_products_choice = self.search_read(
+            [("id", 'in', combo_products.combo_ids.combo_item_ids.product_id.product_tmpl_id.ids), ("id", "not in", [p['id'] for p in products])],
+            fields,
+            limit=config.get_limited_product_count(),
+            order='is_favorite DESC,pos_sequence,name',
+            load=False
+        )
+        products.extend(combo_products_choice)
+        self._process_pos_self_ui_products(products)
+
+        return products
+
+    def _process_pos_self_ui_products(self, products):
+        self._add_archived_combinations(products)
+        for product in products:
+            product['image_128'] = bool(product['image_128'])
+
+    @api.model
+    def _load_pos_data_fields(self, config):
+        params = super()._load_pos_data_fields(config)
+        params += ['self_order_available']
+        return params
+
+    @api.model
+    def _load_pos_self_data_domain(self, data, config):
+        domain = super()._load_pos_self_data_domain(data, config)
+        return Domain.AND([domain, [('self_order_available', '=', True)]])
+
+    @api.onchange('available_in_pos')
+    def _on_change_available_in_pos(self):
+        for record in self:
+            if not record.available_in_pos:
+                record.self_order_available = False
+
+    def _compute_self_order_visible(self):
+        active_self_order_configs = self.env['pos.config'].sudo().search_count([('self_ordering_mode', '!=', 'nothing')])
+        for product in self:
+            product.self_order_visible = bool(active_self_order_configs)
+
+    def write(self, vals):
+        if 'available_in_pos' in vals:
+            if not vals['available_in_pos']:
+                vals['self_order_available'] = False
+
+        res = super().write(vals)
+
+        if 'self_order_available' in vals:
+            for record in self:
+                for product in record.product_variant_ids:
+                    product._send_availability_status()
+        return res
+
+    def _can_return_content(self, field_name=None, access_token=None):
+        if field_name in ["image_512", "image_128"] and self.sudo().self_order_available:
+            return True
+        return super()._can_return_content(field_name, access_token)
 
 
 class ProductProduct(models.Model):
     _inherit = "product.product"
 
-    def _get_name(self) -> str:
-        """
-        Returns the name of the product without the code.
-        ex: product_sudo.display_name is '[FURN_7888] Desk Stand with Screen (Red)'
-        :return: 'Desk Stand with Screen (Red)' (we remove the [FURN_7888] part)
-        """
-        self.ensure_one()
-        return self.with_context(display_default_code=False).display_name
+    def write(self, vals):
+        res = super().write(vals)
+        if 'self_order_available' in vals:
+            for record in self:
+                record._send_availability_status()
+        return res
 
-    def _filter_applicable_attributes(self, attributes_by_ptal_id: Dict) -> List[Dict]:
-        """
-        The attributes_by_ptal_id is a dictionary that contains all the attributes that have
-        [('create_variant', '=', 'no_variant')]
-        This method filters out the attributes that are not applicable to the product in self
-        """
-        self.ensure_one()
-        return [
-            attributes_by_ptal_id[id]
-            for id in self.attribute_line_ids.ids
-            if attributes_by_ptal_id.get(id) is not None
-        ]
+    def _send_availability_status(self):
+        config_self = self.env['pos.config'].sudo().search([('self_ordering_mode', '!=', 'nothing')])
+        for config in config_self:
+            if config.current_session_id and config.access_token:
+                records = self.env["product.template"].load_product_from_pos(config.id, [('id', '=', self.product_tmpl_id.id)])
+                payload = {}
+                self_models = self.env["pos.config"]._load_self_data_models()
+                for model in records:
+                    if model in self_models:
+                        payload[model] = records[model]
+                config._notify('PRODUCT_CHANGED', payload)
 
-    def _get_attributes(self, pos_config_sudo: PosConfig) -> List[Dict]:
-        self.ensure_one()
-
-        attributes = self._filter_applicable_attributes(
-            self.env["pos.session"].sudo()._get_attributes_by_ptal_id()
-        )
-        return self._add_price_info_to_attributes(
-            attributes,
-            pos_config_sudo,
-        )
-
-    def _add_price_info_to_attributes(
-        self, attributes: List[Dict], pos_config_sudo: PosConfig
-    ) -> List[Dict]:
-        """
-        Here we replace the price_extra of each attribute value with a price_extra
-        dictionary that includes the price with taxes included and the price with taxes excluded
-        """
-        self.ensure_one()
-        for attribute in attributes:
-            for value in attribute["values"]:
-                value.update(
-                    {
-                        "price_extra": self._get_price_info(
-                            pos_config_sudo, value.get("price_extra")
-                        )
-                    }
-                )
-        return attributes
-
-    # FIXME: this method should be verified about price computation (pricelist taxes....)
-    def _get_price_info(
-        self, pos_config: PosConfig, price: Optional[float] = None, qty: int = 1
-    ) -> Dict[str, float]:
-        """
-        Function that returns a dict with the price info of a given product
-        """
-        self.ensure_one()
-        # if price == None it means that a price was not passed as a parameter, so we use the product's list price
-        # it could happen that a price was passed, but it was 0; in that case we want to use this 0 as the argument,
-        # and not the product's list price
-        if price is None:
-            price = pos_config.pricelist_id._get_product_price(
-                self, qty, currency=pos_config.currency_id
-            )
-        price_info = pos_config.default_fiscal_position_id.map_tax(self.taxes_id).compute_all(
-            price, pos_config.currency_id, qty, product=self
-        )
-
-        return {
-            "list_price": price_info["total_included"]
-            if pos_config.iface_tax_included == "total"
-            else price_info["total_excluded"],
-            "price_without_tax": price_info["total_excluded"],
-            "price_with_tax": price_info["total_included"],
-        }
-
-    def _get_self_order_data(self, pos_config: PosConfig) -> List[Dict]:
-        """
-        returns the list of products with the necessary info for the self order app
-        """
-        return [
-            {
-                "price_info": product._get_price_info(pos_config),
-                "has_image": bool(product.image_1920),
-                "attributes": product._get_attributes(pos_config),
-                "name": product._get_name(),
-                "id": product.id,
-                "description_sale": product.description_sale,
-                "pos_categ_ids": product.pos_categ_ids.mapped("name") or ["Other"],
-                "is_pos_groupable": product.uom_id.is_pos_groupable,
-            }
-            for product in self
-        ]
+    def _can_return_content(self, field_name=None, access_token=None):
+        if field_name == "image_512" and self.sudo().self_order_available:
+            return True
+        return super()._can_return_content(field_name, access_token)

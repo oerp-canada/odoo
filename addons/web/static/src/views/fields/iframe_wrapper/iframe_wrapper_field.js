@@ -1,9 +1,8 @@
-/** @odoo-module **/
-
+import { useLayoutEffect, useRef } from "@web/owl2/utils";
 import { registry } from "@web/core/registry";
-import { _lt } from "@web/core/l10n/translation";
+import { _t } from "@web/core/l10n/translation";
 import { standardFieldProps } from "../standard_field_props";
-import { Component, useEffect, useRef } from "@odoo/owl";
+import { Component } from "@odoo/owl";
 
 export class IframeWrapperField extends Component {
     static template = "web.IframeWrapperField";
@@ -14,7 +13,7 @@ export class IframeWrapperField extends Component {
     setup() {
         this.iframeRef = useRef("iframe");
 
-        useEffect(
+        useLayoutEffect(
             (value) => {
                 /**
                  * The document.write is not recommended. It is better to manipulate the DOM through $.appendChild and
@@ -38,7 +37,7 @@ export class IframeWrapperField extends Component {
 
 export const iframeWrapperField = {
     component: IframeWrapperField,
-    displayName: _lt("Wrap raw html within an iframe"),
+    displayName: _t("Wrap raw html within an iframe"),
     // If HTML, don't forget to adjust the sanitize options to avoid stripping most of the metadata
     supportedTypes: ["text", "html"],
 };

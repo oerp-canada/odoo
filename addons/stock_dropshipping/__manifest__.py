@@ -1,10 +1,8 @@
-# -*- coding: utf-8 -*-
 # Part of Odoo. See LICENSE file for full copyright and licensing details.
 
 {
     'name': 'Drop Shipping',
-    'version': '1.0',
-    'category': 'Inventory/Inventory',
+    'category': 'Supply Chain/Inventory',
     'summary': 'Drop Shipping',
     'description': """
 Manage drop shipping orders
@@ -27,6 +25,10 @@ internal transfer document is needed.
         'views/stock_picking_views.xml',
         'views/purchase_order_views.xml'
     ],
-    'installable': True,
+    'demo': [
+        'data/stock_dropshipping_demo.xml',
+    ],
+    'uninstall_hook': "uninstall_hook",
+    'author': 'Odoo S.A.',
     'license': 'LGPL-3',
 }

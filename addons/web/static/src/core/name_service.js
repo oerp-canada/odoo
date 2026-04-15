@@ -1,8 +1,5 @@
-/** @odoo-module **/
-
 import { registry } from "@web/core/registry";
 import { unique, zip } from "@web/core/utils/arrays";
-import { Deferred } from "@web/core/utils/concurrency";
 
 export const ERROR_INACCESSIBLE_OR_MISSING = Symbol("INACCESSIBLE OR MISSING RECORD ID");
 
@@ -41,7 +38,7 @@ export const nameService = {
         function addDisplayNames(resModel, displayNames) {
             const mapping = getMapping(resModel);
             for (const resId in displayNames) {
-                mapping[resId] = new Deferred();
+                mapping[resId] = Promise.withResolvers();
                 mapping[resId].resolve(displayNames[resId]);
             }
         }
@@ -60,10 +57,10 @@ export const nameService = {
                     throw new Error(`Invalid ID: ${resId}`);
                 }
                 if (!(resId in mapping)) {
-                    mapping[resId] = new Deferred();
+                    mapping[resId] = Promise.withResolvers();
                     resIdsToFetch.push(resId);
                 }
-                proms.push(mapping[resId]);
+                proms.push(mapping[resId].promise);
             }
             if (resIdsToFetch.length) {
                 if (batches[resModel]) {
@@ -74,8 +71,12 @@ export const nameService = {
                     const idsInBatch = unique(batches[resModel]);
                     delete batches[resModel];
 
+                    const specification = { display_name: {} };
                     orm.silent
-                        .webSearchRead(resModel, [["id", "in", idsInBatch]], ["display_name"])
+                        .webSearchRead(resModel, [["id", "in", idsInBatch]], {
+                            specification,
+                            context: { active_test: false },
+                        })
                         .then(({ records }) => {
                             const displayNames = Object.fromEntries(
                                 records.map((rec) => [rec.id, rec.display_name])

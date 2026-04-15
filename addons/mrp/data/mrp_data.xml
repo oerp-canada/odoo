@@ -10,7 +10,10 @@
         <record id="route_warehouse0_manufacture" model='stock.route'>
             <field name="name">Manufacture</field>
             <field name="company_id"></field>
-            <field name="sequence">10</field>
+            <field name="sequence">5</field>
+            <field name="product_selectable" eval="False"/>
+            <field name="warehouse_selectable" eval="True"/>
+            <field name="warehouse_ids" eval="[(4, ref('stock.warehouse0'))]"/>
         </record>
 
         <!-- Enable the manufacturing in warehouse0 -->
@@ -69,6 +72,23 @@
             <field name="loss_id" ref="mrp.category_productive"></field>
             <field name="manual" eval="False"/>
             <field name="sequence">0</field>
+        </record>
+
+        <record id="mrp_workcenter_calendar" model="resource.calendar">
+            <field name="name">Work Center 40 hours/week</field>
+            <field name="company_id" eval="False"/>
+            <field name="hours_per_day">8</field>
+            <field name="attendance_ids"
+                eval="[
+                    Command.clear(),
+                    Command.create({'dayofweek': '0', 'duration_hours': 8, 'hour_from': 8, 'hour_to': 16}),
+                    Command.create({'dayofweek': '1', 'duration_hours': 8, 'hour_from': 8, 'hour_to': 16}),
+                    Command.create({'dayofweek': '2', 'duration_hours': 8, 'hour_from': 8, 'hour_to': 16}),
+                    Command.create({'dayofweek': '3', 'duration_hours': 8, 'hour_from': 8, 'hour_to': 16}),
+                    Command.create({'dayofweek': '4', 'duration_hours': 8, 'hour_from': 8, 'hour_to': 16}),
+                ]"
+            />
+            <field name="full_time_required_hours">40</field>
         </record>
 
     </data>

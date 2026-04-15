@@ -17,9 +17,12 @@ from . import test_robustness
 from . import test_packing
 from . import test_packing_neg
 from . import test_proc_rule
-from . import test_wise_operator
 from . import test_report
 from . import test_report_stock_quantity
 from . import test_report_tours
 from . import test_stock_return_picking
 from . import test_stock_lot
+from . import test_picking_tours
+from . import test_replenish
+from . import test_old_rules
+from . import test_overview_graph

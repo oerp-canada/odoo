@@ -1,35 +1,48 @@
-# Part of Odoo. See LICENSE file for full copyright and licensing details.
-import argparse
 import io
-import urllib.parse
 import sys
+import textwrap
+import urllib.parse
 import zipfile
+from argparse import RawTextHelpFormatter
 from functools import partial
 from pathlib import Path
 
 import requests
 
+from ..modules import db
+from ..tools import config
 from . import Command
 from .server import report_configuration
-from ..service.db import dump_db, exp_drop, exp_db_exist, exp_duplicate_database, exp_rename, restore_db
-from ..tools import config
 
 eprint = partial(print, file=sys.stderr, flush=True)
+
+
+_db_exist_error_message = """\
+Target database {db_name} exists, aborting.
+
+\tuse `--force` to delete the existing database anyway."""
+
+
+def _exit_if_exists(db_name, *, drop_instead):
+    if not db.exist(db_name):
+        pass
+    elif drop_instead:
+        db.drop(db_name)
+    else:
+        sys.exit(_db_exist_error_message.format(db_name=db_name))
+
 
 class Db(Command):
     """ Create, drop, dump, load databases """
     name = 'db'
+    description = """
+        Command-line version of the database manager.
+
+        Commands are all filestore-aware.
+    """
 
     def run(self, cmdargs):
-        """Command-line version of the database manager.
-
-        Doesn't provide a `create` command as that's not useful. Commands are
-        all filestore-aware.
-        """
-        parser = argparse.ArgumentParser(
-            prog=f'{Path(sys.argv[0]).name} {self.name}',
-            description=self.__doc__.strip()
-        )
+        parser = self.parser
         parser.add_argument('-c', '--config')
         parser.add_argument('-D', '--data-dir')
         parser.add_argument('--addons-path')
@@ -42,6 +55,55 @@ class Db(Command):
         parser.set_defaults(func=lambda _: exit(parser.format_help()))
 
         subs = parser.add_subparsers()
+
+        # INIT ----------------------------------
+
+        init = subs.add_parser(
+            "init",
+            help="Create and initialize a database",
+            description="Create an empty database and install the minimum required modules",
+            formatter_class=RawTextHelpFormatter,
+        )
+        init.set_defaults(func=self.init)
+        init.add_argument(
+            'database',
+            help="database to create",
+        )
+        init.add_argument(
+            '--with-demo', action='store_true',
+            help="install demo data in the new database",
+        )
+        init.add_argument(
+            '--force', action='store_true',
+            help="delete database if exists",
+        )
+        init.add_argument(
+            '--language', default='en_US',
+            help="default language for the instance, default 'en_US'",
+        )
+        init.add_argument(
+            '--username', default='admin',
+            help="admin username, default 'admin'",
+        )
+        init.add_argument(
+            '--password', default='admin',
+            help="admin password, default 'admin'",
+        )
+        init.add_argument(
+            '--country',
+            help="country to be set on the main company",
+        )
+        init.epilog = textwrap.dedent("""\
+
+                Database initialization will install the minimum required modules.
+                To install more modules, use the `module install` command.
+                For more info:
+
+                $ odoo-bin module install --help
+        """)
+
+        # LOAD ----------------------------------
+
         load = subs.add_parser(
             "load", help="Load a dump file.",
             description="Loads a dump file into odoo, dump file can be a URL. "
@@ -63,11 +125,13 @@ class Db(Command):
         )
         load.add_argument('dump_file', help="zip or pg_dump file to load")
 
+        # DUMP ----------------------------------
+
         dump = subs.add_parser(
             "dump", help="Create a dump with filestore.",
             description="Creates a dump file. The dump is always in zip format "
-                        "(with filestore), to get a no-filestore format use "
-                        "pg_dump directly.")
+                        "(with filestore), to get pg_dump format, use "
+                        "dump_format argument.")
         dump.set_defaults(func=self.dump)
         dump.add_argument('database', help="database to dump")
         dump.add_argument(
@@ -75,6 +139,18 @@ class Db(Command):
             help="if provided, database is dumped to specified path, otherwise "
                  "or if `-`, dumped to stdout",
         )
+        dump.add_argument(
+            '--format', dest='dump_format', choices=('zip', 'dump'), default='zip',
+            help="if provided, database is dumped used the specified format, "
+                "otherwise defaults to `zip`.\n"
+                "Supported formats are `zip`, `dump` (pg_dump format) ",
+        )
+        dump.add_argument(
+            '--no-filestore', action='store_const', dest='filestore', default=True, const=False,
+            help="if passed, zip database is dumped without filestore (default: false)"
+        )
+
+        # DUPLICATE -----------------------------
 
         duplicate = subs.add_parser("duplicate", help="Duplicate a database including filestore.")
         duplicate.set_defaults(func=self.duplicate)
@@ -89,6 +165,8 @@ class Db(Command):
         duplicate.add_argument("source")
         duplicate.add_argument("target", help="database to copy `source` to, must not exist unless `-f` is specified in which case it will be dropped first")
 
+        # RENAME --------------------------------
+
         rename = subs.add_parser("rename", help="Rename a database including filestore.")
         rename.set_defaults(func=self.rename)
         rename.add_argument(
@@ -97,6 +175,8 @@ class Db(Command):
         )
         rename.add_argument('source')
         rename.add_argument("target", help="database to rename `source` to, must not exist unless `-f` is specified, in which case it will be dropped first")
+
+        # DROP ----------------------------------
 
         drop = subs.add_parser("drop", help="Delete a database including filestore")
         drop.set_defaults(func=self.drop)
@@ -110,22 +190,31 @@ class Db(Command):
             if v is not None
             if k in ['config', 'data_dir', 'addons_path'] or k.startswith(('db_', 'pg_'))
             for val in [
-                '--data-dir' if k == 'data_dir'\
-                    else '--addons-path' if k == 'addons_path'\
+                '--data-dir' if k == 'data_dir'
+                    else '--addons-path' if k == 'addons_path'
                     else f'--{k}',
                 v,
             ]
-        ])
-        # force db management active to bypass check when only a
-        # `check_db_management_enabled` version is available.
-        config['list_db'] = True
+        ], setup_logging=True)
         report_configuration()
 
         args.func(args)
 
+    def init(self, args):
+        _exit_if_exists(args.database, drop_instead=args.force)
+        db.create(
+            db_name=args.database,
+            demo=args.with_demo,
+            lang=args.language,
+            user_login=args.username,
+            user_password=args.password,
+            country_code=args.country,
+            phone=None,
+        )
+
     def load(self, args):
         db_name = args.database or Path(args.dump_file).stem
-        self._check_target(db_name, delete_if_exists=args.force)
+        _exit_if_exists(db_name, drop_instead=args.force)
 
         url = urllib.parse.urlparse(args.dump_file)
         if url.scheme:
@@ -144,31 +233,39 @@ class Db(Command):
             exit("Not a zipped dump file, use `pg_restore` to restore raw dumps,"
                  " and `psql` to execute sql dumps or scripts.")
 
-        restore_db(db=db_name, dump_file=dump_file, copy=True, neutralize_database=args.neutralize)
+        db.restore(
+            db_name,
+            dump_file,
+            copy=True,
+            neutralize_database=args.neutralize,
+        )
 
     def dump(self, args):
         if args.dump_path == '-':
-            dump_db(args.database, sys.stdout.buffer)
+            db.dump(args.database, sys.stdout.buffer)
         else:
-            with open(args.dump_path, 'wb') as f:
-                dump_db(args.database, f)
+            with open(args.dump_path, 'wb') as dump_file:
+                db.dump(
+                    args.database,
+                    dump_file,
+                    backup_format=args.dump_format,
+                    with_filestore=args.filestore,
+                )
 
     def duplicate(self, args):
-        self._check_target(args.target, delete_if_exists=args.force)
-        exp_duplicate_database(args.source, args.target, neutralize_database=args.neutralize)
+        _exit_if_exists(args.target, drop_instead=args.force)
+        db.duplicate(
+            args.source,
+            args.target,
+            neutralize_database=args.neutralize,
+        )
 
     def rename(self, args):
-        self._check_target(args.target, delete_if_exists=args.force)
-        exp_rename(args.source, args.target)
+        _exit_if_exists(args.target, drop_instead=args.force)
+        db.rename(
+            args.source,
+            args.target,
+        )
 
     def drop(self, args):
-        if not exp_drop(args.database):
-            exit(f"Database {args.database} does not exist.")
-
-    def _check_target(self, target, *, delete_if_exists):
-        if exp_db_exist(target):
-            if delete_if_exists:
-                exp_drop(target)
-            else:
-                exit(f"Target database {target} exists, aborting.\n\n"
-                     f"\tuse `--force` to delete the existing database anyway.")
+        db.drop(args.database)

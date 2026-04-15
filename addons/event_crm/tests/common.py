@@ -3,7 +3,7 @@
 
 from datetime import datetime, timedelta
 
-from odoo import fields
+from odoo import fields, tools
 from odoo.addons.crm.tests.common import TestCrmCommon
 from odoo.addons.event.tests.common import EventCase
 
@@ -81,27 +81,28 @@ class EventCrmCase(TestCrmCommon, EventCase):
 
         if partner is None:
             partner = self.env['res.partner']
+        registration_company = registrations._find_first_notnull('company_name')
         expected_reg_name = partner.name or registrations._find_first_notnull('name') or registrations._find_first_notnull('email')
         if partner:
             expected_contact_name = partner.name if not partner.is_company else False
-            expected_partner_name = partner.name if partner.is_company else False
+            expected_partner_name = (partner.is_company and partner.name) or partner.parent_name or registration_company
         else:
             expected_contact_name = registrations._find_first_notnull('name')
-            expected_partner_name = False
+            expected_partner_name = registration_company
 
         # event information
         self.assertEqual(lead.event_id, event)
-        self.assertEqual(lead.referred, event.name)
+        self.assertEqual(lead.utm_reference, event)
 
         # registration information
+        registration_phone = registrations._find_first_notnull('phone')
         self.assertEqual(lead.partner_id, partner)
         self.assertEqual(lead.name, '%s - %s' % (event.name, expected_reg_name))
         self.assertNotIn('False', lead.name)  # avoid a "Dear False" like construct ^^ (this assert is serious and intended)
         self.assertEqual(lead.contact_name, expected_contact_name)
         self.assertEqual(lead.partner_name, expected_partner_name)
-        self.assertEqual(lead.email_from, partner.email if partner else registrations._find_first_notnull('email'))
-        self.assertEqual(lead.phone, partner.phone if partner else registrations._find_first_notnull('phone'))
-        self.assertEqual(lead.mobile, partner.mobile if partner and partner.mobile else registrations._find_first_notnull('mobile'))
+        self.assertEqual(lead.email_from, partner.email if partner and partner.email else registrations._find_first_notnull('email'))
+        self.assertEqual(lead.phone, partner.phone if partner and partner.phone else registration_phone)
 
         # description: to improve
         self.assertNotIn('False', lead.description)  # avoid a "Dear False" like construct ^^ (this assert is serious and intended)
@@ -111,7 +112,10 @@ class EventCrmCase(TestCrmCommon, EventCase):
             elif registration.partner_id.name:
                 self.assertIn(registration.partner_id.name, lead.description)
             if registration.email:
-                self.assertIn(registration.email, lead.description)
+                if tools.email_normalize(registration.email) == registration.partner_id.email_normalized:
+                    self.assertIn(registration.partner_id.email, lead.description)
+                else:
+                    self.assertIn(tools.email_normalize(registration.email), lead.description)
             if registration.phone:
                 self.assertIn(registration.phone, lead.description)
 
@@ -130,7 +134,6 @@ class TestEventCrmCommon(EventCrmCase):
 
         cls.event_0 = cls.env['event.event'].create({
             'name': 'TestEvent',
-            'auto_confirm': True,
             'date_begin': fields.Datetime.to_string(datetime.today() + timedelta(days=1)),
             'date_end': fields.Datetime.to_string(datetime.today() + timedelta(days=15)),
             'date_tz': 'Europe/Brussels',

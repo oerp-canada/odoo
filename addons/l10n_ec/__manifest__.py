@@ -3,7 +3,7 @@
     'name': 'Ecuadorian Accounting',
     'icon': '/account/static/description/l10n.png',
     'countries': ['ec'],
-    'version': '3.5',
+    'version': '3.9',
     'description': """
 Functional
 ----------
@@ -33,23 +33,22 @@ Master Data:
 * Ecuador banks
 * Partners: Consumidor Final, SRI, IESS, and also basic VAT validation
 """,
-    'author': 'TRESCLOUD, OPA CONSULTING (https://opa-consulting.com)',
+    'author': 'TRESCLOUD (https://trescloud.com)',
     'category': 'Accounting/Localizations/Account Charts',
     'maintainer': 'TRESCLOUD',
-    'website': 'https://www.odoo.com/documentation/master/applications/finance/fiscal_localizations/ecuador.html',
+    'website': 'https://www.odoo.com/documentation/latest/applications/finance/fiscal_localizations/ecuador.html',
     'license': 'LGPL-3',
     'depends': [
         'base',
-        'base_iban',
         'account_debit_note',
         'l10n_latam_invoice_document',
         'l10n_latam_base',
         'account',
     ],
+    'auto_install': ['account'],
     'data': [
         'security/ir.model.access.csv',
         'data/account_tax_report_data.xml',
-        'data/res.bank.csv',
         'data/l10n_latam_identification_type_data.xml',
         'data/res_partner_data.xml',
         'data/l10n_latam.document.type.csv',
@@ -64,5 +63,4 @@ Master Data:
     'demo': [
         'demo/demo_company.xml',
     ],
-    'installable': True,
 }

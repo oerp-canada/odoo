@@ -1,25 +1,21 @@
-# -*- coding: utf-8 -*-
 # Part of Odoo. See LICENSE file for full copyright and licensing details.
 
-from datetime import datetime, timedelta
-from psycopg2 import sql
-
 import hashlib
-import pytz
-import threading
+from datetime import datetime, timedelta
 
-from odoo import fields, models, api, _
+from odoo import api, fields, models
 from odoo.addons.base.models.res_partner import _tz_get
 from odoo.exceptions import UserError
-from odoo.tools import split_every
+from odoo.fields import Domain
+from odoo.tools import _, SQL
+from odoo.tools.date_utils import all_timezones
 from odoo.tools.misc import _format_time_ago
 from odoo.http import request
-from odoo.osv import expression
 
 
 class WebsiteTrack(models.Model):
     _name = 'website.track'
-    _description = 'Visited Pages'
+    _description = 'Visited Page'
     _order = 'visit_datetime DESC'
     _log_access = False
 
@@ -62,8 +58,8 @@ class WebsiteVisitor(models.Model):
     country_flag = fields.Char(related="country_id.image_url", string="Country Flag")
     lang_id = fields.Many2one('res.lang', string='Language', help="Language from the website when visitor has been created")
     timezone = fields.Selection(_tz_get, string='Timezone')
-    email = fields.Char(string='Email', compute='_compute_email_phone')
-    mobile = fields.Char(string='Mobile', compute='_compute_email_phone')
+    email = fields.Char(string='Email', compute='_compute_email_phone', compute_sudo=True)
+    mobile = fields.Char(string='Mobile', compute='_compute_email_phone', compute_sudo=True)
 
     # Visit fields
     visit_count = fields.Integer('# Visits', default=1, readonly=True, help="A new visit is considered if last connection was more than 8 hours ago.")
@@ -79,41 +75,47 @@ class WebsiteVisitor(models.Model):
     time_since_last_action = fields.Char('Last action', compute="_compute_time_statistics", help='Time since last page view. E.g.: 2 minutes ago')
     is_connected = fields.Boolean('Is connected?', compute='_compute_time_statistics', help='A visitor is considered as connected if his last page view was within the last 5 minutes.')
 
-    _sql_constraints = [
-        ('access_token_unique', 'unique(access_token)', 'Access token should be unique.'),
-    ]
+    _access_token_unique = models.Constraint(
+        'unique(access_token)',
+        'Access token should be unique.',
+    )
 
     @api.depends('partner_id')
     def _compute_display_name(self):
         for record in self:
-            record.display_name = record.partner_id.name or _('Website Visitor #%s', record.id)
+            # Accessing name of partner through sudo to avoid infringing
+            # record rule if partner belongs to another company.
+            record.display_name = record.partner_id.sudo().name or _('Website Visitor #%s', record.id)
 
     @api.depends('access_token')
     def _compute_partner_id(self):
         # The browse in the loop is fine, there is no SQL Query on partner here
         for visitor in self:
+            if not visitor.id:
+                visitor.partner_id = visitor._origin.partner_id
+                continue
             # If the access_token is not a 32 length hexa string, it means that
             # the visitor is linked to a logged in user, in which case its
             # partner_id is used instead as the token.
             partner_id = len(visitor.access_token) != 32 and int(visitor.access_token)
             visitor.partner_id = self.env['res.partner'].browse(partner_id)
 
-    @api.depends('partner_id.email_normalized', 'partner_id.mobile', 'partner_id.phone')
+    @api.depends('partner_id.email_normalized', 'partner_id.phone')
     def _compute_email_phone(self):
         results = self.env['res.partner'].search_read(
             [('id', 'in', self.partner_id.ids)],
-            ['id', 'email_normalized', 'mobile', 'phone'],
+            ['id', 'email_normalized', 'phone'],
         )
         mapped_data = {
             result['id']: {
                 'email_normalized': result['email_normalized'],
-                'mobile': result['mobile'] if result['mobile'] else result['phone']
+                'phone': result['phone']
             } for result in results
         }
 
         for visitor in self:
             visitor.email = mapped_data.get(visitor.partner_id.id, {}).get('email_normalized')
-            visitor.mobile = mapped_data.get(visitor.partner_id.id, {}).get('mobile')
+            visitor.mobile = mapped_data.get(visitor.partner_id.id, {}).get('phone')
 
     @api.depends('website_track_ids')
     def _compute_page_statistics(self):
@@ -130,13 +132,12 @@ class WebsiteVisitor(models.Model):
 
         for visitor in self:
             visitor_info = mapped_data.get(visitor.id, {'page_count': 0, 'visitor_page_count': 0, 'page_ids': set()})
-            visitor.page_ids = [(6, 0, visitor_info['page_ids'])]
+            # sudo - website.visitor: access to page_ids is restricted to group_website_designer
+            visitor.sudo().page_ids = [(6, 0, visitor_info['page_ids'])]
             visitor.visitor_page_count = visitor_info['visitor_page_count']
             visitor.page_count = visitor_info['page_count']
 
     def _search_page_ids(self, operator, value):
-        if operator not in ('like', 'ilike', 'not like', 'not ilike', '=like', '=ilike', '=', '!='):
-            raise ValueError(_('This operator is not supported'))
         return [('website_track_ids.page_id.name', operator, value)]
 
     @api.depends('website_track_ids.page_id')
@@ -206,7 +207,7 @@ class WebsiteVisitor(models.Model):
             'lang_id': request.lang.id,
             # Note that it's possible for the GEOIP database to return a country
             # code which is unknown in Odoo
-            'country_code': request.geoip.get('country_code'),
+            'country_code': request.geoip.country_code,
             'website_id': request.website.id,
             'timezone': self._get_visitor_timezone() or None,
             'write_uid': self.env.uid,
@@ -216,7 +217,7 @@ class WebsiteVisitor(models.Model):
             # used instead as the token.
             'partner_id': None if len(str(access_token)) == 32 else access_token,
         }
-        query = """
+        query = SQL("""
             INSERT INTO website_visitor (
                 partner_id, access_token, last_connection_datetime, visit_count, lang_id,
                 website_id, timezone, write_uid, create_uid, write_date, create_date, country_id)
@@ -235,32 +236,34 @@ class WebsiteVisitor(models.Model):
                                     ELSE website_visitor.visit_count
                                 END
             RETURNING id, CASE WHEN create_date = now() at time zone 'UTC' THEN 'inserted' ELSE 'updated' END AS upsert
-        """
+        """, **create_values)
 
         if force_track_values:
-            create_values['url'] = force_track_values['url']
-            create_values['page_id'] = force_track_values.get('page_id')
-            query = sql.SQL("""
+            query = SQL("""
                 WITH visitor AS (
-                    {query}, %(url)s AS url, %(page_id)s AS page_id
+                    %(query)s, %(url)s AS url, %(page_id)s AS page_id
                 ), track AS (
                     INSERT INTO website_track (visitor_id, url, page_id, visit_datetime)
                     SELECT id, url, page_id::integer, now() at time zone 'UTC' FROM visitor
                 )
                 SELECT id, upsert from visitor;
-            """).format(query=sql.SQL(query))
+                """,
+                query=query,
+                url=force_track_values['url'],
+                page_id=force_track_values.get('page_id'),
+            )
 
-        self.env.cr.execute(query, create_values)
-        return self.env.cr.fetchone()
+        [result] = self.env.execute_query(query)
+        return result
 
     def _get_visitor_from_request(self, force_create=False, force_track_values=None):
         """ Return the visitor as sudo from the request.
 
-        :param bool force_create: force a visitor creation if no visitor exists
+        :param force_create: force a visitor creation if no visitor exists
         :param force_track_values: an optional dict to create a track at the
             same time.
         :return: the website visitor if exists or forced, empty recordset
-                 otherwise.
+            otherwise.
         """
 
         # This function can be called in json with mobile app.
@@ -269,17 +272,15 @@ class WebsiteVisitor(models.Model):
         if not (request and request.env and request.env.uid):
             return None
 
-        Visitor = self.env['website.visitor'].sudo()
-        visitor = Visitor
         access_token = self._get_access_token()
 
         if force_create:
             visitor_id, _ = self._upsert_visitor(access_token, force_track_values)
-            visitor = Visitor.browse(visitor_id)
-        else:
-            visitor = Visitor.search([('access_token', '=', access_token)])
+            return self.env['website.visitor'].sudo().browse(visitor_id)
 
-        if not force_create and visitor and not visitor.timezone:
+        visitor = self.env['website.visitor'].sudo().search_fetch([('access_token', '=', access_token)])
+
+        if not force_create and not self.env.cr.readonly and visitor and not visitor.timezone:
             tz = self._get_visitor_timezone()
             if tz:
                 visitor._update_visitor_timezone(tz)
@@ -297,11 +298,12 @@ class WebsiteVisitor(models.Model):
         website_track_values = {'url': url}
         if website_page:
             website_track_values['page_id'] = website_page.id
+
         self._get_visitor_from_request(force_create=True, force_track_values=website_track_values)
 
     def _add_tracking(self, domain, website_track_values):
         """ Add the track and update the visitor"""
-        domain = expression.AND([domain, [('visitor_id', '=', self.id)]])
+        domain = Domain.AND([domain, Domain('visitor_id', '=', self.id)])
         last_view = self.env['website.track'].sudo().search(domain, limit=1)
         if not last_view or last_view.visit_datetime < datetime.now() - timedelta(minutes=30):
             website_track_values['visitor_id'] = self.id
@@ -328,23 +330,20 @@ class WebsiteVisitor(models.Model):
         self.website_track_ids.visitor_id = target.id
         self.unlink()
 
-    def _cron_unlink_old_visitors(self):
+    def _cron_unlink_old_visitors(self, batch_size=1000):
         """ Unlink inactive visitors (see '_inactive_visitors_domain' for
         details).
 
         Visitors were previously archived but we came to the conclusion that
         archived visitors have very little value and bloat the database for no
         reason. """
-        auto_commit = not getattr(threading.current_thread(), 'testing', False)
-        visitor_model = self.env['website.visitor']
-        for inactive_visitors_batch in split_every(
-            1000,
-            visitor_model.sudo().search(self._inactive_visitors_domain()).ids,
-            visitor_model.browse,
-        ):
-            inactive_visitors_batch.unlink()
-            if auto_commit:
-                self.env.cr.commit()
+        domain = self._inactive_visitors_domain()
+        visitors = self.env['website.visitor'].sudo().search(domain, limit=batch_size)
+        visitors.unlink()
+        self.env['ir.cron']._commit_progress(
+            processed=len(visitors),
+            remaining=0 if len(visitors) < batch_size else visitors.search_count(domain),
+        )
 
     def _inactive_visitors_domain(self):
         """ This method defines the domain of visitors that can be cleaned. By
@@ -355,9 +354,9 @@ class WebsiteVisitor(models.Model):
         This method is meant to be overridden by sub-modules to further refine
         inactivity conditions. """
 
-        delay_days = int(self.env['ir.config_parameter'].sudo().get_param('website.visitor.live.days', 60))
+        delay_days = self.env['ir.config_parameter'].sudo().get_int('website.visitor.live.days') or 60
         deadline = datetime.now() - timedelta(days=delay_days)
-        return [('last_connection_datetime', '<', deadline), ('partner_id', '=', False)]
+        return Domain('last_connection_datetime', '<', deadline) & Domain('partner_id', '=', False)
 
     def _update_visitor_timezone(self, timezone):
         """ We need to do this part here to avoid concurrent updates error. """
@@ -386,8 +385,8 @@ class WebsiteVisitor(models.Model):
         self.env.cr.execute(query, (date_now, self.id), log_exceptions=False)
 
     def _get_visitor_timezone(self):
-        tz = request.httprequest.cookies.get('tz') if request else None
-        if tz in pytz.all_timezones:
+        tz = request.cookies.get('tz') if request else None
+        if tz in all_timezones:
             return tz
         elif not self.env.user._is_public():
             return self.env.user.tz

@@ -9,12 +9,6 @@ class AccountChartTemplate(models.AbstractModel):
     @template('bg')
     def _get_bg_template_data(self):
         return {
-            'property_account_receivable_id': 'l10n_bg_411',
-            'property_account_payable_id': 'l10n_bg_401',
-            'property_account_expense_categ_id': 'l10n_bg_601',
-            'property_account_income_categ_id': 'l10n_bg_701',
-            'property_tax_payable_account_id': 'l10n_bg_4539',
-            'property_tax_receivable_account_id': 'l10n_bg_4538',
             'code_digits': '6',
         }
 
@@ -28,5 +22,14 @@ class AccountChartTemplate(models.AbstractModel):
                 'transfer_account_code_prefix': '430',
                 'income_currency_exchange_account_id': 'l10n_bg_624',
                 'expense_currency_exchange_account_id': 'l10n_bg_624',
+                'account_sale_tax_id': 'l10n_bg_sale_vat_20',
+                'account_purchase_tax_id': 'l10n_bg_purchase_vat_20_ftc',
+                'account_default_pos_receivable_account_id': 'l10n_bg_4111',
+                'default_cash_difference_income_account_id': 'l10n_bg_791001',
+                'default_cash_difference_expense_account_id': 'l10n_bg_691001',
+                'expense_account_id': 'l10n_bg_601',
+                'income_account_id': 'l10n_bg_701',
+                'receivable_account_id': 'l10n_bg_411',
+                'payable_account_id': 'l10n_bg_401',
             },
         }

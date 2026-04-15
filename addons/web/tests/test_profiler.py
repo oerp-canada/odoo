@@ -43,29 +43,40 @@ class TestProfilingWeb(ProfilingHttpCase):
         self.authenticate('admin', 'admin')
         last_profile = self.env['ir.profile'].search([], limit=1, order='id desc')
         # Trying to start profiling when not enabled
-        self.env['ir.config_parameter'].set_param('base.profiling_enabled_until', '')
+        self.env['ir.config_parameter'].set_str('base.profiling_enabled_until', None)
         res = self.profile_rpc({'profile': 1})
         self.assertEqual(res['result']['res_model'], 'base.enable.profiling.wizard')
         self.assertEqual(last_profile, self.env['ir.profile'].search([], limit=1, order='id desc'))
 
         # Enable profiling and start blank profiling
         expiration = datetime.datetime.now() + datetime.timedelta(seconds=50)
-        self.env['ir.config_parameter'].set_param('base.profiling_enabled_until', expiration)
+        self.env['ir.config_parameter'].set_str('base.profiling_enabled_until', expiration)
         res = self.profile_rpc({'profile': 1})
         self.assertTrue(res['result']['session'])
         self.assertEqual(last_profile, self.env['ir.profile'].search([], limit=1, order='id desc'), "profiling route shouldn't have been profiled")
         # Profile a page
-        res = self.url_open('/web/speedscope')  # profile a light route
+        res = self.url_open(f'/web/login')  # profile a light route
         new_profile = self.env['ir.profile'].search([], limit=1, order='id desc')
         self.assertNotEqual(last_profile, new_profile, "A new profile should have been created")
-        self.assertEqual(new_profile.name, '/web/speedscope?')
+        self.assertEqual(new_profile.name, f'/web/login?')
+
+    def test_profile_test_tool(self):
+        with self.profile():
+            self.url_open('/web')
+
+        descriptions = self.env['ir.profile'].search([], order='id desc', limit=3).mapped('name')
+        self.assertEqual(descriptions, [
+            f'test_profile_test_tool uid:{self.env.uid} warm ',
+            f'test_profile_test_tool uid:{self.env.uid} warm /web/login?redirect=%2Fweb%3F',
+            f'test_profile_test_tool uid:{self.env.uid} warm /web?',
+        ])
 
 
 @tagged('post_install', '-at_install', 'profiling')
 class TestProfilingModes(ProfilingHttpCase):
     def test_profile_collectors(self):
         expiration = datetime.datetime.now() + datetime.timedelta(seconds=50)
-        self.env['ir.config_parameter'].set_param('base.profiling_enabled_until', expiration)
+        self.env['ir.config_parameter'].set_str('base.profiling_enabled_until', expiration)
 
         self.authenticate('admin', 'admin')
         res = self.profile_rpc({})
@@ -85,7 +96,7 @@ class TestProfilingPublic(ProfilingHttpCase):
 
     def test_public_user_profiling(self):
         last_profile = self.env['ir.profile'].search([], limit=1, order='id desc')
-        self.env['ir.config_parameter'].set_param('base.profiling_enabled_until', '')
+        self.env['ir.config_parameter'].set_str('base.profiling_enabled_until', None)
         self.authenticate(None, None)
 
         res = self.url_open('/web/set_profiling?profile=1')
@@ -93,7 +104,7 @@ class TestProfilingPublic(ProfilingHttpCase):
         self.assertEqual(res.text, 'error: Profiling is not enabled on this database. Please contact an administrator.')
 
         expiration = datetime.datetime.now() + datetime.timedelta(seconds=50)
-        self.env['ir.config_parameter'].set_param('base.profiling_enabled_until', expiration)
+        self.env['ir.config_parameter'].set_str('base.profiling_enabled_until', expiration)
         res = self.url_open('/web/set_profiling?profile=1')
         self.assertEqual(res.status_code, 200)
         res = res.json()

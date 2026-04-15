@@ -16,6 +16,7 @@ to minimise the code to maintain
 import logging
 import sys
 
+import odoo.modules
 from . import case
 from .common import HttpCase
 from .result import stats_logger
@@ -35,8 +36,11 @@ class TestSuite(BaseTestSuite):
 
     def run(self, result, debug=False):
         for test in self:
+            if result.shouldStop:
+                break
             assert isinstance(test, (TestCase))
             self._tearDownPreviousClass(test, result)
+            odoo.modules.module.current_test = test
             self._handleClassSetUp(test, result)
             result._previousTestClass = test.__class__
 
@@ -44,6 +48,7 @@ class TestSuite(BaseTestSuite):
                 test(result)
 
         self._tearDownPreviousClass(None, result)
+        odoo.modules.module.current_test = None
         return result
 
     def _handleClassSetUp(self, test, result):

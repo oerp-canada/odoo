@@ -1,46 +1,69 @@
 # -*- coding: utf-8 -*-
 # Part of Odoo. See LICENSE file for full copyright and licensing details.
 
+import logging
+import unittest
 from datetime import datetime, timedelta
 
-from odoo.fields import Datetime as FieldsDatetime
-from odoo.tests.common import users
-from odoo.addons.website.tools import MockRequest
+from odoo.fields import Command, Datetime as FieldsDatetime
+from odoo.tests.common import tagged, users
+from odoo.addons.website.tests.test_website_visitor import MockVisitor
+from odoo.addons.http_routing.tests.common import MockRequest
 from odoo.addons.website_event.controllers.main import WebsiteEventController
-from odoo.addons.website_event.tests.common import TestEventQuestionCommon
+from odoo.addons.event.tests.common import EventCase
+
+_logger = logging.getLogger(__name__)
+
+try:
+    import vobject
+except ImportError:
+    _logger.warning("`vobject` Python module not found, iCal file generation disabled. Consider installing this module if you want to generate iCal files")
+    vobject = None
 
 
-class TestEventData(TestEventQuestionCommon):
+class TestEventData(EventCase, MockVisitor):
 
-    @users('user_eventmanager')
-    def test_event_type_configuration_from_type(self):
-        event_type = self.event_type_questions.with_user(self.env.user)
+    @classmethod
+    def setUpClass(cls):
+        super(TestEventData, cls).setUpClass()
+        cls.event_public, cls.event_link_only, cls.event_logged_users = cls.env['event.event'].sudo().create([{
+            'name': 'event',
+            'website_visibility': website_visibility,
+            'website_published': True,
+        } for website_visibility in ['public', 'link', 'logged_users']])
+        cls.events_visibility_test = cls.event_public | cls.event_link_only | cls.event_logged_users
 
-        event = self.env['event.event'].create({
-            'name': 'Event Update Type',
-            'event_type_id': event_type.id,
-            'date_begin': FieldsDatetime.to_string(datetime.today() + timedelta(days=1)),
-            'date_end': FieldsDatetime.to_string(datetime.today() + timedelta(days=15)),
+    @users('public_test')
+    def test_ics_file_html_description(self):
+        """Verify that _get_ics_file returns a valid .ics description
+        that will be rendered correctly for the user.
+        """
+        if not vobject:
+            raise unittest.SkipTest("Skip test when `vobject` Python module is not found.")
+
+        event = self.event_public
+        event.write({
+            'date_begin': FieldsDatetime.to_string(datetime(2022, 12, 31, 10, 0, 0)),
+            'date_end': FieldsDatetime.to_string(datetime(2022, 12, 31, 12, 0, 0)),
+            'description': '<p>This is <b>HTML</b> description</p>',
+            'event_register_url': 'https://www.example.com',
         })
 
-        self.assertEqual(
-            event.question_ids.mapped('question_type'),
-            ['name', 'email', 'phone', 'simple_choice', 'simple_choice', 'text_box'])
-        self.assertEqual(event.specific_question_ids.filtered(
-            lambda q: q.question_type in ['simple_choice', 'text_box']).title, 'Question1')
-        self.assertEqual(event.specific_question_ids.filtered(
-            lambda q: q.question_type in ['name', 'email', 'phone', 'company_name'])
-                         .mapped('title'), ['Name', 'Email', 'Phone'])
-        self.assertEqual(
-            set(event.specific_question_ids.filtered(
-            lambda q: q.question_type in ['simple_choice', 'text_box']).mapped('answer_ids.name')),
-            set(['Q1-Answer1', 'Q1-Answer2']))
-        self.assertEqual(len(event.general_question_ids), 2)
-        self.assertEqual(event.general_question_ids[0].title, 'Question2')
-        self.assertEqual(event.general_question_ids[1].title, 'Question3')
-        self.assertEqual(
-            set(event.general_question_ids[0].mapped('answer_ids.name')),
-            set(['Q2-Answer1', 'Q2-Answer2']))
+        ics_map = event._get_ics_file()
+        ics_bytes = ics_map[event.id]
+        ics_str = ics_bytes.decode('utf-8')
+
+        cal = vobject.readOne(ics_str)
+        vevent = cal.vevent
+
+        external_description = event._get_external_description()
+        self.assertIn('This is HTML description', external_description)
+        self.assertEqual(vevent.description.value, external_description)
+
+        self.assertIn('x-alt-desc', vevent.contents)
+        xalt = vevent.contents['x-alt-desc'][0]
+        self.assertEqual(xalt.params.get('FMTTYPE'), ['text/html'])
+        self.assertEqual(xalt.value, external_description)
 
     def test_process_attendees_form(self):
         event = self.env['event.event'].create({
@@ -66,11 +89,11 @@ class TestEventData(TestEventQuestionCommon):
         [second_phone_question, company_name_question] = self.env['event.question'].create([{
             'title': 'Second Phone',
             'question_type': 'phone',
-            'event_id': event.id,
+            'event_ids': [Command.set(event.ids)],
         }, {
             'title': 'Company Name',
             'question_type': 'company_name',
-            'event_id': event.id,
+            'event_ids': [Command.set(event.ids)],
         }])
 
         form_details = {
@@ -88,6 +111,8 @@ class TestEventData(TestEventQuestionCommon):
             '2-simple_choice-%s' % self.event_question_1.id: '9',
             '0-simple_choice-%s' % self.event_question_2.id: '7',
             '0-text_box-%s' % self.event_question_3.id: 'Free Text',
+            'custom-field': 'custom-value',
+            'recaptcha_token_response': 'opaquetokenvalue',
         }
 
         with MockRequest(self.env):
@@ -206,3 +231,51 @@ class TestEventData(TestEventQuestionCommon):
         # should fetch "registration_2" because the answer to the first question is "Q1-Answer2"
         # should fetch "registration_3" because the answer to the third question is "Answer2" (as free text)
         self.assertEqual(search_res, registration_2 | registration_3)
+
+    @users('user_employee')
+    def test_website_visibility_internal_user(self):
+        """ Check website visibility value for an internal user """
+        visible_events = self.env['event.event'].search([
+            ('id', 'in', self.events_visibility_test.ids),
+            ('is_visible_on_website', '=', True)])
+        self.assertIn(self.event_public, visible_events)
+        self.assertNotIn(self.event_link_only, visible_events)
+        self.assertIn(self.event_logged_users, visible_events)
+
+    @users('portal_test')
+    def test_website_visibility_portal_user(self):
+        """ Check website visibility value for a portal user """
+        visible_events = self.env['event.event'].search([
+            ('id', 'in', self.events_visibility_test.ids),
+            ('is_visible_on_website', '=', True)])
+        self.assertIn(self.event_public, visible_events)
+        self.assertNotIn(self.event_link_only, visible_events)
+        self.assertIn(self.event_logged_users, visible_events)
+
+    @users('public_test')
+    def test_website_visibility_public_user(self):
+        """ Check website visibility value for public user """
+        visible_events = self.env['event.event'].search([
+            ('id', 'in', self.events_visibility_test.ids),
+            ('is_visible_on_website', '=', True)])
+        self.assertIn(self.event_public, visible_events)
+        self.assertNotIn(self.event_link_only, visible_events)
+        self.assertNotIn(self.event_logged_users, visible_events)
+
+        # Check that a visitor can see event where he is participating
+        website_visitor = self.env['website.visitor'].sudo().create({
+            "name": 'Website Visitor',
+            "access_token": 'c8d20bd006c3bf46b875451defb5991d'
+        })
+        self.env['event.registration'].sudo().create({
+            'name': "Registration from visitor",
+            'event_id': self.event_link_only.id,
+            'visitor_id': website_visitor.id,
+        })
+        with self.mock_visitor_from_request(force_visitor=website_visitor):
+            visible_events = self.env['event.event'].search([
+                ('id', 'in', self.events_visibility_test.ids),
+                ('is_visible_on_website', '=', True)])
+            self.assertIn(self.event_public, visible_events)
+            self.assertIn(self.event_link_only, visible_events, "Should now be visible because visitor is participating")
+            self.assertNotIn(self.event_logged_users, visible_events)

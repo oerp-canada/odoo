@@ -1,7 +1,5 @@
-/** @odoo-module **/
-
 import { formatDateTime } from "@web/core/l10n/dates";
-import { _lt } from "@web/core/l10n/translation";
+import { _t } from "@web/core/l10n/translation";
 import { registry } from "@web/core/registry";
 import { selectionField, SelectionField } from "../selection/selection_field";
 
@@ -17,7 +15,7 @@ export class TimezoneMismatchField extends SelectionField {
     static defaultProps = {
         ...super.defaultProps,
         tzOffsetField: "tz_offset",
-        mismatchTitle: _lt(
+        mismatchTitle: _t(
             "Timezone Mismatch : This timezone is different from that of your browser.\nPlease, set the same timezone as your browser's to avoid time discrepancies in your system."
         ),
     };
@@ -27,7 +25,7 @@ export class TimezoneMismatchField extends SelectionField {
         if (userOffset && this.props.record.data[this.props.name]) {
             const offset = -new Date().getTimezoneOffset();
             let browserOffset = offset < 0 ? "-" : "+";
-            browserOffset += Math.abs(offset / 60)
+            browserOffset += Math.floor(Math.abs(offset / 60))
                 .toFixed(0)
                 .padStart(2, "0");
             browserOffset += Math.abs(offset % 60)
@@ -41,7 +39,7 @@ export class TimezoneMismatchField extends SelectionField {
     }
     get mismatchTitle() {
         if (!this.props.record.data[this.props.name]) {
-            return this.env._t("Set a timezone on your user");
+            return _t("Set a timezone on your user");
         }
         return this.props.mismatchTitle;
     }
@@ -78,6 +76,20 @@ export const timezoneMismatchField = {
     ...selectionField,
     component: TimezoneMismatchField,
     additionalClasses: ["d-flex"],
+    supportedOptions: [
+        ...(selectionField.supportedOptions || []),
+        {
+            label: _t("Mismatch title"),
+            name: "mismatch_title",
+            type: "string",
+        },
+        {
+            label: _t("Timezone offset field"),
+            name: "tz_offset_field",
+            type: "field",
+            availableTypes: ["char"],
+        },
+    ],
     extractProps({ options }) {
         const props = selectionField.extractProps(...arguments);
         props.tzOffsetField = options.tz_offset_field;

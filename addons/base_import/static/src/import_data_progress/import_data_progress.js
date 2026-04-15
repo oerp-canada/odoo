@@ -1,6 +1,5 @@
-/** @odoo-module **/
-
-import { Component, useEffect, useState } from "@odoo/owl";
+import { useLayoutEffect, useState } from "@web/owl2/utils";
+import { Component } from "@odoo/owl";
 
 export class ImportDataProgress extends Component {
     static template = "ImportDataProgress";
@@ -18,7 +17,7 @@ export class ImportDataProgress extends Component {
             timeLeft: null,
         });
 
-        useEffect(
+        useLayoutEffect(
             () => {
                 this.updateTimer();
                 return () => {

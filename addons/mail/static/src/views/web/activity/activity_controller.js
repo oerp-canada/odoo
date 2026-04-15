@@ -1,15 +1,15 @@
-/* @odoo-module */
+import { useState } from "@web/owl2/utils";
+import { _t } from "@web/core/l10n/translation";
 
-import { useMessaging } from "@mail/core/common/messaging_hook";
-
-import { Component, useState } from "@odoo/owl";
+import { Component } from "@odoo/owl";
 
 import { useService } from "@web/core/utils/hooks";
-import { sprintf } from "@web/core/utils/strings";
+import { useModel } from "@web/model/model";
+import { extractFieldsFromArchInfo } from "@web/model/relational_model/utils";
 import { CogMenu } from "@web/search/cog_menu/cog_menu";
 import { Layout } from "@web/search/layout";
 import { SearchBar } from "@web/search/search_bar/search_bar";
-import { useModel } from "@web/views/model";
+import { usePager } from "@web/search/pager_hook";
 import { standardViewProps } from "@web/views/standard_view_props";
 import { SelectCreateDialog } from "@web/views/view_dialogs/select_create_dialog";
 
@@ -24,38 +24,70 @@ export class ActivityController extends Component {
     static template = "mail.ActivityController";
 
     setup() {
-        const { rootState } = this.props.state || {};
-        this.model = useModel(
-            this.props.Model,
-            {
-                activeFields: this.props.archInfo.activeFields,
-                resModel: this.props.resModel,
-                fields: this.props.fields,
-                viewMode: "activity",
-                rootState,
-            },
-            { ignoreUseSampleModel: true }
-        );
+        this.model = useState(useModel(this.props.Model, this.modelParams));
 
         this.dialog = useService("dialog");
         this.action = useService("action");
-        this.messaging = useMessaging();
-        this.activity = useService("mail.activity");
-        this.ui = useState(useService("ui"));
+        this.store = useService("mail.store");
+        this.ui = useService("ui");
+        usePager(() => {
+            const { count, hasLimitedCount, limit, offset } = this.model.root;
+            return {
+                offset: offset,
+                limit: limit,
+                total: count,
+                onUpdate: async (params) => {
+                    // Ensure that only (active) records with at least one activity, "done" (archived) or not, are fetched.
+                    // We don't use active_test=false in the context because otherwise we would also get archived records.
+                    params.domain = [
+                        ...(this.model.originalDomain || []),
+                        ["activity_ids.active", "in", [true, false]],
+                    ];
+                    await Promise.all([
+                        this.model.root.load(params),
+                        this.model.fetchActivityData(params),
+                    ]);
+                },
+                updateTotal: hasLimitedCount ? () => this.model.root.fetchCount() : undefined,
+            };
+        });
     }
 
-    scheduleActivity() {
-        this.dialog.add(SelectCreateDialog, {
+    get modelParams() {
+        const { archInfo, resModel } = this.props;
+        const { activeFields, fields } = extractFieldsFromArchInfo(archInfo, this.props.fields);
+        return {
+            config: {
+                activeFields,
+                resModel,
+                fields,
+            },
+        };
+    }
+
+    getSearchProps() {
+        const { comparision, context, domain, groupBy, orderBy } = this.env.searchModel;
+        return { comparision, context, domain, groupBy, orderBy };
+    }
+
+    get getSelectCreateDialogProps() {
+        return {
             resModel: this.props.resModel,
             searchViewId: this.env.searchModel.searchViewId,
             domain: this.model.originalDomain,
-            title: sprintf(this.env._t("Search: %s"), this.props.archInfo.title),
+            title: _t("Search: %s", this.props.archInfo.title),
             multiSelect: false,
             context: this.props.context,
+            noCreate: this.props.context?.create === false,
             onSelected: async (resIds) => {
-                await this.activity.schedule(this.props.resModel, resIds[0]);
-                this.model.load();
+                await this.store.scheduleActivity(this.props.resModel, resIds);
             },
+        };
+    }
+
+    scheduleActivity() {
+        this.dialog.add(SelectCreateDialog, this.getSelectCreateDialogProps, {
+            onClose: () => this.model.load(this.getSearchProps()),
         });
     }
 
@@ -73,10 +105,11 @@ export class ActivityController extends Component {
                     default_res_id: resId,
                     default_res_model: this.props.resModel,
                     default_activity_type_id: activityTypeId,
+                    dialog_size: "large",
                 },
             },
             {
-                onClose: () => this.model.load(),
+                onClose: () => this.model.load(this.getSearchProps()),
             }
         );
     }
@@ -94,9 +127,9 @@ export class ActivityController extends Component {
         this.model.orm.call(this.props.resModel, "activity_send_mail", [resIds, templateID], {});
     }
 
-    async openRecord(record, mode) {
+    async openRecord(record, { newWindow } = {}) {
         const activeIds = this.model.root.records.map((datapoint) => datapoint.resId);
-        this.props.selectRecord(record.resId, { activeIds, mode });
+        this.props.selectRecord(record.resId, { activeIds, newWindow });
     }
 
     get rendererProps() {
@@ -109,7 +142,7 @@ export class ActivityController extends Component {
             archInfo: this.props.archInfo,
             groupedActivities: this.model.activityData.grouped_activities,
             scheduleActivity: this.scheduleActivity.bind(this),
-            onReloadData: () => this.model.load(),
+            onReloadData: () => this.model.load(this.getSearchProps()),
             onEmptyCell: this.openActivityFormView.bind(this),
             onSendMailTemplate: this.sendMailTemplate.bind(this),
             openRecord: this.openRecord.bind(this),

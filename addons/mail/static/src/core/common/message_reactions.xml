@@ -1,24 +1,18 @@
 <?xml version="1.0" encoding="UTF-8" ?>
 <templates xml:space="preserve">
-<t t-name="mail.MessageReactions" owl="1">
-    <div class="position-relative d-flex flex-wrap"
+<t t-name="mail.MessageReactions">
+    <div class="o-mail-MessageReactions position-relative d-flex flex-wrap"
         t-att-class="{
-            'flex-row-reverse me-3': env.inChatWindow and env.alignedRight,
-            'ms-3': !(env.inChatWindow and env.alignedRight) and (props.message.isDiscussion),
-        }"
-        t-attf-class="{{ props.message.isDiscussion ? 'mt-n2' : 'mt-1' }}">
-        <button t-foreach="props.message.reactions" t-as="reaction" t-key="reaction.content" class="o-mail-MessageReaction btn d-flex p-0 border rounded-1 mb-1"
-            t-on-click="() => this.onClickReaction(reaction)"
-            t-on-contextmenu="onContextMenu"
-            t-att-class="{
-                'o-selfReacted border-primary text-primary fw-bolder': hasSelfReacted(reaction),
-                'bg-view': !hasSelfReacted(reaction),
-                'ms-1': env.inChatWindow and env.alignedRight,
-                'me-1': !(env.inChatWindow and env.alignedRight),
-         }" t-att-title="getReactionSummary(reaction)">
-            <span class="mx-1" t-esc="reaction.content"/>
-            <span class="mx-1" t-esc="reaction.count"/>
-        </button>
+            'flex-row-reverse me-3': this.env.inChatWindow and this.env.alignedRight,
+            'ms-3': !(this.env.inChatWindow and this.env.alignedRight) and (this.props.message.isDiscussion),
+            'o-emojiPickerOpen': this.emojiPicker.isOpen,
+            'mt-n1': this.props.message.message_type === 'comment' and !this.props.message.attachment_ids.length,
+            'o-mt-0_5': this.props.message.attachment_ids.length,
+        }">
+        <t t-foreach="this.props.message.reactions" t-as="reaction" t-key="reaction.content">
+            <MessageReactionList message="this.props.message" openReactionMenu="this.props.openReactionMenu" reaction="reaction"/>
+        </t>
+        <QuickReactionMenu t-if="this.props.message.canAddReaction()" action="this.messageActions.actions.find(action => action.id === 'reaction')" classNames="{ 'p-1 mb-1 opacity-25 opacity-100-hover': true }" message="this.props.message"/>
     </div>
 </t>
 </templates>

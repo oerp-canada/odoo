@@ -1,9 +1,8 @@
 # -*- coding: utf-8 -*-
 from odoo.addons.account.tests.common import AccountTestInvoicingCommon
-from odoo.tests import tagged
-from odoo.tests.common import Form, TransactionCase
+from odoo.exceptions import ValidationError
+from odoo.tests import Form, tagged, TransactionCase
 from odoo import fields, api, SUPERUSER_ID, Command
-from odoo.exceptions import ValidationError, UserError
 from odoo.tools import mute_logger
 
 from dateutil.relativedelta import relativedelta
@@ -11,13 +10,14 @@ from freezegun import freeze_time
 from functools import reduce
 import json
 import psycopg2
-from unittest.mock import patch
+from unittest.mock import patch, Mock
 
 
 class TestSequenceMixinCommon(AccountTestInvoicingCommon):
     @classmethod
-    def setUpClass(cls, chart_template_ref=None):
-        super().setUpClass(chart_template_ref=chart_template_ref)
+    def setUpClass(cls):
+        super().setUpClass()
+        cls.company_data['company'].write({'fiscalyear_last_day': "31", 'fiscalyear_last_month': "3"})
         cls.test_move = cls.create_move()
 
     @classmethod
@@ -41,42 +41,63 @@ class TestSequenceMixinCommon(AccountTestInvoicingCommon):
             move.action_post()
         return move
 
+    def assertMoveName(cls, move, expected_name):
+        if move.name_placeholder:
+            cls.assertFalse(move.name, f"This move is potentially the first of the sequence, it shouldn't have a name while it is not posted. Got '{move.name}'.")
+            cls.assertEqual(move.name_placeholder, expected_name, f"This move is potentially the first of the sequence, it doesn't have a name but a placeholder name which is currently '{move.name_placeholder}'. You expected '{expected_name}'.")
+        else:
+            cls.assertEqual(move.name, expected_name, f"Expected '{expected_name}' but got '{move.name}'.")
+
 
 @tagged('post_install', '-at_install')
 class TestSequenceMixin(TestSequenceMixinCommon):
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        cls.env.ref('base.partner_root').company_id = cls.env.company
+
+    def assertNameAtDate(self, date, name):
+        test = self.create_move(date=date)
+        test.action_post()
+        self.assertEqual(test.name, name)
+        return test
+
+    def set_sequence(self, date, name):
+        return self.create_move(date=date, name=name)._post(soft=False)
+
     def test_sequence_change_date(self):
         """Change the sequence when we change the date iff it has never been posted."""
         # Check setup
         self.assertEqual(self.test_move.state, 'draft')
-        self.assertEqual(self.test_move.name, 'MISC/2016/01/0001')
+        self.assertEqual(self.test_move.name_placeholder, 'MISC/15-16/01/0001')
         self.assertEqual(fields.Date.to_string(self.test_move.date), '2016-01-01')
 
         # Never posetd, the number must change if we change the date
         self.test_move.date = '2020-02-02'
-        self.assertEqual(self.test_move.name, 'MISC/2020/02/0001')
+        self.assertMoveName(self.test_move, 'MISC/19-20/02/0001')
 
         # We don't recompute user's input when posting
         self.test_move.name = 'MyMISC/2020/0000001'
         self.test_move.action_post()
-        self.assertEqual(self.test_move.name, 'MyMISC/2020/0000001')
+        self.assertMoveName(self.test_move, 'MyMISC/2020/0000001')
 
         # Has been posted, and it doesn't change anymore
         self.test_move.button_draft()
         self.test_move.date = '2020-01-02'
         self.test_move.action_post()
-        self.assertEqual(self.test_move.name, 'MyMISC/2020/0000001')
+        self.assertMoveName(self.test_move, 'MyMISC/2020/0000001')
 
     def test_sequence_change_date_with_quick_edit_mode(self):
         """
         Test the sequence update behavior when changing the date of a move in quick edit mode.
         The sequence should only be recalculated if a value (year or month) utilized in the sequence is modified.
         """
-        self.env.company.quick_edit_mode = "out_and_in_invoices"
+        self.env.company.quick_edit_mode_enabled = True
         self.env.company.fiscalyear_last_day = 30
         self.env.company.fiscalyear_last_month = '12'
 
         bill = self.env['account.move'].create({
-            'partner_id': 1,
+            'partner_id': self.ref('base.partner_root'),
             'move_type': 'in_invoice',
             'date': '2016-01-01',
             'line_ids': [
@@ -86,19 +107,20 @@ class TestSequenceMixin(TestSequenceMixinCommon):
                 }),
             ]
         })
+        self.assertMoveName(bill, 'BILL/15-16/01/0001')
         bill = bill.copy({'date': '2016-02-01'})
 
-        self.assertEqual(bill.name, 'BILL/2016/02/0001')
+        self.assertMoveName(bill, 'BILL/15-16/02/0001')
         with Form(bill) as bill_form:
             bill_form.date = '2016-02-02'
-            self.assertEqual(bill_form.name, 'BILL/2016/02/0001')
+            self.assertMoveName(bill_form, 'BILL/15-16/02/0001')
             bill_form.date = '2016-03-01'
-            self.assertEqual(bill_form.name, 'BILL/2016/03/0001')
+            self.assertMoveName(bill_form, 'BILL/15-16/03/0001')
             bill_form.date = '2017-01-01'
-            self.assertEqual(bill_form.name, 'BILL/2017/01/0001')
+            self.assertMoveName(bill_form, 'BILL/16-17/01/0001')
 
         invoice = self.env['account.move'].create({
-            'partner_id': 1,
+            'partner_id': self.ref('base.partner_root'),
             'move_type': 'out_invoice',
             'date': '2016-01-01',
             'line_ids': [
@@ -109,23 +131,24 @@ class TestSequenceMixin(TestSequenceMixinCommon):
             ]
         })
 
-        self.assertEqual(invoice.name, 'INV/2016/00001')
+        self.assertMoveName(invoice, 'INV/15-16/0001')
         with Form(invoice) as invoice_form:
             invoice_form.date = '2016-01-02'
-            self.assertEqual(invoice_form.name, 'INV/2016/00001')
+            self.assertMoveName(invoice_form, 'INV/15-16/0001')
             invoice_form.date = '2016-02-02'
-            self.assertEqual(invoice_form.name, 'INV/2016/00001')
+            self.assertMoveName(invoice_form, 'INV/15-16/0001')
             invoice_form.date = '2017-01-01'
-            self.assertEqual(invoice_form.name, 'INV/2017/00001')
+            self.assertMoveName(invoice_form, 'INV/16-17/0001')
 
-    def test_sequence_empty_editable_with_quick_edit_mode(self):
+    def test_sequence_empty_editable_with_document_sequence_editable(self):
         """ Ensure the names of all but the first moves in a period are empty and editable in quick edit mode """
-        self.env.company.quick_edit_mode = 'in_invoices'
+        self.env.company.document_sequence_editable = True
 
         bill_1 = self.env['account.move'].create({
-            'partner_id': 1,
+            'partner_id': self.ref('base.partner_root'),
             'move_type': 'in_invoice',
             'date': '2016-01-01',
+            'invoice_date': '2016-01-01',
             'line_ids': [
                 Command.create({
                     'name': 'line',
@@ -134,15 +157,14 @@ class TestSequenceMixin(TestSequenceMixinCommon):
             ]
         })
         # First move in a period gets a name
-        self.assertEqual(bill_1.name, 'BILL/2016/01/0001')
+        self.assertMoveName(bill_1, 'BILL/15-16/01/0001')
 
         bill_2 = bill_1.copy({'date': '2016-01-02'})
         with Form(bill_2) as bill_2_form:
             # Subsequent moves in the same period get an empty editable name in draft mode
             self.assertFalse(bill_2_form.name)
-            bill_2_form.name = 'BILL/2016/01/0002'
-            self.assertEqual(bill_2_form.name, 'BILL/2016/01/0002')
-
+            bill_2.name = 'BILL/15-16/01/0002'
+            self.assertMoveName(bill_2_form, 'BILL/15-16/01/0001')
 
         bill_3 = bill_1.copy({'date': '2016-01-03'})
         bill_4 = bill_1.copy({'date': '2016-01-04'})
@@ -150,16 +172,16 @@ class TestSequenceMixin(TestSequenceMixinCommon):
 
         # Same works with updating multiple moves
         with Form(bill_3) as bill_3_form:
-            self.assertEqual(bill_3_form.name, 'BILL/2016/02/0001')
+            self.assertMoveName(bill_3_form, 'BILL/15-16/02/0001')
 
         with Form(bill_4) as bill_4_form:
             self.assertFalse(bill_4_form.name)
-            bill_4_form.name = 'BILL/2016/02/0002'
-            self.assertEqual(bill_4_form.name, 'BILL/2016/02/0002')
+            bill_4.name = 'BILL/15-16/02/0002'
+            self.assertMoveName(bill_4_form, 'BILL/15-16/02/0001')
 
     def test_sequence_draft_change_date(self):
         # When a draft entry is added to an empty period, it should get a name.
-        # When a draft entry with a name is moved to a period already having entries, its name should be reset to '/'.
+        # When a draft entry with a name is moved to a period already having entries, its name should be reset to False.
 
         new_move = self.test_move.copy({'date': '2016-02-01'})
         new_multiple_move_1 = self.test_move.copy({'date': '2016-03-01'})
@@ -167,36 +189,37 @@ class TestSequenceMixin(TestSequenceMixinCommon):
         new_moves = new_multiple_move_1 + new_multiple_move_2
 
         # Empty period, so a name should be set
-        self.assertEqual(new_move.name, 'MISC/2016/02/0001')
-        self.assertEqual(new_multiple_move_1.name, 'MISC/2016/03/0001')
-        self.assertEqual(new_multiple_move_2.name, 'MISC/2016/04/0001')
+        self.assertMoveName(new_move, 'MISC/15-16/02/0001')
+        self.assertMoveName(new_multiple_move_1, 'MISC/15-16/03/0001')
+        self.assertMoveName(new_multiple_move_2, 'MISC/16-17/04/0001')
 
-        # Move to an existing period with another move in it
+        # Move to an existing period with a posted move in it
+        self.test_move.action_post()
         new_move.date = fields.Date.to_date('2016-01-10')
         new_moves.date = fields.Date.to_date('2016-01-15')
 
-        # Not an empty period, so names should be reset to '/' (draft)
-        self.assertEqual(new_move.name, '/')
-        self.assertEqual(new_multiple_move_1.name, '/')
-        self.assertEqual(new_multiple_move_2.name, '/')
+        # Not an empty period, so names should be reset to False (draft)
+        self.assertMoveName(new_move, False)
+        self.assertMoveName(new_multiple_move_1, False)
+        self.assertMoveName(new_multiple_move_2, False)
 
         # Move back to a period with no moves in it
         new_move.date = fields.Date.to_date('2016-02-01')
         new_moves.date = fields.Date.to_date('2016-03-01')
 
         # All moves in the previously empty periods should be given a name instead of `/`
-        self.assertEqual(new_move.name, 'MISC/2016/02/0001')
-        self.assertEqual(new_multiple_move_1.name, 'MISC/2016/03/0001')
-        # Since this is the second one in the same period, it should remain `/`
-        self.assertEqual(new_multiple_move_2.name, '/')
+        self.assertMoveName(new_move, 'MISC/15-16/02/0001')
+        self.assertMoveName(new_multiple_move_1, 'MISC/15-16/03/0001')
+        # Since this is the second one in the same period, both have the same pending name
+        self.assertMoveName(new_multiple_move_2, 'MISC/15-16/03/0001')
 
-        # Move both moves back to different periods, both with already moves in it.
+        # Move both moves back to different periods, both with already moves in it. One has a posted move in the sequence, the other not.
         new_multiple_move_1.date = fields.Date.to_date('2016-01-10')
         new_multiple_move_2.date = fields.Date.to_date('2016-02-10')
 
-        # Moves are not in empty periods, so names should be set to '/' (draft)
-        self.assertEqual(new_multiple_move_1.name, '/')
-        self.assertEqual(new_multiple_move_2.name, '/')
+        # Moves are not in empty periods, but only the first hsa a posted move. So the first draft should be False and the second should get a name.
+        self.assertMoveName(new_multiple_move_1, False)
+        self.assertMoveName(new_multiple_move_2, 'MISC/15-16/02/0001')
 
         # Change the journal of the last two moves (empty)
         journal = self.env['account.journal'].create({
@@ -207,79 +230,105 @@ class TestSequenceMixin(TestSequenceMixinCommon):
         new_moves.journal_id = journal
 
         # Both moves should be assigned a name, since no moves are in the journal and they are in different periods.
-        self.assertEqual(new_multiple_move_1.name, 'AJ/2016/01/0001')
-        self.assertEqual(new_multiple_move_2.name, 'AJ/2016/02/0001')
+        self.assertMoveName(new_multiple_move_1, 'AJ/15-16/01/0001')
+        self.assertMoveName(new_multiple_move_2, 'AJ/15-16/02/0001')
 
         # When the date is removed in the form view, the name should not recompute
         with Form(new_multiple_move_1) as move_form:
-            move_form.date = False
-            self.assertEqual(new_multiple_move_1.name, 'AJ/2016/01/0001')
+            move_form.date = fields.Date.to_date('2016-01-11')
+            self.assertMoveName(new_multiple_move_1, 'AJ/15-16/01/0001')
             move_form.date = fields.Date.to_date('2016-01-10')
 
+    def test_sequence_draft_change_date_with_new_sequence(self):
+        invoice_1 = self.test_move.copy({'date': '2016-02-01', 'journal_id': self.company_data['default_journal_sale'].id})
+        invoice_2 = invoice_1.copy({'date': '2016-02-02'})
+
+        self.assertMoveName(invoice_2, 'INV/15-16/0001')
+        invoice_1.name = 'INV/15-16/02/001'
+        invoice_2.date = '2016-03-01'
+        self.assertMoveName(invoice_2, 'INV/15-16/03/001')
+
+    def test_sequence_draft_first_of_period(self):
+        """
+        | Step | Move | Action      | Date       | Name           |
+        | ---- | ---- | ----------- | ---------- | -----------    |
+        | 1    | `A`  | Add         | 2023-02-01 | `2023/02/0001` |
+        | 2    | `B`  | Add         | 2023-02-02 | `/`            |
+        | 3    | `B`  | Post        | 2023-02-02 | `2023/02/0002` |
+        | 4    | `A`  | Cancel      | 2023-02-01 | `2023/02/0001` | -> Assert
+        """
+        move_a = self.test_move.copy({'date': '2023-02-01'})
+        self.assertMoveName(move_a, 'MISC/22-23/02/0001')
+
+        move_b = self.test_move.copy({'date': '2023-02-02'})
+        self.assertMoveName(move_b, 'MISC/22-23/02/0001')
+
+        move_b.action_post()
+        self.assertMoveName(move_b, 'MISC/22-23/02/0001')
+
+        # The first sequence slot is now taken by move_b, move_a's name and placeholder should be False.
+        move_a.button_cancel()
+        self.assertMoveName(move_a, False)
 
     def test_journal_sequence(self):
-        self.assertEqual(self.test_move.name, 'MISC/2016/01/0001')
+        self.assertMoveName(self.test_move, 'MISC/15-16/01/0001')
         self.test_move.action_post()
-        self.assertEqual(self.test_move.name, 'MISC/2016/01/0001')
+        self.assertMoveName(self.test_move, 'MISC/15-16/01/0001')
 
         copy1 = self.create_move(date=self.test_move.date)
-        self.assertEqual(copy1.name, '/')
+        self.assertMoveName(copy1, False)
         copy1.action_post()
-        self.assertEqual(copy1.name, 'MISC/2016/01/0002')
+        self.assertMoveName(copy1, 'MISC/15-16/01/0002')
 
         copy2 = self.create_move(date=self.test_move.date)
         new_journal = self.test_move.journal_id.copy()
         new_journal.code = "MISC2"
         copy2.journal_id = new_journal
-        self.assertEqual(copy2.name, 'MISC2/2016/01/0001')
-
+        self.assertMoveName(copy2, 'MISC2/15-16/01/0001')
+        copy2.action_post()
+        copy2.button_draft()
         with Form(copy2) as move_form:  # It is editable in the form
             with self.assertLogs('odoo.tests.form') as cm:
                 move_form.name = 'MyMISC/2016/0001'
-            self.assertTrue(cm.output[0].startswith('WARNING:odoo.tests.form.onchange:'))
-            self.assertIn('The sequence will restart at 1 at the start of every year', cm.output[0])
+                self.assertTrue(cm.output[0].startswith('WARNING:odoo.tests.form.onchange:'))
+                self.assertIn('The sequence will restart at 1 at the start of every year', cm.output[0])
 
-            move_form.journal_id = self.test_move.journal_id
-            self.assertEqual(move_form.name, '/')
+        copy2.name = False  # Can't modify journal_id if name is set
+        copy2.journal_id = self.test_move.journal_id
+        self.assertMoveName(copy2, False)
+        copy2.journal_id = new_journal
+        self.assertMoveName(copy2, 'MISC2/15-16/01/0001')
 
-            move_form.journal_id = new_journal
-            self.assertEqual(move_form.name, 'MISC2/2016/01/0001')
-
-            with self.assertLogs('odoo.tests.form') as cm:
-                move_form.name = 'MyMISC/2016/0001'
-            self.assertTrue(cm.output[0].startswith('WARNING:odoo.tests.form.onchange:'))
-            self.assertIn('The sequence will restart at 1 at the start of every year', cm.output[0])
-
+        copy2.name = 'MyMISC/2016/0001'
         copy2.action_post()
-        self.assertEqual(copy2.name, 'MyMISC/2016/0001')
+        self.assertMoveName(copy2, 'MyMISC/2016/0001')
 
         copy3 = self.create_move(date=copy2.date, journal=new_journal)
-        self.assertEqual(copy3.name, '/')
-        with self.assertRaises(AssertionError):
-            with Form(copy2) as move_form:  # It is not editable in the form
-                move_form.name = 'MyMISC/2016/0002'
-        copy3.action_post()
-        self.assertEqual(copy3.name, 'MyMISC/2016/0002')
+        self.assertMoveName(copy3, False)
         copy3.name = 'MISC2/2016/00002'
+        copy3.action_post()
 
         copy4 = self.create_move(date=copy2.date, journal=new_journal)
         copy4.action_post()
-        self.assertEqual(copy4.name, 'MISC2/2016/00003')
+        self.assertMoveName(copy4, 'MISC2/2016/00003')
 
         copy5 = self.create_move(date=copy2.date, journal=new_journal)
         copy5.date = '2021-02-02'
         copy5.action_post()
-        self.assertEqual(copy5.name, 'MISC2/2021/00001')
+        self.assertMoveName(copy5, 'MISC2/2021/00001')
         copy5.name = 'N\'importe quoi?'
 
         copy6 = self.create_move(date=copy5.date, journal=new_journal)
         copy6.action_post()
-        self.assertEqual(copy6.name, 'N\'importe quoi?1')
+        self.assertMoveName(copy6, 'N\'importe quoi?1')
 
     def test_journal_sequence_format(self):
         """Test different format of sequences and what it becomes on another period"""
         sequences = [
             ('JRNL/2016/00001', 'JRNL/2016/00002', 'JRNL/2016/00003', 'JRNL/2017/00001'),
+            ('JRNL/2015-2016/00001', 'JRNL/2015-2016/00002', 'JRNL/2016-2017/00001', 'JRNL/2016-2017/00002'),
+            ('JRNL/2015-16/00001', 'JRNL/2015-16/00002', 'JRNL/2016-17/00001', 'JRNL/2016-17/00002'),
+            ('JRNL/15-16/00001', 'JRNL/15-16/00002', 'JRNL/16-17/00001', 'JRNL/16-17/00002'),
             ('1234567', '1234568', '1234569', '1234570'),
             ('20190910', '20190911', '20190912', '20190913'),
             ('2016-0910', '2016-0911', '2016-0912', '2017-0001'),
@@ -312,9 +361,9 @@ class TestSequenceMixin(TestSequenceMixinCommon):
         self.test_move.name = f"{prefix}1"
         for c in range(2, 25):
             copy = self.create_move(date=self.test_move.date)
-            copy.name = "/"
+            copy.name = False
             copy.action_post()
-            self.assertEqual(copy.name, f"{prefix}{c}")
+            self.assertMoveName(copy, f"{prefix}{c}")
 
     def test_journal_sequence_multiple_type(self):
         """Domain is computed accordingly to different types."""
@@ -324,7 +373,7 @@ class TestSequenceMixin(TestSequenceMixinCommon):
         )
         (invoice + invoice2 + refund + refund2).write({
             'journal_id': self.company_data['default_journal_sale'].id,
-            'partner_id': 1,
+            'partner_id': self.ref('base.partner_root'),
             'invoice_date': '2016-01-01',
         })
         (invoice + invoice2).move_type = 'out_invoice'
@@ -332,12 +381,12 @@ class TestSequenceMixin(TestSequenceMixinCommon):
         all_moves = (entry + entry2 + invoice + invoice2 + refund + refund2)
         all_moves.name = False
         all_moves.action_post()
-        self.assertEqual(entry.name, 'MISC/2016/01/0002')
-        self.assertEqual(entry2.name, 'MISC/2016/01/0003')
-        self.assertEqual(invoice.name, 'INV/2016/00001')
-        self.assertEqual(invoice2.name, 'INV/2016/00002')
-        self.assertEqual(refund.name, 'RINV/2016/00001')
-        self.assertEqual(refund2.name, 'RINV/2016/00002')
+        self.assertEqual(entry.name, 'MISC/15-16/01/0001')
+        self.assertEqual(entry2.name, 'MISC/15-16/01/0002')
+        self.assertEqual(invoice.name, 'INV/15-16/0001')
+        self.assertEqual(invoice2.name, 'INV/15-16/0002')
+        self.assertEqual(refund.name, 'RINV/15-16/0001')
+        self.assertEqual(refund2.name, 'RINV/15-16/0002')
 
     def test_journal_sequence_groupby_compute(self):
         """The grouping optimization is correctly done."""
@@ -390,20 +439,53 @@ class TestSequenceMixin(TestSequenceMixinCommon):
         self.create_move(date='2020-01-01', name='00000876-G 0002/2020')
         next_move = self.create_move(date='2020-01-01')
         next_move.action_post()
-        self.assertEqual(next_move.name, '00000876-G 0002/2021')  # Wait, I didn't want this!
+        self.assertMoveName(next_move, '00000876-G 0002/2021')  # Wait, I didn't want this!
 
         next_move.button_draft()
         next_move.name = False
         next_move.journal_id.sequence_override_regex = r'^(?P<seq>\d*)(?P<suffix1>.*?)(?P<year>(\d{4})?)(?P<suffix2>)$'
         next_move.action_post()
-        self.assertEqual(next_move.name, '00000877-G 0002/2020')  # Pfew, better!
+        self.assertMoveName(next_move, '00000877-G 0002/2020')  # Pfew, better!
         next_move = self.create_move(date='2020-01-01')
         next_move.action_post()
-        self.assertEqual(next_move.name, '00000878-G 0002/2020')
+        self.assertMoveName(next_move, '00000878-G 0002/2020')
 
         next_move = self.create_move(date='2017-05-02')
         next_move.action_post()
-        self.assertEqual(next_move.name, '00000001-G 0002/2017')
+        self.assertMoveName(next_move, '00000001-G 0002/2017')
+
+    def test_journal_override_sequence_regex_year(self):
+        """Override the sequence regex with a year syntax not matching the draft invoice name"""
+        move = self.create_move(date='2020-01-01')
+        move.journal_id.sequence_override_regex = (
+            '^'
+            r'(?P<prefix1>.*?)'
+            r'(?P<year>(?:(?<=\D)|(?<=^))\d{4})?'
+            r'(?P<prefix2>(?<=\d{4}).*?)?'
+            r'(?P<seq>\d{0,9})'
+            r'(?P<suffix>\D*?)'
+            '$'
+        )
+
+        # check if the default year_range regex is not used
+        next_move = self.create_move(date='2020-01-01', name='MISC/2020/21/00001')
+        next_move.action_post()
+        self.assertEqual(next_move.name, 'MISC/2020/21/00001')
+
+        # check the next sequence
+        next_move = self.create_move(date='2020-01-01')
+        next_move.action_post()
+        self.assertEqual(next_move.name, 'MISC/2020/21/00002')
+
+        # check for another year
+        next_move = self.create_move(date='2021-01-01')
+        next_move.action_post()
+        self.assertEqual(next_move.name, 'MISC/2021/21/00001')
+
+        # check if year is correctly extracted
+        with self.assertRaises(ValidationError):
+            self.create_move(date='2022-01-01', name='MISC/2021/22/00001', post=True) # year does not match
+        self.create_move(date='2022-01-01', name='MISC/2022/22/00001', post=True)  # fix the year in the name
 
     def test_journal_sequence_ordering(self):
         """Entries are correctly sorted when posting multiple at once."""
@@ -420,20 +502,20 @@ class TestSequenceMixin(TestSequenceMixinCommon):
         copies[4].date = '2019-03-05'
         copies[5].date = '2019-03-05'
         # that entry is actualy the first one of the period, so it already has a name
-        # set it to '/' so that it is recomputed at post to be ordered correctly.
-        copies[0].name = '/'
+        # set it to False so that it is recomputed at post to be ordered correctly.
+        copies[0].name = False
         copies.action_post()
 
         # Ordered by date
-        self.assertEqual(copies[0].name, 'XMISC/2019/00002')
-        self.assertEqual(copies[1].name, 'XMISC/2019/00005')
-        self.assertEqual(copies[2].name, 'XMISC/2019/00006')
-        self.assertEqual(copies[3].name, 'XMISC/2019/00001')
-        self.assertEqual(copies[4].name, 'XMISC/2019/00003')
-        self.assertEqual(copies[5].name, 'XMISC/2019/00004')
+        self.assertMoveName(copies[0], 'XMISC/2019/00002')
+        self.assertMoveName(copies[1], 'XMISC/2019/00005')
+        self.assertMoveName(copies[2], 'XMISC/2019/00006')
+        self.assertMoveName(copies[3], 'XMISC/2019/00001')
+        self.assertMoveName(copies[4], 'XMISC/2019/00003')
+        self.assertMoveName(copies[5], 'XMISC/2019/00004')
 
         # Can't have twice the same name
-        with self.assertRaises(psycopg2.DatabaseError), mute_logger('odoo.sql_db'), self.env.cr.savepoint():
+        with self.assertRaises(psycopg2.DatabaseError), mute_logger('odoo.sql_db'):
             copies[0].name = 'XMISC/2019/00001'
 
         # Lets remove the order by date
@@ -472,35 +554,119 @@ class TestSequenceMixin(TestSequenceMixinCommon):
         wizard.save().resequence()
 
         self.assertEqual(copies[3].state, 'posted')
-        self.assertEqual(copies[5].name, 'XMISC/2019/10005')
+        self.assertMoveName(copies[5], 'XMISC/2019/10005')
         self.assertEqual(copies[5].state, 'draft')
+
+    def test_journal_resequence_in_between_2_years_pattern(self):
+        """Resequence XMISC/2023-2024/00001 into XMISC/23-24/00001."""
+        self.test_move.name = 'XMISC/2015-2016/00001'
+        invoices = (
+            self.create_move(date="2023-03-01", post=True)
+            + self.create_move(date="2023-03-02", post=True)
+            + self.create_move(date="2023-03-03", post=True)
+            + self.create_move(date="2023-04-01", post=True)
+            + self.create_move(date="2023-04-02", post=True)
+        )
+        self.assertRecordValues(invoices, (
+            {'name': 'XMISC/2022-2023/00001', 'state': 'posted'},
+            {'name': 'XMISC/2022-2023/00002', 'state': 'posted'},
+            {'name': 'XMISC/2022-2023/00003', 'state': 'posted'},
+            {'name': 'XMISC/2023-2024/00001', 'state': 'posted'},
+            {'name': 'XMISC/2023-2024/00002', 'state': 'posted'},
+        ))
+
+        # Call the resequence wizard and change the sequence to XMISC/22-23/00001
+        # By default the sequence order should be kept
+        resequence_wizard = Form(self.env['account.resequence.wizard'].with_context(active_ids=invoices.ids, active_model='account.move'))
+        resequence_wizard.first_name = "XMISC/22-23/00001"
+        new_values = json.loads(resequence_wizard.new_values)
+        # Ensure consistencies of sequence displayed in the UI
+        self.assertEqual(new_values[str(invoices[0].id)]['new_by_name'], 'XMISC/22-23/00001')
+        self.assertEqual(new_values[str(invoices[1].id)]['new_by_name'], 'XMISC/22-23/00002')
+        self.assertEqual(new_values[str(invoices[2].id)]['new_by_name'], 'XMISC/22-23/00003')
+        self.assertEqual(new_values[str(invoices[3].id)]['new_by_name'], 'XMISC/23-24/00001')
+        self.assertEqual(new_values[str(invoices[4].id)]['new_by_name'], 'XMISC/23-24/00002')
+        resequence_wizard.save().resequence()
+
+        # Ensure the resequencing gave the same result as what was expected
+        self.assertRecordValues(invoices, (
+            {'name': 'XMISC/22-23/00001', 'state': 'posted'},
+            {'name': 'XMISC/22-23/00002', 'state': 'posted'},
+            {'name': 'XMISC/22-23/00003', 'state': 'posted'},
+            {'name': 'XMISC/23-24/00001', 'state': 'posted'},
+            {'name': 'XMISC/23-24/00002', 'state': 'posted'},
+        ))
+
+    def test_sequence_staggered_year(self):
+        """The sequence is correctly computed when the year is staggered."""
+        self.env.company.document_sequence_editable = True
+        self.env.company.fiscalyear_last_day = 15
+        self.env.company.fiscalyear_last_month = '4'
+
+        # First bill in second half of first month of the fiscal year, which is
+        # the start of the fiscal year
+        bill = self.env['account.move'].create({
+            'partner_id': self.ref('base.partner_root'),
+            'move_type': 'in_invoice',
+            'date': '2024-04-17',
+            'line_ids': [
+                Command.create({
+                    'name': 'line',
+                    'account_id': self.company_data['default_account_revenue'].id,
+                }),
+            ]
+        })
+        self.assertMoveName(bill, 'BILL/24-25/04/0001')
+        # First bill in first half of first month of the fiscal year, which is
+        # the end of the fiscal year
+        bill_copy = bill.copy({'date': '2024-04-10', 'invoice_date': '2024-04-10'})
+        bill_copy.action_post()
+        self.assertMoveName(bill_copy, 'BILL/23-24/04/0001')
+        # Second bill in first half of first month
+        bill_copy_2 = bill.copy({'date': '2024-04-11', 'invoice_date': '2024-04-11'})
+        bill_copy_2.action_post()
+        self.assertMoveName(bill_copy_2, 'BILL/23-24/04/0002')
+        # Second bill in second half of first month
+        bill_copy_3 = bill.copy({'date': '2024-04-18', 'invoice_date': '2024-04-18'})
+        bill_copy_3.action_post()
+        self.assertMoveName(bill_copy_3, 'BILL/24-25/04/0001')
 
     def test_sequence_get_more_specific(self):
         """There is the ability to change the format (i.e. from yearly to montlhy)."""
-        def test_date(date, name):
-            test = self.create_move(date=date)
-            test.action_post()
-            self.assertEqual(test.name, name)
-
-        def set_sequence(date, name):
-            return self.create_move(date=date, name=name)._post()
-
         # Start with a continuous sequence
         self.test_move.name = 'MISC/00001'
 
         # Change the prefix to reset every year starting in 2017
-        new_year = set_sequence(self.test_move.date + relativedelta(years=1), 'MISC/2017/00001')
+        new_year = self.set_sequence(self.test_move.date + relativedelta(years=1), 'MISC/2017/00001')
 
         # Change the prefix to reset every month starting in February 2017
-        new_month = set_sequence(new_year.date + relativedelta(months=1), 'MISC/2017/02/00001')
+        new_month = self.set_sequence(new_year.date + relativedelta(months=1), 'MISC/2017/02/00001')
 
-        test_date(self.test_move.date, 'MISC/00002')  # Keep the old prefix in 2016
-        test_date(new_year.date, 'MISC/2017/00002')  # Keep the new prefix in 2017
-        test_date(new_month.date, 'MISC/2017/02/00002')  # Keep the new prefix in February 2017
+        self.assertNameAtDate(self.test_move.date, 'MISC/00002')  # Keep the old prefix in 2016
+        self.assertNameAtDate(new_year.date, 'MISC/2017/00002')  # Keep the new prefix in 2017
+        self.assertNameAtDate(new_month.date, 'MISC/2017/02/00002')  # Keep the new prefix in February 2017
+
+        # Go fiscal year in March
+        # This will break the prefix of 2017 set previously and we will use the fiscal year prefix as of now
+        start_fiscal = self.set_sequence(new_year.date + relativedelta(months=2), 'MISC/2016-2017/00001')
+
+        self.assertNameAtDate(self.test_move.date, 'MISC/00003')  # Keep the old prefix in 2016
+        self.assertNameAtDate(new_year.date, 'MISC/2016-2017/00002')  # Prefix in January 2017 changed!
+        self.assertNameAtDate(new_month.date, 'MISC/2017/02/00003')  # Keep the new prefix in February 2017
+        self.assertNameAtDate(start_fiscal.date, 'MISC/2016-2017/00003')  # Keep the new prefix in March 2017
 
         # Change the prefix to never reset (again) year starting in 2018 (Please don't do that)
-        reset_never = set_sequence(self.test_move.date + relativedelta(years=2), 'MISC/00100')
-        test_date(reset_never.date, 'MISC/00101')  # Keep the new prefix in 2018
+        reset_never = self.set_sequence(self.test_move.date + relativedelta(years=2), 'MISC/00100')
+        self.assertNameAtDate(reset_never.date, 'MISC/00101')  # Keep the new prefix in 2018
+
+    def test_fiscal_vs_monthly(self):
+        """Monthly sequence has priority over 2 digit financial year sequence but can be overridden."""
+        self.set_sequence('2101-02-01', 'MISC/01-02/00001')
+        move = self.assertNameAtDate('2101-03-01', 'MISC/01-03/00001')
+
+        move.journal_id.sequence_override_regex = move._sequence_year_range_regex
+        move.name = 'MISC/00-01/00001'
+        self.assertNameAtDate('2101-03-01', 'MISC/00-01/00002')
 
     def test_resequence_clash(self):
         """Resequence doesn't clash when it uses a name set in the same batch
@@ -530,14 +696,15 @@ class TestSequenceMixin(TestSequenceMixinCommon):
             'code': 'AJ',
         })
         move = self.env['account.move'].create({})
-        self.assertEqual(move.name, 'MISC/2021/10/0001')
+        self.assertMoveName(move, 'MISC/21-22/10/0001')
         with Form(move) as move_form:
             move_form.journal_id = journal
-        self.assertEqual(move.name, 'AJ/2021/10/0001')
+        self.assertMoveName(move, 'AJ/21-22/10/0001')
 
     def test_sequence_move_name_related_field_well_computed(self):
         AccountMove = type(self.env['account.move'])
         _compute_name = AccountMove._compute_name
+
         def _flushing_compute_name(self):
             self.env['account.move.line'].flush_model(fnames=['move_name'])
             _compute_name(self)
@@ -555,13 +722,140 @@ class TestSequenceMixin(TestSequenceMixinCommon):
 
         for move in payments.move_id:
             self.assertRecordValues(move.line_ids, [{'move_name': move.name}] * len(move.line_ids))
+            self.assertRecordValues(move.line_ids, [{'name': "Manual Payment"}] * len(move.line_ids))
+
+    def test_resequence_payment_and_non_payment_without_payment_sequence(self):
+        """Resequence wizard could be open for different move type if the payment sequence is set to False on the journal."""
+        journal = self.company_data['default_journal_bank'].copy({'payment_sequence': False})
+        bsl = self.env['account.bank.statement.line'].create({'name': 'test', 'amount': 100, 'journal_id': journal.id})
+        payment = self.env['account.payment'].create({
+            'payment_type': 'inbound',
+            'partner_id': self.partner_a.id,
+            'amount': 100,
+            'journal_id': journal.id,
+        })
+
+        payment.action_post()
+        wizard = Form(self.env['account.resequence.wizard'].with_context(
+            active_ids=(payment.move_id + bsl.move_id).ids,
+            active_model='account.move'),
+        )
+
+        wizard.save().resequence()
+        self.assertTrue(wizard)
+
+    def test_change_same_journal_not_change_sequence(self):
+        """Changing the journal to the same journal should not change the sequence."""
+        # On first move it's always have same value
+        self.create_move(date='2025-10-17', post=True)
+        move2 = self.create_move(date='2025-10-17', post=True)
+        # we need to create another move to higer the sequence
+        self.create_move(date='2025-10-17', post=True)
+        move2.journal_id = move2.journal_id
+        self.assertEqual(move2.name, 'MISC/25-26/10/0002')
+
+    def test_limit_savepoint(self):
+        with patch.object(self.env.cr, 'savepoint', Mock(wraps=self.env.cr.savepoint)) as mock:
+            self.create_move(date='2020-01-01', post=True)
+        mock.assert_called_once()
+        with patch.object(self.env.cr, 'savepoint', Mock(wraps=self.env.cr.savepoint)) as mock:
+            self.create_move(date='2020-01-01', post=True)
+        mock.assert_not_called()
+        with patch.object(self.env.cr, 'savepoint', Mock(wraps=self.env.cr.savepoint)) as mock:
+            self.create_move(date='2021-01-01', post=True)
+        mock.assert_called_once()
+
+    def test_flushing_savepoint_rollback_should_clear_cache(self):
+        self.assertFalse(self.env['account.move']._get_sequence_cache(), 'The cache should be empty at this point')
+        with self.env.cr.savepoint() as sp:
+            self.create_move(date='2021-01-01', post=True)
+            self.assertTrue(self.env['account.move']._get_sequence_cache(), 'The cache should have been filled')
+            sp.rollback()
+            self.assertFalse(self.env['account.move']._get_sequence_cache(), 'The cache should have been cleared')
+
+
+@tagged('post_install', '-at_install')
+class TestSequenceGaps(TestSequenceMixinCommon):
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        move_1 = cls.create_move()
+        move_2 = cls.create_move()
+        move_3 = cls.create_move()
+        all_moves = move_1 + move_2 + move_3
+        all_moves.action_post()
+        cls.all_moves = all_moves
+
+    def test_basic(self):
+        self.assertEqual(self.all_moves.mapped('made_sequence_gap'), [False, False, False])
+
+    def test_first(self):
+        new_move = self.create_move(name="NEW/000001")
+        new_move.action_post()
+        self.assertEqual(new_move.made_sequence_gap, False)
+
+    def test_unlink(self):
+        self.all_moves[0].button_draft()
+        self.all_moves[0].unlink()
+        self.assertEqual(self.all_moves.exists().mapped('made_sequence_gap'), [True, False])
+        self.all_moves[1].button_draft()
+        self.all_moves[1].unlink()
+        self.assertEqual(self.all_moves.exists().mapped('made_sequence_gap'), [True])
+
+    def test_unlink_2(self):
+        self.all_moves[1].button_draft()
+        self.all_moves[1].unlink()
+        self.assertEqual(self.all_moves.exists().mapped('made_sequence_gap'), [False, True])
+        self.all_moves[0].button_draft()
+        self.all_moves[0].unlink()
+        self.assertEqual(self.all_moves.exists().mapped('made_sequence_gap'), [True])
+
+    def test_change_sequence(self):
+        previous = self.all_moves[1].name
+        self.all_moves[1].name = '/'
+        self.assertEqual(self.all_moves.mapped('made_sequence_gap'), [False, False, True])
+        self.all_moves[1].name = previous
+        self.assertEqual(self.all_moves.mapped('made_sequence_gap'), [False, False, False])
+
+    def test_change_multi(self):
+        self.all_moves[0].name = '/'
+        self.all_moves[1].name = '/'
+        self.assertEqual(self.all_moves.mapped('made_sequence_gap'), [False, False, True])
+
+    def test_change_multi_2(self):
+        self.all_moves[1].name = '/'
+        self.all_moves[0].name = '/'
+        self.assertEqual(self.all_moves.mapped('made_sequence_gap'), [False, False, True])
+
+    def test_null_change(self):
+        self.all_moves[1].name = self.all_moves[1].name
+        self.assertEqual(self.all_moves.mapped('made_sequence_gap'), [False, False, False])
+
+    def test_create_fill_gap(self):
+        previous = self.all_moves[1].name
+        self.all_moves[1].button_draft()
+        self.all_moves[1].unlink()
+        self.assertEqual(self.all_moves.exists().mapped('made_sequence_gap'), [False, True])
+        new_move = self.create_move(name=previous)
+        self.assertEqual(self.all_moves.exists().mapped('made_sequence_gap'), [False, False])
+        self.assertEqual(new_move.made_sequence_gap, True)
+        new_move.action_post()
+        self.assertEqual(new_move.made_sequence_gap, False)
+
+    def test_create_gap(self):
+        last = self.all_moves[2].name
+        format_string, format_values = self.all_moves[0]._get_sequence_format_param(last)
+        format_values['seq'] = format_values['seq'] + 10
+        new_move = self.create_move(name=format_string.format(**format_values))
+        new_move.action_post()
+        self.assertEqual(new_move.made_sequence_gap, True)
 
 
 @tagged('post_install', '-at_install')
 class TestSequenceMixinDeletion(TestSequenceMixinCommon):
     @classmethod
-    def setUpClass(cls, chart_template_ref=None):
-        super().setUpClass(chart_template_ref=chart_template_ref)
+    def setUpClass(cls):
+        super().setUpClass()
         journal = cls.env['account.journal'].create({
             'name': 'Test sequences - deletion',
             'code': 'SEQDEL',
@@ -619,9 +913,9 @@ class TestSequenceMixinConcurrency(TransactionCase):
                 'date': fields.Date.from_string('2016-01-01'),
                 'line_ids': [(0, 0, {'name': 'name', 'account_id': account.id})]
             }] * 3)
-            moves.name = '/'
+            moves.name = False
             moves[0].action_post()
-            self.assertEqual(moves.mapped('name'), ['CT/2016/01/0001', '/', '/'])
+            self.assertEqual(moves.mapped('name'), ['CT/2016/01/0001', False, False])
             env.cr.commit()
         self.data = {
             'move_ids': moves.ids,
@@ -639,7 +933,7 @@ class TestSequenceMixinConcurrency(TransactionCase):
         with self.env.registry.cursor() as cr:
             env = api.Environment(cr, SUPERUSER_ID, {})
             moves = env['account.move'].browse(self.data['move_ids'])
-            moves.button_draft()
+            moves.filtered(lambda x: x.state in ('posted', 'cancel')).button_draft()
             moves.posted_before = False
             moves.unlink()
             journal = env['account.journal'].browse(self.data['journal_id'])
@@ -670,6 +964,11 @@ class TestSequenceMixinConcurrency(TransactionCase):
         # check the values
         moves = env0['account.move'].browse(self.data['move_ids'])
         self.assertEqual(moves.mapped('name'), ['CT/2016/01/0001', 'CT/2016/01/0002', 'CT/2016/01/0003'])
+        self.assertEqual(moves.mapped('sequence_prefix'), ['CT/2016/01/', 'CT/2016/01/', 'CT/2016/01/'])
+        self.assertEqual(moves.mapped('sequence_number'), [1, 2, 3])
+        self.assertEqual(moves.mapped('made_sequence_gap'), [False, False, False])
+        for line in moves.line_ids:
+            self.assertEqual(line.move_name, line.move_id.name)
 
     def test_sequence_concurency_no_useless_lock(self):
         """Do not lock needlessly when the sequence is not computed"""
@@ -690,4 +989,50 @@ class TestSequenceMixinConcurrency(TransactionCase):
 
         # check the values
         moves = env0['account.move'].browse(self.data['move_ids'])
-        self.assertEqual(moves.mapped('name'), ['CT/2016/01/0001', '/', 'CT/2016/01/0002'])
+        self.assertEqual(moves.mapped('name'), ['CT/2016/01/0001', False, 'CT/2016/01/0002'])
+
+
+@tagged('post_install', '-at_install')
+class TestSequenceMixinBankStatementLoadImport(TestSequenceMixinCommon):
+    def test_failed_import_bank_statement_cache_shouldnt_get_invalidated(self):
+        """ Ensure that even with a failed import, we mostly hit the sequence cache and don't create tons of savepoint"""
+        bank_journal = self.company.bank_journal_ids[:1]  # there could be several journal in some builds
+        fields_list = ['company_id.id', 'date', 'payment_ref', 'amount', 'journal_id.id']
+        data = [
+            [self.company.id, '2026-03-30', '10 euros', 10.0, bank_journal.id],
+            [self.company.id, '2026-03-30', '20 euros', 20.0, bank_journal.id],
+            [self.company.id, '2026-03-30', '50 euros', 50.0, bank_journal.id],
+        ]
+
+        # ensure the creation of those record will crashes when calling `load`
+        original_load_records_create = self.env['account.bank.statement.line']._load_records_create
+
+        def new_load_records_create(vals_list):
+            # only crash after a few attempts to trigger the sequence.mixin several time
+            if any(vals.get('payment_ref') == '50 euros' for vals in vals_list):
+                raise ValidationError("Load process intentionally interrupted for testing")
+            return original_load_records_create(vals_list)
+
+        # track call to the cache and the number of time it was empty
+        empty_cache_count = 0
+        original_get_sequence_cache = self.env['sequence.mixin']._get_sequence_cache
+
+        def count_empty_cache():
+            nonlocal empty_cache_count
+            cache = original_get_sequence_cache()
+            if not cache:
+                empty_cache_count += 1
+            return cache
+
+        with (
+            patch.object(self.env.registry['account.bank.statement.line'], '_load_records_create', side_effect=new_load_records_create),
+            patch.object(self.env.registry['sequence.mixin'], '_get_sequence_cache', side_effect=count_empty_cache),
+        ):
+            results = self.env['account.bank.statement.line'].load(fields_list, data)
+
+        self.assertEqual(empty_cache_count, 1, "The cache should have been filled the first time")
+        self.assertCountEqual(
+            [{k: v for k, v in m.items() if k in ('record', 'message')} for m in results["messages"]],
+            [{"record": 0, "message": "Load process intentionally interrupted for testing"},
+             {"record": 2, "message": "Load process intentionally interrupted for testing"}],
+        )

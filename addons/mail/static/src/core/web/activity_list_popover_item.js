@@ -1,22 +1,18 @@
-/* @odoo-module */
-
+import { useState } from "@web/owl2/utils";
 import { useAttachmentUploader } from "@mail/core/common/attachment_uploader_hook";
 import { ActivityMailTemplate } from "@mail/core/web/activity_mail_template";
 import { ActivityMarkAsDone } from "@mail/core/web/activity_markasdone_popover";
 import { computeDelay } from "@mail/utils/common/dates";
 
-import { Component, useState } from "@odoo/owl";
+import { Component } from "@odoo/owl";
 
 import { _t } from "@web/core/l10n/translation";
-import { useService } from "@web/core/utils/hooks";
-import { sprintf } from "@web/core/utils/strings";
-import { url } from "@web/core/utils/urls";
 import { FileUploader } from "@web/views/fields/file_handler";
 
 /**
  * @typedef {Object} Props
- * @property {import("@mail/core/web/activity_model").Activity} activity
- * @property {function} onActivityChanged
+ * @property {import("models").Activity} activity
+ * @property {function} [onActivityChanged]
  * @property {function} [onClickDoneAndScheduleNext]
  * @property {function} onClickEditActivityButton
  * @extends {Component<Props, Env>}
@@ -25,21 +21,21 @@ export class ActivityListPopoverItem extends Component {
     static components = { ActivityMailTemplate, ActivityMarkAsDone, FileUploader };
     static props = [
         "activity",
-        "onActivityChanged",
+        "onActivityChanged?",
         "onClickDoneAndScheduleNext?",
-        "onClickEditActivityButton",
+        "onClickEditActivityButton?",
     ];
     static template = "mail.ActivityListPopoverItem";
 
     setup() {
-        this.user = useService("user");
+        super.setup();
         this.state = useState({ hasMarkDoneView: false });
         if (this.props.activity.activity_category === "upload_file") {
             this.attachmentUploader = useAttachmentUploader(
-                this.env.services["mail.thread"].getThread(
-                    this.props.activity.res_model,
-                    this.props.activity.res_id
-                )
+                this.env.services["mail.store"]["mail.thread"].insert({
+                    model: this.props.activity.res_model,
+                    id: this.props.activity.res_id,
+                })
             );
         }
         this.closeMarkAsDone = this.closeMarkAsDone.bind(this);
@@ -56,35 +52,31 @@ export class ActivityListPopoverItem extends Component {
         } else if (diff === -1) {
             return _t("Yesterday");
         } else if (diff < 0) {
-            return sprintf(_t("%s days overdue"), Math.round(Math.abs(diff)));
+            return _t("%s days overdue", Math.round(Math.abs(diff)));
         } else if (diff === 1) {
             return _t("Tomorrow");
         } else {
-            return sprintf(_t("Due in %s days"), Math.round(Math.abs(diff)));
+            return _t("Due in %s days", Math.round(Math.abs(diff)));
         }
     }
 
     get hasEditButton() {
-        return this.props.activity.chaining_type === "suggest" && this.props.activity.can_write;
+        const activity = this.props.activity;
+        return activity.state !== "done" && activity.can_write;
     }
 
     get hasFileUploader() {
-        return this.props.activity.activity_category === "upload_file";
+        const activity = this.props.activity;
+        return activity.state !== "done" && activity.activity_category === "upload_file";
     }
 
     get hasMarkDoneButton() {
-        return !this.hasFileUploader;
+        return this.props.activity.state !== "done" && !this.hasFileUploader;
     }
 
     onClickEditActivityButton() {
         this.props.onClickEditActivityButton();
-        this.env.services["mail.activity"]
-            .schedule(
-                this.props.activity.res_model,
-                this.props.activity.res_id,
-                this.props.activity.id
-            )
-            .then(() => this.props.onActivityChanged());
+        this.props.activity.edit().then(() => this.props.onActivityChanged?.());
     }
 
     onClickMarkAsDone() {
@@ -92,16 +84,10 @@ export class ActivityListPopoverItem extends Component {
     }
 
     async onFileUploaded(data) {
-        const { id: attachmentId } = await this.attachmentUploader.uploadData(data);
-        await this.env.services["mail.activity"].markAsDone(this.props.activity, [attachmentId]);
-        this.props.onActivityChanged();
-    }
-
-    get activityAssigneeAvatar() {
-        return url("/web/image", {
-            field: "avatar_128",
-            id: this.props.activity.user_id[0],
-            model: "res.users",
+        const { id: attachmentId } = await this.attachmentUploader.uploadData(data, {
+            activity: this.props.activity,
         });
+        await this.props.activity.markAsDone([attachmentId]);
+        this.props.onActivityChanged?.();
     }
 }

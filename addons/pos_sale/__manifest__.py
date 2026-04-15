@@ -1,11 +1,10 @@
-# -*- coding: utf-8 -*-
 # Part of Odoo. See LICENSE file for full copyright and licensing details.
 
 
 {
     'name': 'POS - Sales',
     'version': '1.1',
-    'category': 'Hidden',
+    'category': 'Sales/Point of Sale',
     'sequence': 6,
     'summary': 'Link module between Point of Sale and Sales',
     'description': """
@@ -23,16 +22,21 @@ This module adds a custom Sales Team for the Point of Sale. This enables you to 
         'views/sales_team_views.xml',
         'views/res_config_settings_views.xml',
         'views/stock_template.xml',
+        'receipt/pos_order_receipt.xml',
     ],
-    'installable': True,
     'auto_install': True,
     'assets': {
         'point_of_sale._assets_pos': [
             'pos_sale/static/src/**/*',
         ],
         'web.assets_tests': [
-            'pos_sale/static/tests/**/*',
+            'pos_sale/static/tests/tours/**/*',
+        ],
+        'web.assets_unit_tests': [
+            'pos_sale/static/tests/unit/**/*',
         ],
     },
+    'post_init_hook': '_pos_sale_post_init',
+    'author': 'Odoo S.A.',
     'license': 'LGPL-3',
 }

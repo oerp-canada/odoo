@@ -5,14 +5,12 @@ from freezegun import freeze_time
 from odoo.tests import common, new_test_user
 
 
-fakenow = datetime(2021, 1, 29, 12, 20, 0)
-
-@freeze_time(fakenow)
 class TestsCommon(common.TransactionCase):
     @classmethod
     def setUpClass(cls):
         super().setUpClass()
-        cls.fakenow = fakenow
+        cls.fakenow = datetime(2021, 1, 29, 12, 20, 0)
+        cls.startClassPatcher(freeze_time(cls.fakenow))
 
     def setUp(self):
         super(TestsCommon, self).setUp()
@@ -104,7 +102,6 @@ class TestsCommon(common.TransactionCase):
                 'name': 'New York UTC-5',
                 'mode': 'chat',
                 'notification_time': 10,
-                'notification_moment': 'am',
                 'tz': 'America/New_York',
                 'message': "",
             }).with_context(tz='America/New_York')
@@ -113,7 +110,6 @@ class TestsCommon(common.TransactionCase):
                 'name': 'Tokyo UTC+9',
                 'mode': 'chat',
                 'notification_time': 8,
-                'notification_moment': 'am',
                 'tz': 'Asia/Tokyo',
                 'message': "",
             }).with_context(tz='Asia/Tokyo')

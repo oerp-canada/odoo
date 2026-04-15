@@ -1,9 +1,7 @@
-/** @odoo-module **/
-
 import { registry } from "@web/core/registry";
 import { CheckBox } from "@web/core/checkbox/checkbox";
 import { localization } from "@web/core/l10n/localization";
-import { _lt } from "@web/core/l10n/translation";
+import { _t } from "@web/core/l10n/translation";
 
 import { Component } from "@odoo/owl";
 
@@ -12,6 +10,10 @@ const WEEKDAYS = ["sun", "mon", "tue", "wed", "thu", "fri", "sat"];
 export class WeekDays extends Component {
     static template = "web.WeekDays";
     static components = { CheckBox };
+    static props = {
+        record: Object,
+        readonly: Boolean,
+    };
 
     get weekdays() {
         return [
@@ -31,13 +33,13 @@ export class WeekDays extends Component {
 export const weekDays = {
     component: WeekDays,
     fieldDependencies: [
-        { name: "sun", type: "boolean", string: _lt("Sun") },
-        { name: "mon", type: "boolean", string: _lt("Mon") },
-        { name: "tue", type: "boolean", string: _lt("Tue") },
-        { name: "wed", type: "boolean", string: _lt("Wed") },
-        { name: "thu", type: "boolean", string: _lt("Thu") },
-        { name: "fri", type: "boolean", string: _lt("Fri") },
-        { name: "sat", type: "boolean", string: _lt("Sat") },
+        { name: "sun", type: "boolean", string: _t("Sun"), readonly: false },
+        { name: "mon", type: "boolean", string: _t("Mon"), readonly: false },
+        { name: "tue", type: "boolean", string: _t("Tue"), readonly: false },
+        { name: "wed", type: "boolean", string: _t("Wed"), readonly: false },
+        { name: "thu", type: "boolean", string: _t("Thu"), readonly: false },
+        { name: "fri", type: "boolean", string: _t("Fri"), readonly: false },
+        { name: "sat", type: "boolean", string: _t("Sat"), readonly: false },
     ],
 };
 

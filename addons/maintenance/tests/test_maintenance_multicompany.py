@@ -3,10 +3,11 @@
 
 import time
 
-from odoo.tests.common import TransactionCase
+from odoo.tests.common import tagged, TransactionCase
 from odoo.exceptions import AccessError
 
 
+@tagged('at_install', '-post_install')  # LEGACY at_install
 class TestEquipmentMulticompany(TransactionCase):
 
     def test_00_equipment_multicompany_user(self):
@@ -43,7 +44,7 @@ class TestEquipmentMulticompany(TransactionCase):
             'company_id': company_a.id,
             'login': 'e_equipment_manager',
             'email': 'eqmanager@yourcompany.example.com',
-            'groups_id': [(6, 0, [group_manager.id])],
+            'group_ids': [(6, 0, [group_manager.id])],
             'company_ids': [(6, 0, [company_a.id, company_b.id])]
         })
 
@@ -53,7 +54,7 @@ class TestEquipmentMulticompany(TransactionCase):
             'company_id': company_b.id,
             'login': 'emp',
             'email': 'empuser@yourcompany.example.com',
-            'groups_id': [(6, 0, [group_user.id])],
+            'group_ids': [(6, 0, [group_user.id])],
             'company_ids': [(6, 0, [company_b.id])]
         })
 

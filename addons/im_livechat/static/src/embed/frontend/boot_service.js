@@ -1,20 +1,14 @@
-/* @odoo-module */
-
-import { makeRoot, makeShadow } from "@im_livechat/embed/boot_helpers";
+import { makeRoot, makeShadow } from "@im_livechat/embed/common/boot_helpers";
+import { canLoadLivechat } from "@im_livechat/embed/common/misc";
 import { LivechatRoot } from "@im_livechat/embed/frontend/livechat_root";
-import { serverUrl, isAvailable } from "@im_livechat/embed/livechat_data";
-
 import { App } from "@odoo/owl";
+import { appTranslateFn } from "@web/core/l10n/translation";
 
-import { templates } from "@web/core/assets";
 import { registry } from "@web/core/registry";
-import { session } from "@web/session";
-
-session.origin = serverUrl;
-registry.category("main_components").remove("mail.ChatWindowContainer");
+import { getTemplate } from "@web/core/templates";
 
 export const livechatBootService = {
-    dependencies: ["mail.messaging"],
+    dependencies: ["mail.store"],
 
     /**
      * To be overriden in tests.
@@ -24,17 +18,18 @@ export const livechatBootService = {
     },
 
     start(env) {
-        if (!isAvailable) {
+        if (!canLoadLivechat()) {
             return;
         }
         const target = this.getTarget();
         const root = makeRoot(target);
         makeShadow(root).then((shadow) => {
+            env.services["discuss.rtc"].rootEl = shadow;
             new App(LivechatRoot, {
                 env,
-                templates,
+                getTemplate,
                 translatableAttributes: ["data-tooltip"],
-                translateFn: env._t,
+                translateFn: appTranslateFn,
                 dev: env.debug,
             }).mount(shadow);
         });

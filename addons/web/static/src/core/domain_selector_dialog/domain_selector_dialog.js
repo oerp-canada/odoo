@@ -1,18 +1,46 @@
-/** @odoo-module **/
-
-import { _t } from "../l10n/translation";
-import { Component, useState } from "@odoo/owl";
-import { Dialog } from "../dialog/dialog";
+import { useRef, useState } from "@web/owl2/utils";
+import { _t } from "@web/core/l10n/translation";
+import { Component } from "@odoo/owl";
+import { Dialog } from "@web/core/dialog/dialog";
 import { Domain } from "@web/core/domain";
-import { DomainSelector } from "../domain_selector/domain_selector";
-import { useService } from "../utils/hooks";
+import { DomainSelector } from "@web/core/domain_selector/domain_selector";
+import { rpc } from "@web/core/network/rpc";
+import { useService } from "@web/core/utils/hooks";
+import { user } from "@web/core/user";
 
 export class DomainSelectorDialog extends Component {
+    static template = "web.DomainSelectorDialog";
+    static components = {
+        Dialog,
+        DomainSelector,
+    };
+    static props = {
+        close: Function,
+        onConfirm: Function,
+        resModel: String,
+        className: { type: String, optional: true },
+        defaultConnector: { type: [{ value: "&" }, { value: "|" }], optional: true },
+        domain: String,
+        isDebugMode: { type: Boolean, optional: true },
+        readonly: { type: Boolean, optional: true },
+        text: { type: String, optional: true },
+        confirmButtonText: { type: String, optional: true },
+        disableConfirmButton: { type: Function, optional: true },
+        discardButtonText: { type: String, optional: true },
+        title: { type: String, optional: true },
+        context: { type: Object, optional: true },
+    };
+    static defaultProps = {
+        isDebugMode: false,
+        readonly: false,
+        context: {},
+    };
+
     setup() {
         this.notification = useService("notification");
         this.orm = useService("orm");
-        this.user = useService("user");
         this.state = useState({ domain: this.props.domain });
+        this.confirmButtonRef = useRef("confirm");
     }
 
     get confirmButtonText() {
@@ -41,7 +69,6 @@ export class DomainSelectorDialog extends Component {
             readonly: this.props.readonly,
             isDebugMode: this.props.isDebugMode,
             defaultConnector: this.props.defaultConnector,
-            defaultLeafValue: this.props.defaultLeafValue,
             domain: this.state.domain,
             update: (domain) => {
                 this.state.domain = domain;
@@ -50,13 +77,26 @@ export class DomainSelectorDialog extends Component {
     }
 
     async onConfirm() {
+        this.confirmButtonRef.el.disabled = true;
+        let domain;
+        let isValid;
         try {
-            let domain = new Domain(this.state.domain);
-            const evalContext = { ...this.user.context, ...this.props.context };
-            domain = domain.toList(evalContext);
-            await this.orm.silent.searchCount(this.props.resModel, domain, { limit: 1 });
+            const evalContext = { ...user.context, ...this.props.context };
+            domain = new Domain(this.state.domain).toList(evalContext);
         } catch {
-            this.notification.add(this.env._t("Domain is invalid. Please correct it"), {
+            isValid = false;
+        }
+        if (isValid === undefined) {
+            isValid = await rpc("/web/domain/validate", {
+                model: this.props.resModel,
+                domain,
+            });
+        }
+        if (!isValid) {
+            if (this.confirmButtonRef.el) {
+                this.confirmButtonRef.el.disabled = false;
+            }
+            this.notification.add(_t("Domain is invalid. Please correct it"), {
                 type: "danger",
             });
             return;
@@ -69,30 +109,3 @@ export class DomainSelectorDialog extends Component {
         this.props.close();
     }
 }
-DomainSelectorDialog.template = "web.DomainSelectorDialog";
-DomainSelectorDialog.components = {
-    Dialog,
-    DomainSelector,
-};
-DomainSelectorDialog.props = {
-    close: Function,
-    onConfirm: Function,
-    resModel: String,
-    className: { type: String, optional: true },
-    defaultConnector: { type: [{ value: "&" }, { value: "|" }], optional: true },
-    defaultLeafValue: { type: Array, optional: true },
-    domain: String,
-    isDebugMode: { type: Boolean, optional: true },
-    readonly: { type: Boolean, optional: true },
-    text: { type: String, optional: true },
-    confirmButtonText: { type: String, optional: true },
-    disableConfirmButton: { type: Function, optional: true },
-    discardButtonText: { type: String, optional: true },
-    title: { type: String, optional: true },
-    context: { type: Object, optional: true },
-};
-DomainSelectorDialog.defaultProps = {
-    isDebugMode: false,
-    readonly: false,
-    context: {},
-};

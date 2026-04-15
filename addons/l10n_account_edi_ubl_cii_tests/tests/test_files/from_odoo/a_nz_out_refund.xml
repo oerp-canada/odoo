@@ -13,13 +13,16 @@
   </cac:OrderReference>
   <cac:AdditionalDocumentReference>
     <cbc:ID>___ignore___</cbc:ID>
-    <cbc:Attachment>
+    <cac:Attachment>
       <cbc:EmbeddedDocumentBinaryObject>___ignore___</cbc:EmbeddedDocumentBinaryObject>
-    </cbc:Attachment>
+    </cac:Attachment>
   </cac:AdditionalDocumentReference>
   <cac:AccountingSupplierParty>
     <cac:Party>
       <cbc:EndpointID schemeID="0151">83914571673</cbc:EndpointID>
+      <cac:PartyIdentification>
+        <cbc:ID>ref_partner_1</cbc:ID>
+      </cac:PartyIdentification>
       <cac:PartyName>
         <cbc:Name>partner_1</cbc:Name>
       </cac:PartyName>
@@ -51,6 +54,9 @@
   <cac:AccountingCustomerParty>
     <cac:Party>
       <cbc:EndpointID schemeID="0151">53930548027</cbc:EndpointID>
+      <cac:PartyIdentification>
+        <cbc:ID>ref_partner_2</cbc:ID>
+      </cac:PartyIdentification>
       <cac:PartyName>
         <cbc:Name>partner_2</cbc:Name>
       </cac:PartyName>
@@ -88,16 +94,21 @@
         </cac:Country>
       </cac:Address>
     </cac:DeliveryLocation>
+    <cac:DeliveryParty>
+      <cac:PartyName>
+        <cbc:Name>partner_2</cbc:Name>
+      </cac:PartyName>
+    </cac:DeliveryParty>
   </cac:Delivery>
   <cac:PaymentMeans>
-    <cbc:PaymentMeansCode name="credit transfer">30</cbc:PaymentMeansCode>
+    <cbc:PaymentMeansCode name="standing agreement">57</cbc:PaymentMeansCode>
     <cbc:PaymentID>RINV/2017/00001</cbc:PaymentID>
     <cac:PayeeFinancialAccount>
       <cbc:ID>93999574162167</cbc:ID>
     </cac:PayeeFinancialAccount>
   </cac:PaymentMeans>
   <cac:PaymentTerms>
-    <cbc:Note>30% Advance End of Following Month</cbc:Note>
+    <cbc:Note>Payment terms: 30% Advance End of Following Month</cbc:Note>
   </cac:PaymentTerms>
   <cac:TaxTotal>
     <cbc:TaxAmount currencyID="USD">268.20</cbc:TaxAmount>
@@ -141,7 +152,7 @@
       </cac:ClassifiedTaxCategory>
     </cac:Item>
     <cac:Price>
-      <cbc:PriceAmount currencyID="USD">990.00</cbc:PriceAmount>
+      <cbc:PriceAmount currencyID="USD">990.0</cbc:PriceAmount>
     </cac:Price>
   </cac:CreditNoteLine>
   <cac:CreditNoteLine>
@@ -160,7 +171,7 @@
       </cac:ClassifiedTaxCategory>
     </cac:Item>
     <cac:Price>
-      <cbc:PriceAmount currencyID="USD">100.00</cbc:PriceAmount>
+      <cbc:PriceAmount currencyID="USD">100.0</cbc:PriceAmount>
     </cac:Price>
   </cac:CreditNoteLine>
   <cac:CreditNoteLine>
@@ -179,7 +190,7 @@
       </cac:ClassifiedTaxCategory>
     </cac:Item>
     <cac:Price>
-      <cbc:PriceAmount currencyID="USD">100.00</cbc:PriceAmount>
+      <cbc:PriceAmount currencyID="USD">100.0</cbc:PriceAmount>
     </cac:Price>
   </cac:CreditNoteLine>
 </CreditNote>

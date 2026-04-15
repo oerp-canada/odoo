@@ -1,10 +1,8 @@
-/** @odoo-module */
-
 import { FileInput } from "@web/core/file_input/file_input";
 import { registry } from "@web/core/registry";
 import { useService } from "@web/core/utils/hooks";
+import { checkFileSize } from "@web/core/utils/files";
 import { standardWidgetProps } from "@web/views/widgets/standard_widget_props";
-
 import { Component } from "@odoo/owl";
 
 export class AttachDocumentWidget extends Component {
@@ -14,6 +12,7 @@ export class AttachDocumentWidget extends Component {
     };
     static props = {
         ...standardWidgetProps,
+        acceptedFileExtensions: { type: String, optional: true },
         string: { type: String },
         action: { type: String, optional: true },
         highlight: { type: Boolean },
@@ -22,20 +21,25 @@ export class AttachDocumentWidget extends Component {
     setup() {
         this.http = useService("http");
         this.notification = useService("notification");
-
         this.fileInput = document.createElement("input");
         this.fileInput.type = "file";
-        this.fileInput.accept = "*";
+        this.fileInput.accept = this.props.acceptedFileExtensions || "*";
         this.fileInput.multiple = true;
         this.fileInput.onchange = this.onInputChange.bind(this);
     }
 
     async onInputChange() {
+        const ufile = [...this.fileInput.files];
+        for (const file of ufile) {
+            if (!checkFileSize(file.size, this.notification)) {
+                return null;
+            }
+        }
         const fileData = await this.http.post(
             "/web/binary/upload_attachment",
             {
                 csrf_token: odoo.csrf_token,
-                ufile: [...this.fileInput.files],
+                ufile: ufile,
                 model: this.props.record.resModel,
                 id: this.props.record.resId,
             },
@@ -57,12 +61,11 @@ export class AttachDocumentWidget extends Component {
     async onFileUploaded(files) {
         const { action, record } = this.props;
         if (action) {
-            const { model, resId, resModel } = record;
+            const { resId, resModel } = record;
             await this.env.services.orm.call(resModel, action, [resId], {
                 attachment_ids: files.map((file) => file.id),
             });
             await record.load();
-            model.notify();
         }
     }
 
@@ -73,12 +76,13 @@ export class AttachDocumentWidget extends Component {
 
 export const attachDocumentWidget = {
     component: AttachDocumentWidget,
-    extractProps: ({ attrs }) => {
+    extractProps: ({ attrs, options }) => {
         const { action, highlight, string } = attrs;
         return {
             action,
             highlight: !!highlight,
             string,
+            acceptedFileExtensions: options.accepted_file_extensions,
         };
     },
 };

@@ -14,12 +14,18 @@ class ResPartnerBank(models.Model):
     def _check_sg_proxy(self):
         for bank in self.filtered(lambda b: b.country_code == 'SG'):
             if bank.proxy_type not in ['mobile', 'uen', 'none', False]:
-                raise ValidationError(_("The PayNow Type must be either Mobile or UEN to generate a PayNow QR code for account number %s.", bank.acc_number))
+                raise ValidationError(_("The PayNow Type must be either Mobile or UEN to generate a PayNow QR code for account number %s.", bank.account_number))
+
+    @api.depends('country_code')
+    def _compute_country_proxy_keys(self):
+        bank_sg = self.filtered(lambda b: b.country_code == 'SG')
+        bank_sg.country_proxy_keys = 'mobile,uen'
+        super(ResPartnerBank, self - bank_sg)._compute_country_proxy_keys()
 
     @api.depends('country_code')
     def _compute_display_qr_setting(self):
         bank_sg = self.filtered(lambda b: b.country_code == 'SG')
-        bank_sg.display_qr_setting = self.env.company.qr_code
+        bank_sg.display_qr_setting = True
         super(ResPartnerBank, self - bank_sg)._compute_display_qr_setting()
 
     def _get_merchant_account_info(self):
@@ -35,7 +41,7 @@ class ResPartnerBank(models.Model):
                 (3, 0),                                                     # Is Amount Editable
             ]
             merchant_account_info = ''.join([self._serialize(*val) for val in merchant_account_vals])
-            return merchant_account_info
+            return (26, merchant_account_info)
         return super()._get_merchant_account_info()
 
     def _get_additional_data_field(self, comment):

@@ -10,7 +10,7 @@ class AccountChartTemplate(models.AbstractModel):
     def _get_es_pymes_template_data(self):
         return {
             'name': _('SMEs (2008)'),
-            'parent': 'es_common',
+            'parent': 'es_common_mainland',
             'sequence': 0,
         }
 
@@ -22,5 +22,7 @@ class AccountChartTemplate(models.AbstractModel):
                 'bank_account_code_prefix': '572',
                 'cash_account_code_prefix': '570',
                 'transfer_account_code_prefix': '57299',
+                'account_sale_tax_id': 'account_tax_template_s_iva21b',
+                'account_purchase_tax_id': 'account_tax_template_p_iva21_bc',
             },
         }

@@ -6,19 +6,22 @@
 # Martin Trigaux, 2018
 # Kostas Goutoudis <goutoudis@gmail.com>, 2018
 # Giota Dandidou <giotadandidou@gmail.com>, 2018
+# "Dylan Kiss (dyki)" <dyki@odoo.com>, 2025.
 msgid ""
 msgstr ""
 "Project-Id-Version: Odoo Server saas~11.5\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2022-06-09 14:05+0000\n"
-"PO-Revision-Date: 2018-09-21 13:17+0000\n"
-"Last-Translator: Giota Dandidou <giotadandidou@gmail.com>, 2018\n"
-"Language-Team: Greek (https://www.transifex.com/odoo/teams/41243/el/)\n"
+"POT-Creation-Date: 2025-10-08 18:37+0000\n"
+"PO-Revision-Date: 2025-09-24 19:22+0000\n"
+"Last-Translator: \"Dylan Kiss (dyki)\" <dyki@odoo.com>\n"
+"Language-Team: Greek <https://translate.odoo.com/projects/odoo-19/"
+"website_crm/el/>\n"
 "Language: el\n"
 "MIME-Version: 1.0\n"
 "Content-Type: text/plain; charset=UTF-8\n"
 "Content-Transfer-Encoding: \n"
-"Plural-Forms: nplurals=2; plural=(n != 1);\n"
+"Plural-Forms: nplurals=2; plural=n != 1;\n"
+"X-Generator: Weblate 5.12.2\n"
 
 #. module: website_crm
 #: model:ir.model.fields,field_description:website_crm.field_website_visitor__lead_count
@@ -28,20 +31,23 @@ msgstr ""
 #. module: website_crm
 #: model:ir.model.fields,field_description:website_crm.field_crm_lead__visitor_page_count
 msgid "# Page Views"
-msgstr ""
+msgstr "# Προβολές Σελίδας"
 
 #. module: website_crm
-#. openerp-web
+#. odoo-javascript
 #: code:addons/website_crm/static/src/js/website_crm_editor.js:0
-#, python-format
 msgid "Assign leads/opportunities to a sales team."
 msgstr ""
 
 #. module: website_crm
-#. openerp-web
+#. odoo-javascript
 #: code:addons/website_crm/static/src/js/website_crm_editor.js:0
-#, python-format
 msgid "Assign leads/opportunities to a salesperson."
+msgstr ""
+
+#. module: website_crm
+#: model:ir.model,website_form_label:website_crm.model_crm_lead
+msgid "Create an Opportunity"
 msgstr ""
 
 #. module: website_crm
@@ -62,12 +68,28 @@ msgstr "Προεπιλεγμένος Πωλητής"
 #. module: website_crm
 #: model:ir.model.fields,help:website_crm.field_website__crm_default_user_id
 msgid "Default salesperson for new leads created through the Contact Us form."
-msgstr "Προεπιλεγμένος πωλητής για τις νέες συστάσεις που θα δημιουργηθούν από την φόρμα Επικοινωνήστε μαζί μας."
+msgstr ""
+"Προεπιλεγμένος πωλητής για τις νέες συστάσεις που θα δημιουργηθούν από την "
+"φόρμα Επικοινωνήστε μαζί μας."
+
+#. module: website_crm
+#: model:ir.model.fields,field_description:website_crm.field_crm_lead__display_name
+#: model:ir.model.fields,field_description:website_crm.field_website__display_name
+#: model:ir.model.fields,field_description:website_crm.field_website_visitor__display_name
+msgid "Display Name"
+msgstr ""
+
+#. module: website_crm
+#: model:ir.model.fields,field_description:website_crm.field_crm_lead__id
+#: model:ir.model.fields,field_description:website_crm.field_website__id
+#: model:ir.model.fields,field_description:website_crm.field_website_visitor__id
+msgid "ID"
+msgstr ""
 
 #. module: website_crm
 #: model:ir.model,name:website_crm.model_crm_lead
-msgid "Lead/Opportunity"
-msgstr "Σύσταση/Ευκαιρία"
+msgid "Lead"
+msgstr ""
 
 #. module: website_crm
 #: model:ir.actions.act_window,name:website_crm.crm_lead_action_from_visitor
@@ -75,7 +97,7 @@ msgstr "Σύσταση/Ευκαιρία"
 #: model_terms:ir.ui.view,arch_db:website_crm.website_visitor_view_form
 #: model_terms:ir.ui.view,arch_db:website_crm.website_visitor_view_search
 msgid "Leads"
-msgstr ""
+msgstr "Συστάσεις"
 
 #. module: website_crm
 #: model_terms:ir.ui.view,arch_db:website_crm.website_visitor_view_kanban
@@ -90,21 +112,31 @@ msgstr ""
 #. module: website_crm
 #: model_terms:ir.ui.view,arch_db:website_crm.crm_lead_view_form
 msgid "Page views"
-msgstr ""
+msgstr "Προβολές σελίδας"
 
 #. module: website_crm
-#. openerp-web
+#. odoo-javascript
 #: code:addons/website_crm/static/src/js/website_crm_editor.js:0
-#, python-format
+msgid "Phone Number"
+msgstr "Αριθμός τηλεφώνου"
+
+#. module: website_crm
+#. odoo-javascript
+#: code:addons/website_crm/static/src/js/website_crm_editor.js:0
 msgid "Sales Team"
 msgstr "Ομάδα Πώλησης"
 
 #. module: website_crm
-#. openerp-web
+#. odoo-javascript
 #: code:addons/website_crm/static/src/js/website_crm_editor.js:0
-#, python-format
 msgid "Salesperson"
 msgstr "Πωλητής"
+
+#. module: website_crm
+#. odoo-javascript
+#: code:addons/website_crm/static/src/js/website_crm_editor.js:0
+msgid "Subject"
+msgstr "Θέμα"
 
 #. module: website_crm
 #: model:ir.model.fields,field_description:website_crm.field_crm_lead__visitor_ids
@@ -129,4 +161,28 @@ msgstr "Φόρμα Επικοινωνίας Ιστότοπου"
 #. module: website_crm
 #: model:ir.model,name:website_crm.model_website_visitor
 msgid "Website Visitor"
+msgstr ""
+
+#. module: website_crm
+#. odoo-javascript
+#: code:addons/website_crm/static/src/js/website_crm_editor.js:0
+msgid "Your Company"
+msgstr ""
+
+#. module: website_crm
+#. odoo-javascript
+#: code:addons/website_crm/static/src/js/website_crm_editor.js:0
+msgid "Your Email"
+msgstr "Το email σας"
+
+#. module: website_crm
+#. odoo-javascript
+#: code:addons/website_crm/static/src/js/website_crm_editor.js:0
+msgid "Your Name"
+msgstr "Το Όνομά σας"
+
+#. module: website_crm
+#. odoo-javascript
+#: code:addons/website_crm/static/src/js/website_crm_editor.js:0
+msgid "Your Question"
 msgstr ""

@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Part of Odoo. See LICENSE file for full copyright and licensing details.
 
 {
@@ -18,22 +17,35 @@
         'views/res_config_settings_view.xml',
         'views/loyalty_program_views.xml',
         'views/res_partner_views.xml',
+        'receipt/pos_order_receipt.xml',
     ],
     'demo': [
         'data/pos_loyalty_demo.xml',
     ],
-    'installable': True,
     'auto_install': True,
     'assets': {
+        'web.assets_frontend': [
+            'pos_loyalty/static/src/portal/*',
+        ],
         'point_of_sale._assets_pos': [
-            'pos_loyalty/static/src/css/Loyalty.scss',
-            'pos_loyalty/static/src/app/**/*',
-            'pos_loyalty/static/src/js/**/*',
-            'pos_loyalty/static/src/xml/**/*',
+            'pos_loyalty/static/src/**/*',
+            ('remove', 'pos_loyalty/static/src/portal/*'),
+            ('remove', 'pos_loyalty/static/src/overrides/customer_display_overrides/customer_display.xml'),
+        ],
+        'point_of_sale.customer_display_assets': [
+            'pos_loyalty/static/src/overrides/customer_display_overrides/customer_display.xml',
+        ],
+        'point_of_sale.customer_display_assets_test': [
+            'pos_loyalty/static/tests/tours/customer_display_tour.js',
         ],
         'web.assets_tests': [
-            'pos_loyalty/static/src/tours/**/*',
+            'pos_loyalty/static/tests/tours/**/*',
+        ],
+        'web.assets_unit_tests': [
+            'pos_loyalty/static/tests/unit/**/*'
         ],
     },
+    'uninstall_hook': 'uninstall_hook',
+    'author': 'Odoo S.A.',
     'license': 'LGPL-3',
 }

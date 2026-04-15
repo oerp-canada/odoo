@@ -1,10 +1,11 @@
-# -*- coding: utf-8 -*-
 # Part of Odoo. See LICENSE file for full copyright and licensing details.
 
 import json
 import logging
 
 from odoo import api, fields, models, _
+from odoo.fields import Command
+from odoo.exceptions import UserError
 from odoo.tools import float_compare
 
 _logger = logging.getLogger(__name__)
@@ -13,30 +14,25 @@ _logger = logging.getLogger(__name__)
 class SaleOrder(models.Model):
     _inherit = "sale.order"
 
-    incoterm = fields.Many2one(
-        'account.incoterms', 'Incoterm',
-        help="International Commercial Terms are a series of predefined commercial terms used in international transactions.")
-    incoterm_location = fields.Char(string='Incoterm Location')
     picking_policy = fields.Selection([
-        ('direct', 'As soon as possible'),
-        ('one', 'When all products are ready')],
-        string='Shipping Policy', required=True, readonly=True, default='direct',
-        states={'draft': [('readonly', False)], 'sent': [('readonly', False)]},
-        help="If you deliver all products at once, the delivery order will be scheduled based on the greatest "
-        "product lead time. Otherwise, it will be based on the shortest.")
+        ('direct', 'As soon as possible, with back orders'), ('one', 'When all products are ready')],
+        string='Shipping Policy', required=True, default=lambda self: self.env.company.picking_policy,
+        help="It specifies goods to be deliver partially or all at once")
     warehouse_id = fields.Many2one(
-        'stock.warehouse', string='Warehouse', required=True,
+        'stock.warehouse', string='Warehouse',
         compute='_compute_warehouse_id', store=True, readonly=False, precompute=True,
-        states={'sale': [('readonly', True)], 'cancel': [('readonly', False)]},
         check_company=True)
     picking_ids = fields.One2many('stock.picking', 'sale_id', string='Transfers')
     delivery_count = fields.Integer(string='Delivery Orders', compute='_compute_picking_ids')
-    delivery_status = fields.Selection([
-        ('pending', 'Not Delivered'),
-        ('partial', 'Partially Delivered'),
-        ('full', 'Fully Delivered'),
-    ], string='Delivery Status', compute='_compute_delivery_status', store=True)
-    procurement_group_id = fields.Many2one('procurement.group', 'Procurement Group', copy=False)
+    late_availability = fields.Boolean(
+        string="Late Availability",
+        compute='_compute_late_availability',
+        search='_search_late_availability',
+        help="True if any related picking has late availability"
+    )
+    stock_reference_ids = fields.Many2many(
+        'stock.reference', 'stock_reference_sale_rel',
+        'sale_id', 'reference_id', string='References', copy=False)
     effective_date = fields.Datetime("Effective Date", compute='_compute_effective_date', store=True, help="Completion date of the first delivery order.")
     expected_date = fields.Datetime( help="Delivery date you can promise to the customer, computed from the minimum lead time of "
                                           "the order lines in case of Service products. In case of shipping, the shipping policy of "
@@ -55,15 +51,19 @@ class SaleOrder(models.Model):
         """
         if column_name != "warehouse_id":
             return super(SaleOrder, self)._init_column(column_name)
-        field = self._fields[column_name]
-        default = self.env['stock.warehouse'].search([('company_id', '=', self.env.company.id)], limit=1)
-        value = field.convert_to_write(default, self)
-        value = field.convert_to_column(value, self)
-        if value is not None:
-            _logger.debug("Table '%s': setting default value of new column %s to %r",
-                self._table, column_name, value)
-            query = f'UPDATE "{self._table}" SET "{column_name}" = %s WHERE "{column_name}" IS NULL'
-            self._cr.execute(query, (value,))
+
+        default_warehouse = self.env["stock.warehouse"].search([], limit=1)
+
+        query = """
+        UPDATE sale_order so
+        SET warehouse_id = COALESCE(wh.id, %s)
+        FROM stock_warehouse wh
+        WHERE so.company_id = wh.company_id and so.warehouse_id IS NULL and wh.active
+        """
+        params = [default_warehouse.id]
+
+        _logger.debug("Initializing column '%s' in table '%s'", column_name, self._table)
+        self.env.cr.execute(query, params)
 
     @api.depends('picking_ids.date_done')
     def _compute_effective_date(self):
@@ -79,36 +79,86 @@ class SaleOrder(models.Model):
                 order.delivery_status = False
             elif all(p.state in ['done', 'cancel'] for p in order.picking_ids):
                 order.delivery_status = 'full'
-            elif any(p.state == 'done' for p in order.picking_ids):
+            elif any(p.state == 'done' for p in order.picking_ids) and any(
+                    l.qty_delivered for l in order.order_line):
                 order.delivery_status = 'partial'
+            elif any(p.state == 'done' for p in order.picking_ids):
+                order.delivery_status = 'started'
             else:
                 order.delivery_status = 'pending'
 
     @api.depends('picking_policy')
     def _compute_expected_date(self):
         super(SaleOrder, self)._compute_expected_date()
-        for order in self:
-            dates_list = []
-            for line in order.order_line.filtered(lambda x: x.state != 'cancel' and not x._is_delivery() and not x.display_type):
-                dt = line._expected_date()
-                dates_list.append(dt)
-            if dates_list:
-                expected_date = min(dates_list) if order.picking_policy == 'direct' else max(dates_list)
-                order.expected_date = fields.Datetime.to_string(expected_date)
 
-    def write(self, values):
+    @api.depends('picking_ids.products_availability_state')
+    def _compute_late_availability(self):
+        for order in self:
+            order.late_availability = any(
+                picking.products_availability_state == 'late' for picking in order.picking_ids
+            )
+
+    @api.depends('effective_date')
+    def _compute_delivery_date(self):
+        super()._compute_delivery_date()
+        for order in self:
+            order.delivery_date = order.effective_date or order.delivery_date
+
+    def _search_late_availability(self, operator, value):
+        if operator not in ('=', '!=') or not isinstance(value, bool):
+            return NotImplemented
+
+        sub_query = self.env['stock.picking']._search([
+            ('sale_id', '!=', False), ('products_availability_state', operator, 'late')
+        ])
+        return [('picking_ids', 'in', sub_query)]
+
+    def _select_expected_date(self, expected_dates):
+        if self.picking_policy == "direct":
+            return super()._select_expected_date(expected_dates)
+        return max(expected_dates)
+
+    @api.constrains('warehouse_id', 'state', 'order_line')
+    def _check_warehouse(self):
+        """ Ensure that the warehouse is set in case of storable products """
+        orders_without_wh = self.filtered(lambda order: order.state not in ('draft', 'cancel') and not order.warehouse_id)
+        company_ids_with_wh = {
+            company_id.id for [company_id] in self.env['stock.warehouse']._read_group(
+                domain=[('company_id', 'in', orders_without_wh.company_id.ids)],
+                groupby=['company_id'],
+            )
+        }
+        other_company = set()
+        for order_line in orders_without_wh.order_line:
+            if order_line.product_id.type != 'consu':
+                continue
+            if order_line.route_ids.company_id and order_line.route_ids.company_id != order_line.company_id:
+                other_company.add(order_line.route_ids.company_id.id)
+                continue
+            if order_line.order_id.company_id.id in company_ids_with_wh:
+                raise UserError(_('You must set a warehouse on your sale order to proceed.'))
+            self.env['stock.warehouse'].with_company(order_line.order_id.company_id)._warehouse_redirect_warning()
+        other_company_warehouses = self.env['stock.warehouse'].search([('company_id', 'in', list(other_company))])
+        if any(c not in other_company_warehouses.company_id.ids for c in other_company):
+            raise UserError(_("You must have a warehouse for line using a delivery in different company."))
+
+    def write(self, vals):
+        values = vals
         if values.get('order_line') and self.state == 'sale':
             for order in self:
                 pre_order_line_qty = {order_line: order_line.product_uom_qty for order_line in order.mapped('order_line') if not order_line.is_expense}
 
-        if values.get('partner_shipping_id'):
+        if values.get('partner_shipping_id') and self.env.context.get('update_delivery_shipping_partner'):
+            for order in self:
+                order.picking_ids.partner_id = values.get('partner_shipping_id')
+        elif values.get('partner_shipping_id'):
             new_partner = self.env['res.partner'].browse(values.get('partner_shipping_id'))
             for record in self:
                 picking = record.mapped('picking_ids').filtered(lambda x: x.state not in ('done', 'cancel'))
-                addresses = (record.partner_shipping_id.display_name, new_partner.display_name)
                 message = _("""The delivery address has been changed on the Sales Order<br/>
-                        From <strong>"%s"</strong> To <strong>"%s"</strong>,
-                        You should probably update the partner on this document.""") % addresses
+                        From <strong>"%(old_address)s"</strong> to <strong>"%(new_address)s"</strong>,
+                        You should probably update the partner on this document.""",
+                            old_address=record.partner_shipping_id.display_name, new_address=new_partner.display_name)
                 picking.activity_schedule('mail.mail_activity_data_warning', note=message, user_id=self.env.user.id)
 
         if 'commitment_date' in values:
@@ -116,17 +166,20 @@ class SaleOrder(models.Model):
             # TODO: Log a note on each down document
             deadline_datetime = values.get('commitment_date')
             for order in self:
-                order.order_line.move_ids.date_deadline = deadline_datetime or order.expected_date
+                moves = order.order_line.move_ids.filtered(
+                    lambda m: m.state not in ('done', 'cancel') and m.location_dest_id.usage == 'customer'
+                )
+                moves.date_deadline = deadline_datetime or order.expected_date
 
-        res = super(SaleOrder, self).write(values)
+        res = super().write(values)
         if values.get('order_line') and self.state == 'sale':
-            rounding = self.env['decimal.precision'].precision_get('Product Unit of Measure')
             for order in self:
                 to_log = {}
+                order.order_line.fetch(['product_uom_id', 'product_uom_qty', 'display_type', 'is_downpayment'])
                 for order_line in order.order_line:
-                    if order_line.display_type:
+                    if order_line.display_type or order_line.is_downpayment:
                         continue
-                    if float_compare(order_line.product_uom_qty, pre_order_line_qty.get(order_line, 0.0), precision_rounding=order_line.product_uom.rounding or rounding) < 0:
+                    if order_line.product_uom_id.compare(order_line.product_uom_qty, pre_order_line_qty.get(order_line, 0.0)) < 0:
                         to_log[order_line] = (order_line.product_uom_qty, pre_order_line_qty.get(order_line, 0.0))
                 if to_log:
                     documents = self.env['stock.picking'].sudo()._log_activity_get_documents(to_log, 'move_ids', 'UP')
@@ -147,6 +200,10 @@ class SaleOrder(models.Model):
                 ]
             })
             order.show_json_popover = bool(late_stock_picking)
+
+    @api.depends('order_line.qty_delivered')
+    def _compute_show_deliver_button(self):
+        self.show_deliver_button = False  # Revert to Delivery smart button for stock module
 
     def _action_confirm(self):
         self.order_line._action_launch_stock_rule()
@@ -179,8 +236,8 @@ class SaleOrder(models.Model):
             res['warning'] = {
                 'title': _('Warning!'),
                 'message': _(
-                    'Do not forget to change the partner on the following delivery orders: %s'
-                ) % (','.join(pickings.mapped('name')))
+                    'Do not forget to change the partner on the following delivery orders: %s',
+                    ','.join(pickings.mapped('name')))
             }
         return res
 
@@ -193,7 +250,7 @@ class SaleOrder(models.Model):
             if sale_order.state == 'sale' and sale_order.order_line:
                 sale_order_lines_quantities = {order_line: (order_line.product_uom_qty, 0) for order_line in sale_order.order_line}
                 documents = self.env['stock.picking'].with_context(include_draft_documents=True)._log_activity_get_documents(sale_order_lines_quantities, 'move_ids', 'UP')
-        self.picking_ids.filtered(lambda p: p.state != 'done').action_cancel()
+        self.picking_ids.filtered(lambda p: p.state != 'done').with_context(skip_cancel_activity=True).action_cancel()
         if documents:
             filtered_documents = {}
             for (parent, responsible), rendering_context in documents.items():
@@ -227,12 +284,15 @@ class SaleOrder(models.Model):
             picking_id = picking_id[0]
         else:
             picking_id = pickings[0]
-        action['context'] = dict(self._context, default_partner_id=self.partner_id.id, default_picking_type_id=picking_id.picking_type_id.id, default_origin=self.name, default_group_id=picking_id.group_id.id)
+        action['context'] = dict(
+            default_partner_id=self.partner_id.id,
+            default_picking_type_id=picking_id.picking_type_id.id,
+        )
         return action
 
     def _prepare_invoice(self):
         invoice_vals = super(SaleOrder, self)._prepare_invoice()
-        invoice_vals['invoice_incoterm_id'] = self.incoterm.id
+        invoice_vals['delivery_date'] = self.effective_date and fields.Datetime.context_timestamp(self, self.effective_date)
         return invoice_vals
 
     def _log_decrease_ordered_quantity(self, documents, cancel=False):
@@ -240,7 +300,7 @@ class SaleOrder(models.Model):
         def _render_note_exception_quantity_so(rendering_context):
             order_exceptions, visited_moves = rendering_context
             visited_moves = list(visited_moves)
-            visited_moves = self.env[visited_moves[0]._name].concat(*visited_moves)
+            visited_moves = self.env[visited_moves[0]._name].concat(visited_moves)
             order_line_ids = self.env['sale.order.line'].browse([order_line.id for order in order_exceptions.values() for order_line in order[0]])
             sale_order_ids = order_line_ids.mapped('order_id')
             impacted_pickings = visited_moves.filtered(lambda m: m.state not in ('done', 'cancel')).mapped('picking_id')
@@ -253,3 +313,16 @@ class SaleOrder(models.Model):
             return self.env['ir.qweb']._render('sale_stock.exception_on_so', values)
 
         self.env['stock.picking']._log_activity(_render_note_exception_quantity_so, documents)
+
+    def _is_display_stock_in_catalog(self):
+        return True
+
+    def _add_reference(self, references):
+        """ link the given references to the list of references. """
+        self.ensure_one()
+        self.stock_reference_ids = [Command.link(reference.id) for reference in references]
+
+    def _remove_reference(self, references):
+        """ remove the given references from the list of references. """
+        self.ensure_one()
+        self.stock_reference_ids = [Command.unlink(reference.id) for reference in references]

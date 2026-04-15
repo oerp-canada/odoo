@@ -1,55 +1,32 @@
-/* @odoo-module */
-
-import { loadEmoji } from "@web/core/emoji_picker/emoji_picker";
-import { useStore } from "@mail/core/common/messaging_hook";
+import { useExternalListener, useLayoutEffect } from "@web/owl2/utils";
 import { onExternalClick } from "@mail/utils/common/hooks";
 
-import {
-    Component,
-    onWillStart,
-    useEffect,
-    useExternalListener,
-    useRef,
-    useState,
-} from "@odoo/owl";
+import { Component, onMounted } from "@odoo/owl";
 
 import { Dialog } from "@web/core/dialog/dialog";
-import { useService } from "@web/core/utils/hooks";
+import { emojiLoader, useLoadEmoji } from "@web/core/emoji_picker/emoji_loader";
+import { useChildRef, useService } from "@web/core/utils/hooks";
+import { TabHeader, TabPanel, Tabs } from "./tabs";
 
 export class MessageReactionMenu extends Component {
-    static props = ["close", "message"];
-    static components = { Dialog };
+    static props = ["close", "message", "initialReaction?"];
+    static components = { Dialog, Tabs, TabHeader, TabPanel };
     static template = "mail.MessageReactionMenu";
 
     setup() {
-        /** @type {import("@mail/core/common/thread_service").ThreadService} */
-        this.threadService = useService("mail.thread");
-        this.root = useRef("root");
-        this.store = useStore();
-        this.ui = useState(useService("ui"));
-        this.messageService = useService("mail.message");
-        this.state = useState({
-            reaction: this.props.message.reactions[0],
-        });
-        useExternalListener(document, "keydown", this.onKeydown);
-        onExternalClick("root", () => this.props.close());
-        useEffect(
-            (reactions) => {
-                const activeReaction = reactions.find(
-                    ({ content }) => content === this.state.reaction.content
-                );
-                if (reactions.length === 0) {
-                    this.props.close();
-                } else if (!activeReaction) {
-                    this.state.reaction = reactions[0];
-                }
+        super.setup();
+        this.tabsRef = useChildRef();
+        this.store = useService("mail.store");
+        this.ui = useService("ui");
+        useLayoutEffect(
+            (closeFn) => {
+                closeFn?.();
             },
-            () => [this.props.message.reactions]
+            () => [this.props.message.reactions.length === 0 ? this.props.close : null]
         );
-        onWillStart(async () => {
-            const { emojis } = await loadEmoji();
-            this.emojis = emojis;
-        });
+        useExternalListener(document, "keydown", this.onKeydown);
+        onExternalClick(this.tabsRef, () => this.props.close());
+        onMounted(useLoadEmoji());
     }
 
     onKeydown(ev) {
@@ -66,6 +43,17 @@ export class MessageReactionMenu extends Component {
     }
 
     getEmojiShortcode(reaction) {
-        return this.emojis.find((emoji) => emoji.codepoints === reaction.content).shortcodes[0];
+        return emojiLoader.getShortCode(reaction.content);
+    }
+
+    get contentClass() {
+        const attClass = {
+            "o-mail-MessageReactionMenu h-50 d-flex": true,
+            "position-absolute bottom-0 start-0": this.store.useMobileView,
+        };
+        return Object.entries(attClass)
+            .filter(([classNames, value]) => value)
+            .map(([classNames]) => classNames)
+            .join(" ");
     }
 }

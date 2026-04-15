@@ -1,17 +1,29 @@
-/** @odoo-module */
-
+import { useState } from "@web/owl2/utils";
 import { _t } from "@web/core/l10n/translation";
 
-import { Component, useState } from "@odoo/owl";
+import { Component } from "@odoo/owl";
 
 export class DashboardMobileSearchPanel extends Component {
+    static template = "spreadsheet_dashboard.DashboardMobileSearchPanel";
+    static props = {
+        /**
+         * (dashboardId: number) => void
+         */
+        onDashboardSelected: Function,
+        groups: Object,
+        activeDashboard: {
+            type: Object,
+            optional: true,
+        },
+    };
+
     setup() {
         this.state = useState({ isOpen: false });
     }
 
     get searchBarText() {
         return this.props.activeDashboard
-            ? this.props.activeDashboard.displayName
+            ? this.props.activeDashboard.data.name
             : _t("Choose a dashboard....");
     }
 
@@ -27,16 +39,3 @@ export class DashboardMobileSearchPanel extends Component {
         }
     }
 }
-
-DashboardMobileSearchPanel.template = "documents_spreadsheet.DashboardMobileSearchPanel";
-DashboardMobileSearchPanel.props = {
-    /**
-     * (dashboardId: number) => void
-     */
-    onDashboardSelected: Function,
-    groups: Object,
-    activeDashboard: {
-        type: Object,
-        optional: true,
-    },
-};

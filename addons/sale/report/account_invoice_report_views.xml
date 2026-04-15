@@ -12,11 +12,14 @@
             <field name="invoice_user_id" position="after">
                 <field name="team_id"/>
             </field>
+            <filter name="status" position="after">
+                <filter string="Source" name="source_id" context="{'group_by': 'source_id'}"/>
+            </filter>
         </field>
     </record>
 
     <record id="account_invoice_report_view_tree" model="ir.ui.view">
-        <field name="name">account.invoice.report.view.tree.inherit.sale</field>
+        <field name="name">account.invoice.report.view.list.inherit.sale</field>
         <field name="model">account.invoice.report</field>
         <field name="inherit_id" ref="account.account_invoice_report_view_tree"/>
         <field name="arch" type="xml">

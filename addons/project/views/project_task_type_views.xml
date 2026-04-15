@@ -10,6 +10,9 @@
                    <field name="mail_template_id"/>
                    <field name="rating_template_id"/>
                     <filter string="Archived" name="inactive" domain="[('active', '=', False)]"/>
+                    <group>
+                        <filter string="Projects" name="project_ids" context="{'group_by': 'project_ids'}"/>
+                    </group>
                 </search>
             </field>
         </record>
@@ -19,46 +22,38 @@
             <field name="model">project.task.type</field>
             <field name="arch" type="xml">
                 <form string="Task Stage" delete="0">
-                    <field name="active" invisible="1" />
+                    <field name="active" invisible="1"/>
+                    <field name="user_id" invisible="1"/>
                     <sheet>
-                        <widget name="web_ribbon" title="Archived" bg_color="text-bg-danger" attrs="{'invisible': [('active', '=', True)]}" />
+                        <widget name="web_ribbon" title="Archived" bg_color="text-bg-danger" invisible="active"/>
+                        <div class="oe_title">
+                            <label for="name"/>
+                            <h1><field name="name" placeholder="e.g. Qualification"/></h1>
+                        </div>
                         <group>
                             <group>
-                                <field name="name"/>
-                                <field name="mail_template_id" context="{'default_model': 'project.task'}"/>
-                                <field name="rating_template_id" groups="project.group_project_rating" context="{'default_model': 'project.task'}"/>
-                                <div class="alert alert-warning" role="alert" colspan='2' attrs="{'invisible': ['|', ('rating_template_id','=', False), ('disabled_rating_warning', '=', False)]}" groups="project.group_project_rating">
-                                    <i class="fa fa-warning" title="Customer disabled on projects"/><b> Customer Ratings</b> are disabled on the following project(s) : <br/>
-                                    <field name="disabled_rating_warning" class="mb-0" />
+                                <field name="mail_template_id" placeholder="No email"
+                                    context="{'default_model': 'project.task'}" invisible="user_id"/>
+                                <label for="rotting_threshold_days" string="Rotting in"/>
+                                <div>
+                                    <field name="rotting_threshold_days" class="oe_inline o_input_3ch px-1"/>
+                                    <span>days</span>
                                 </div>
-                                <field name="auto_validation_state" attrs="{'invisible': [('rating_template_id','=', False)]}" groups="project.group_project_rating"/>
+                                <field name="rating_active" widget="boolean_toggle"/>
+                                <field name="rating_status" invisible="not rating_active"/>
+                                <field name="rating_status_period"
+                                    invisible="not rating_active or rating_status != 'periodic'"
+                                    required="rating_active and rating_status == 'periodic'"/>
+                                <field name="rating_template_id" string="Rating Email" placeholder="Default"
+                                    invisible="not rating_active" required="rating_active" context="{'default_model': 'project.task'}"/>
+                                <field name="auto_validation_state" string="Update Stage" invisible="not rating_active or not rating_template_id"/>
+                            </group>
+                            <group>
+                                <field name="project_ids" invisible="user_id" required="not user_id"
+                                    widget="many2many_tags" options="{'color_field': 'color', 'on_tag_click': 'open_form'}"/>
+                                <field name="fold" string="Fold by Default" widget="boolean_toggle"/>
+                                <field name="color" widget="color_picker"/>
                                 <field name="sequence" groups="base.group_no_one"/>
-                            </group>
-                            <group>
-                                <field name="fold"/>
-                                <field name="project_ids" required="1" widget="many2many_tags" options="{'color_field': 'color'}"/>
-                            </group>
-                        </group>
-                    </sheet>
-                </form>
-            </field>
-        </record>
-
-        <record id="personal_task_type_edit" model="ir.ui.view">
-            <field name="name">project.task.type.form</field>
-            <field name="model">project.task.type</field>
-            <field name="arch" type="xml">
-                <form string="Task Stage" delete="0">
-                    <field name="active" invisible="1" />
-                    <sheet>
-                        <widget name="web_ribbon" title="Archived" bg_color="text-bg-danger" attrs="{'invisible': [('active', '=', True)]}" />
-                        <group>
-                            <group>
-                                <field name="name"/>
-                                <field name="sequence" groups="base.group_no_one"/>
-                            </group>
-                            <group>
-                                <field name="fold"/>
                             </group>
                         </group>
                     </sheet>
@@ -67,30 +62,29 @@
         </record>
 
         <record id="task_type_tree" model="ir.ui.view">
-            <field name="name">project.task.type.tree</field>
+            <field name="name">project.task.type.list</field>
             <field name="model">project.task.type</field>
             <field name="arch" type="xml">
-                <tree string="Task Stage" delete="0" sample="1" multi_edit="1">
-                    <field name="sequence" widget="handle"/>
-                    <field name="name"/>
+                <list string="Task Stage" delete="0" sample="1" multi_edit="1" editable="bottom" open_form_view="True">
+                    <field name="sequence" widget="handle" optional="show"/>
+                    <field name="name" placeholder="e.g. To Do"/>
+                    <field name="rotting_threshold_days" optional="hide"/>
+                    <field name="mail_template_id" optional="hide"/>
+                    <field name="project_ids" required="1" optional="show" widget="many2many_tags" options="{'color_field': 'color', 'on_tag_click': 'edit_color'}"/>
+                    <field name="color" optional="hide" widget="color_picker"/>
                     <field name="fold" optional="show"/>
-                </tree>
+                </list>
             </field>
         </record>
 
         <record id="task_type_tree_inherited" model="ir.ui.view">
-            <field name="name">project.task.type.tree.inherited</field>
+            <field name="name">project.task.type.list.inherited</field>
             <field name="model">project.task.type</field>
             <field name="mode">primary</field>
             <field name="inherit_id" ref="task_type_tree"/>
             <field name="arch" type="xml">
-                <xpath expr="//tree" position="attributes">
-                    <attribute name="default_group_by">project_ids</attribute>
-                </xpath>
                 <xpath expr="//field[@name='name']" position="after">
-                    <field name="mail_template_id" optional="hide"/>
-                    <field name="rating_template_id" optional="hide" groups="project.group_project_rating"/>
-                    <field name="project_ids" optional="show" widget="many2many_tags" options="{'color_field': 'color'}"/>
+                    <field name="rating_template_id" optional="hide"/>
                 </xpath>
             </field>
         </record>
@@ -99,25 +93,14 @@
             <field name="name">project.task.type.kanban</field>
             <field name="model">project.task.type</field>
             <field name="arch" type="xml">
-                <kanban class="o_kanban_mobile" sample="1" default_group_by="project_ids">
-                    <field name="name"/>
-                    <field name="fold"/>
-                    <field name="description"/>
-                    <field name="sequence" widget="handle"/>
+                <kanban highlight_color="color" class="o_kanban_mobile" sample="1" default_group_by="project_ids">
                     <templates>
-                        <t t-name="kanban-box">
-                            <div t-attf-class="oe_kanban_global_click">
-                                <div class="row">
-                                    <div class="col-12">
-                                        <strong><t t-esc="record.name.value"/></strong>
-                                    </div>
-                                </div>
-                                <field name="project_ids" widget="many2many_tags" options="{'color_field': 'color'}"/>
-                                <t t-if="record.description.value">
-                                    <hr class="mt8 mb8"/>
-                                    <t t-esc="record.description.value"/>
-                                </t>
-                            </div>
+                        <t t-name="menu" t-if="!selection_mode" groups="base.group_user">
+                            <field name="color" widget="kanban_color_picker"/>
+                        </t>
+                        <t t-name="card">
+                            <field name="name" class="fw-bolder text-truncate"/>
+                            <field name="project_ids" widget="many2many_tags" options="{'color_field': 'color', 'on_tag_click': 'edit_color'}"/>
                         </t>
                     </templates>
                 </kanban>
@@ -127,9 +110,11 @@
         <record id="open_task_type_form" model="ir.actions.act_window">
             <field name="name">Task Stages</field>
             <field name="res_model">project.task.type</field>
-            <field name="view_mode">tree,kanban,form</field>
+            <field name="path">task-stages</field>
+            <field name="view_mode">list,kanban,form</field>
             <field name="view_id" ref="task_type_tree_inherited"/>
             <field name="domain">[('user_id', '=', False)]</field>
+            <field name="context">{'default_user_id': False}</field>
             <field name="help" type="html">
               <p class="o_view_nocontent_smiling_face">
                 No stages found. Let's create one!
@@ -142,7 +127,7 @@
         <record id="open_task_type_form_domain" model="ir.actions.act_window">
             <field name="name">Task Stages</field>
             <field name="res_model">project.task.type</field>
-            <field name="view_mode">tree,kanban,form</field>
+            <field name="view_mode">list,kanban,form</field>
             <field name="domain">[('project_ids','=', project_id)]</field>
             <field name="view_id" ref="task_type_tree_inherited"/>
             <field name="help" type="html">
@@ -161,7 +146,7 @@
             <field name="name">Delete</field>
             <field name="model_id" ref="project.model_project_task_type"/>
             <field name="binding_model_id" ref="project.model_project_task_type"/>
-            <field name="binding_view_types">form,list</field>
+            <field name="binding_view_types">form,list,kanban</field>
             <field name="state">code</field>
             <field name="code">action = records.unlink_wizard(stage_view=True)</field>
         </record>

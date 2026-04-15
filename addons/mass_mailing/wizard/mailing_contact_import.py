@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 # Part of Odoo. See LICENSE file for full copyright and licensing details.
 
-from odoo import fields, models, tools, _
+from odoo import fields, models, tools, Command, _
 from odoo.tools.misc import clean_context
 
 
@@ -15,7 +15,7 @@ class MailingContactImport(models.TransientModel):
     def action_import(self):
         """Import each lines of "contact_list" as a new contact."""
         self.ensure_one()
-        contacts = tools.email_split_tuples(', '.join((self.contact_list or '').splitlines()))
+        contacts = tools.mail.email_split_tuples(', '.join((self.contact_list or '').splitlines()))
         if not contacts:
             return {
                 'type': 'ir.actions.client',
@@ -63,7 +63,10 @@ class MailingContactImport(models.TransientModel):
             if email not in existing_contacts:
                 unique_contacts[email] = {
                     'name': name,
-                    'list_ids': self.mailing_list_ids.ids,
+                    'subscription_ids': [
+                        Command.create({'list_id': mailing_list_id.id})
+                        for mailing_list_id in self.mailing_list_ids
+                    ],
                 }
 
         if not unique_contacts:
@@ -86,40 +89,38 @@ class MailingContactImport(models.TransientModel):
             for email, values in unique_contacts.items()
         ])
 
-        ignored = len(contacts) - len(unique_contacts)
+        if ignored := len(contacts) - len(unique_contacts):
+            message = _(
+                "%(imported_count)s contacts have been imported. %(duplicate_count)s contacts are duplicates and have been ignored.",
+                imported_count=len(unique_contacts),
+                duplicate_count=ignored,
+            )
+        else:
+            message = _("%(imported_count)s contacts have been imported.", imported_count=len(unique_contacts))
+
+        if self.env.context.get('no_redirect'):
+            next_action = {'type': 'ir.actions.act_window_close'}
+        else:
+            next_action = {
+                'context': self.env.context,
+                'domain': [('id', 'in', new_contacts.ids)],
+                'name': _('New contacts imported'),
+                'res_model': 'mailing.contact',
+                'type': 'ir.actions.act_window',
+                'view_mode': 'list',
+                'views': [[False, 'list'], [False, 'form']],
+            }
 
         return {
             'type': 'ir.actions.client',
             'tag': 'display_notification',
             'params': {
-                'message': (
-                    _('%i Contacts have been imported.', len(unique_contacts))
-                    + (_(' %i duplicates have been ignored.', ignored) if ignored else '')
-                ),
+                'message': message,
                 'type': 'success',
                 'sticky': False,
-                'next': {
-                    'context': self.env.context,
-                    'domain': [('id', 'in', new_contacts.ids)],
-                    'name': _('New contacts imported'),
-                    'res_model': 'mailing.contact',
-                    'type': 'ir.actions.act_window',
-                    'view_mode': 'list',
-                    'views': [[False, 'list'], [False, 'form']],
-                },
+                'next': next_action,
             }
         }
 
     def action_open_base_import(self):
-        """Open the base import wizard to import mailing list contacts with a xlsx file."""
-        self.ensure_one()
-
-        return {
-            'type': 'ir.actions.client',
-            'tag': 'import',
-            'name': _('Import Mailing Contacts'),
-            'params': {
-                'context': self.env.context,
-                'model': 'mailing.contact',
-            }
-        }
+        return self.env['mailing.contact'].action_open_base_import()

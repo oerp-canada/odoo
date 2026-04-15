@@ -1,7 +1,9 @@
 # Part of Odoo. See LICENSE file for full copyright and licensing details.
 
+from unittest.mock import patch, DEFAULT
 from odoo import Command
-from odoo.tests import Form
+from odoo.exceptions import UserError
+from odoo.tests import tagged, Form
 from odoo.tests.common import TransactionCase
 
 
@@ -10,8 +12,6 @@ class TestCarrierPropagation(TransactionCase):
     @classmethod
     def setUpClass(cls):
         super().setUpClass()
-        # For performances reasons
-        cls.env = cls.env(context=dict(cls.env.context, tracking_disable=True))
         cls.warehouse = cls.env.ref("stock.warehouse0")
 
         # Set Warehouse as multi steps delivery
@@ -53,8 +53,7 @@ class TestCarrierPropagation(TransactionCase):
             'invoice_policy': 'delivery',
             'route_ids': [(6, 0, mto_route.ids)],
         })
-        cls.rule_pack = cls.env["procurement.group"]._get_rule(
-            cls.super_product, cls.output_location, {"warehouse_id": cls.warehouse})
+        cls.rule_pack = cls.warehouse.delivery_route_id.rule_ids.filtered(lambda r: r.picking_type_id == cls.warehouse.pack_type_id)
 
     def test_carrier_no_propagation(self):
         """
@@ -81,14 +80,13 @@ class TestCarrierPropagation(TransactionCase):
         choose_delivery_carrier.button_confirm()
         # Confirm the SO
         so.action_confirm()
-        move_out = self.StockMove.search([("location_dest_id.usage", "=", "customer"), ("product_id", "=", self.super_product.id)])
-        self.assertEqual(
-            self.normal_delivery,
-            move_out.picking_id.carrier_id,
-        )
-        move_pack = self.StockMove.search([("move_dest_ids", "in", move_out.ids)])
 
-        self.assertFalse(move_pack.picking_id.carrier_id)
+        pick = so.picking_ids
+        self.assertEqual(self.normal_delivery, pick.carrier_id)
+        pick.button_validate()
+
+        pack = pick.move_ids.move_dest_ids.picking_id
+        self.assertFalse(pack.carrier_id)
 
     def test_carrier_propagation(self):
         """
@@ -116,27 +114,47 @@ class TestCarrierPropagation(TransactionCase):
             choose_delivery_carrier.button_confirm()
             # Confirm the SO
             so.action_confirm()
-            move_out = self.StockMove.search([("location_dest_id.usage", "=", "customer"), ("product_id", "=", product.id)])
-            self.assertEqual(
-                self.normal_delivery,
-                move_out.picking_id.carrier_id,
-            )
-            move_pack = self.StockMove.search([("move_dest_ids", "in", move_out.ids)])
-            self.assertEqual(
-                self.normal_delivery,
-                move_pack.picking_id.carrier_id,
-        )
+
+            pick = so.picking_ids
+            self.assertEqual(self.normal_delivery, pick.carrier_id)
+            pick.button_validate()
+
+            pack = pick.move_ids.move_dest_ids.picking_id
+            self.assertEqual(self.normal_delivery, pack.carrier_id)
+            pack.button_validate()
+
+            ship = pack.move_ids.move_dest_ids.picking_id
+            self.assertEqual(self.normal_delivery, ship.carrier_id)
+
+    def test_carrier_propagation_with_all_pull_rules(self):
+        """Ensure that the carrier is propagated in pickings through all pull rules
+        where 'propagate_carrier' is enabled."""
+        delivery_route_rules = self.warehouse.delivery_route_id.rule_ids
+        delivery_route_rules[0].location_dest_id = self.rule_pack.location_src_id
+        delivery_route_rules.action = 'pull'
+        delivery_route_rules[2].propagate_carrier = False
+        so = self.SaleOrder.create({
+            'partner_id': self.partner_propagation.id,
+            'order_line': [Command.create({'product_id': self.super_product.id})],
+        })
+        so.action_confirm()
+        pickings = so.picking_ids
+        self.assertTrue(all(not p.carrier_id for p in pickings), "No carrier is set on the sale order, so all pickings should have no carrier.")
+        pickings[0].write({'carrier_id': self.normal_delivery.id, 'carrier_tracking_ref': 'NORMALDELIVERYTRACK0001'})
+        pickings[0].button_validate()
+        self.assertRecordValues(pickings[1], [{'carrier_id': self.normal_delivery.id, 'carrier_tracking_ref': 'NORMALDELIVERYTRACK0001'}])
+        pickings[1].button_validate()
+        self.assertRecordValues(pickings[2], [{'carrier_id': False, 'carrier_tracking_ref': False}])
 
     def test_route_based_on_carrier_delivery(self):
         """
             Check that the route on the sale order line is selected as per the first priority even if route on shipping mehod is present
-            Also, Check that the route on the shipping method is selected if there is no route selected on sale order line
+            Also, Check that the route on the delivery method is selected if there is no route selected on sale order line
         """
         route1 = self.env['stock.route'].create({
             'name': 'Route1',
             'sale_selectable' : True,
             'shipping_selectable': True,
-            'warehouse_ids': [Command.link(self.env.ref("stock.warehouse0").id)],
             'rule_ids': [Command.create({
                 'name': 'rule1',
                 'location_src_id': self.warehouse.lot_stock_id.id,
@@ -156,7 +174,6 @@ class TestCarrierPropagation(TransactionCase):
             'name': 'Route2',
             'sale_selectable' : True,
             'shipping_selectable':True,
-            'warehouse_ids': [Command.link(self.env.ref("stock.warehouse0").id)],
             'rule_ids': [Command.create({
                 'name': 'rule2',
                 'location_src_id': shelf1_location.id,
@@ -177,9 +194,8 @@ class TestCarrierPropagation(TransactionCase):
                 'name': 'Cable Management Box',
                 'product_id': self.super_product.id,
                 'product_uom_qty': 2,
-                'product_uom': self.product_uom_unit.id,
                 'price_unit': 750.00,
-                'route_id' : route1.id,
+                'route_ids': route1.ids,
             })],
         })
 
@@ -200,7 +216,6 @@ class TestCarrierPropagation(TransactionCase):
                 'name': 'Cable Management Box',
                 'product_id': self.super_product.id,
                 'product_uom_qty': 2,
-                'product_uom': self.product_uom_unit.id,
                 'price_unit': 750.00,
             })],
         })
@@ -214,3 +229,96 @@ class TestCarrierPropagation(TransactionCase):
 
         sale_order2.action_confirm()
         self.assertEqual(sale_order2.picking_ids.location_id, route2.rule_ids.location_src_id)
+
+    def test_carrier_picking_batch_validation(self):
+        """
+        Create 2 delivery orders with carriers. Make them respectively
+        valid and invalid on the carrier side. Validate the pickings in batch
+        Since the pickings are processed unbatched on the carrier side the
+        "UserError" of the invalid picking can not be raised and should be
+        replaced by a warning activity.
+        """
+        self.warehouse.delivery_steps = "ship_only"
+        alien = self.env['res.users'].create({
+            'login': 'Mars Man',
+            'name': 'Spleton',
+            'email': 'alien@mars.com',
+            'group_ids': self.env.ref('stock.group_stock_user'),
+        })
+        super_product_2 = self.ProductProduct.create({
+            'name': 'Super Product 2',
+            'invoice_policy': 'delivery',
+        })
+        sale_orders = self.env['sale.order'].create([
+            {
+                'partner_id': self.partner_propagation.id,
+                'order_line': [
+                    Command.create({
+                        'product_id': self.super_product.id
+                    }),
+                ]
+            },
+            {
+                'partner_id': self.partner_propagation.id,
+                'order_line': [
+                    Command.create({
+                        'product_id': super_product_2.id
+                    }),
+                ]
+            },
+        ])
+        for so in sale_orders:
+            delivery_wizard = Form(self.env['choose.delivery.carrier'].with_context({
+                'default_order_id': so.id,
+                'default_carrier_id': self.normal_delivery.id,
+            }))
+            choose_delivery_carrier = delivery_wizard.save()
+            choose_delivery_carrier.button_confirm()
+
+        def fail_send_to_shipper(pick):
+            # side effect to throw an error for a given picking but resolve the normal call for the other
+            def _throw_error_on_chosen_picking(self):
+                if self == pick:
+                    raise UserError("Something went wrong, parcel not returned from Sendcloud: {'weight': ['The weight must be less than 10.001 kg']}")
+                else:
+                    return DEFAULT
+            return _throw_error_on_chosen_picking
+
+        sale_orders.action_confirm()
+        for i in range(0, len(sale_orders)):
+            # check that a delivery was created for the associated carrier
+            self.assertEqual(sale_orders[i].picking_ids.carrier_id.id, sale_orders[i].carrier_id.id)
+        pickings = sale_orders.picking_ids
+        pickings.action_assign()
+        picking_class = 'odoo.addons.stock_delivery.models.stock_picking.StockPicking'
+        with patch(picking_class + '.send_to_shipper', new=fail_send_to_shipper(pickings[1])):
+            pickings.with_user(alien).button_validate()
+        # both pickings should be validated but and activity should have been created for the invalid picking
+        self.assertEqual(pickings.mapped('state'), ['done', 'done'])
+        self.assertTrue(self.env['mail.activity'].search([('res_model', '=', 'stock.picking'), ('res_id', '=', pickings[1].id), ('user_id', '=', alien.id)], limit=1))
+
+    def test_carrier_tracking_ref_propagation(self):
+        """Ensure that the carrier tracking reference is propagated across pickings
+        (OUT → PACK → SHIP) when "propagate_carrier" is enabled on the rule.
+        """
+        so = self.SaleOrder.create({
+            'partner_id': self.partner_propagation.id,
+            'partner_invoice_id': self.partner_propagation.id,
+            'order_line': [
+                Command.create({
+                    'name': self.super_product.name,
+                    'product_id': self.super_product.id,
+                    'product_uom_qty': 1,
+                    'price_unit': 1,
+                }),
+            ]
+        })
+        so.action_confirm()
+        pick = so.picking_ids
+        pick.carrier_tracking_ref = "123"
+        pick.button_validate()
+        pack = pick.move_ids.move_dest_ids.picking_id
+        self.assertEqual(pack.carrier_tracking_ref, "123")
+        pack.button_validate()
+        ship = pack.move_ids.move_dest_ids.picking_id
+        self.assertEqual(ship.carrier_tracking_ref, "123")

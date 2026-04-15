@@ -1,0 +1,41 @@
+/*                      Form View
+ **********************************************************/
+.o_calendar_event_form_view {
+    .o_calendar_form_status_selection_badge {
+        > div {
+            margin-bottom: 0 !important;
+        }
+        .o_selection_badge {
+            margin-bottom: 0 !important;
+        }
+    }
+}
+
+/*                 Quick-Edit Form View
+ **********************************************************/
+
+.modal-dialog:has(.o_calendar_event_form_quick_create) {
+    --modal-width: #{$o-modal-sm};
+}
+
+.o_calendar_event_form_quick_create {
+    .o_form_nosheet {
+        padding-bottom: map-get($spacers, 2);
+    }
+    .o_field_many2many_tags[name="partner_ids"] .o_tags_input {
+        width: 100%;
+    }
+    .o_field_CopyClipboardChar {
+        padding-left: 0 !important;
+    }
+    .o_field_calendar_event_notes_html {
+        @include media-breakpoint-up(sm) {
+            margin-top: -2px;
+        }
+        .note-editable {
+            border: 0;
+            padding-left: 0 !important;
+        }
+    }
+
+}

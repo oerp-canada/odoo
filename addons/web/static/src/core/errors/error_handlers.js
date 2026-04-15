@@ -1,15 +1,15 @@
-/** @odoo-module **/
-
-import { browser } from "../browser/browser";
-import { ConnectionLostError, RPCError } from "../network/rpc_service";
+import { RPCError, RequestEntityTooLargeError } from "../network/rpc";
 import { registry } from "../registry";
+import { session } from "@web/session";
+import { user } from "@web/core/user";
 import {
     ClientErrorDialog,
     ErrorDialog,
     NetworkErrorDialog,
+    RequestEntityTooLargeErrorDialog,
     RPCErrorDialog,
 } from "./error_dialogs";
-import { UncaughtClientError, UncaughtCorsError, UncaughtPromiseError } from "./error_service";
+import { UncaughtClientError, ThirdPartyScriptError, UncaughtPromiseError } from "./error_service";
 
 /**
  * @typedef {import("../../env").OdooEnv} OdooEnv
@@ -71,6 +71,8 @@ export function rpcErrorHandler(env, error, originalError) {
             subType: originalError.subType,
             code: originalError.code,
             type: originalError.type,
+            serverHost: error.event?.target?.location.host,
+            model: originalError.model,
         });
         return true;
     }
@@ -79,56 +81,25 @@ export function rpcErrorHandler(env, error, originalError) {
 errorHandlerRegistry.add("rpcErrorHandler", rpcErrorHandler, { sequence: 97 });
 
 // -----------------------------------------------------------------------------
-// Lost connection errors
+// Request entity too large errors
 // -----------------------------------------------------------------------------
 
-let connectionLostNotifRemove = null;
 /**
  * @param {OdooEnv} env
  * @param {UncaughError} error
  * @param {Error} originalError
  * @returns {boolean}
  */
-export function lostConnectionHandler(env, error, originalError) {
+export function requestEntityTooLargeHandler(env, error, originalError) {
     if (!(error instanceof UncaughtPromiseError)) {
         return false;
     }
-    if (originalError instanceof ConnectionLostError) {
-        if (connectionLostNotifRemove) {
-            // notification already displayed (can occur if there were several
-            // concurrent rpcs when the connection was lost)
-            return true;
-        }
-        connectionLostNotifRemove = env.services.notification.add(
-            env._t("Connection lost. Trying to reconnect..."),
-            { sticky: true }
-        );
-        let delay = 2000;
-        browser.setTimeout(function checkConnection() {
-            env.services
-                .rpc("/web/webclient/version_info", {})
-                .then(function () {
-                    if (connectionLostNotifRemove) {
-                        connectionLostNotifRemove();
-                        connectionLostNotifRemove = null;
-                    }
-                    env.services.notification.add(
-                        env._t("Connection restored. You are back online."),
-                        {
-                            type: "info",
-                        }
-                    );
-                })
-                .catch(() => {
-                    // exponential backoff, with some jitter
-                    delay = delay * 1.5 + 500 * Math.random();
-                    browser.setTimeout(checkConnection, delay);
-                });
-        }, delay);
+    if (originalError instanceof RequestEntityTooLargeError) {
+        env.services.dialog.add(RequestEntityTooLargeErrorDialog);
         return true;
     }
 }
-errorHandlerRegistry.add("lostConnectionHandler", lostConnectionHandler, { sequence: 98 });
+errorHandlerRegistry.add("requestEntityTooLargeHandler", requestEntityTooLargeHandler, { sequence: 99 });
 
 // -----------------------------------------------------------------------------
 // Default handler
@@ -137,7 +108,7 @@ errorHandlerRegistry.add("lostConnectionHandler", lostConnectionHandler, { seque
 const defaultDialogs = new Map([
     [UncaughtClientError, ClientErrorDialog],
     [UncaughtPromiseError, ClientErrorDialog],
-    [UncaughtCorsError, NetworkErrorDialog],
+    [ThirdPartyScriptError, NetworkErrorDialog],
 ]);
 
 /**
@@ -148,13 +119,42 @@ const defaultDialogs = new Map([
  * @param {UncaughError} error
  * @returns {boolean}
  */
-function defaultHandler(env, error) {
+export function defaultHandler(env, error) {
     const DialogComponent = defaultDialogs.get(error.constructor) || ErrorDialog;
     env.services.dialog.add(DialogComponent, {
         traceback: error.traceback,
         message: error.message,
         name: error.name,
+        serverHost: error.event?.target?.location.host,
     });
     return true;
 }
 errorHandlerRegistry.add("defaultHandler", defaultHandler, { sequence: 100 });
+
+// -----------------------------------------------------------------------------
+// Frontend visitors errors
+// -----------------------------------------------------------------------------
+
+/**
+ * We don't want to show tracebacks to non internal users. This handler swallows
+ * all errors if we're not an internal user (except in debug or test mode).
+ */
+export function swallowAllVisitorErrors(env, error, originalError) {
+    if (!user.isInternalUser && !odoo.debug && !session.test_mode) {
+        return true;
+    }
+}
+
+if (user.isInternalUser === undefined) {
+    // Only warn about this while on the "frontend": the session info might
+    // apparently not be present in all Odoo screens at the moment... TODO ?
+    if (session.is_frontend) {
+        console.warn(
+            "isInternalUser information is required for this handler to work. It must be available in the page."
+        );
+    }
+} else {
+    registry
+        .category("error_handlers")
+        .add("swallowAllVisitorErrors", swallowAllVisitorErrors, { sequence: 0 });
+}

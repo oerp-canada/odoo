@@ -5,24 +5,24 @@
         <field name="name">l10n_latam.document.type.form</field>
         <field name="model">l10n_latam.document.type</field>
         <field name="arch" type="xml">
-            <form string="Document Type" create="0" edit="0">
+            <form string="Document Type" create="0">
                 <group>
-                    <field name='code'/>
-                    <field name="name"/>
-                    <field name='doc_code_prefix'/>
-                    <field name='report_name'/>
-                    <field name='internal_type'/>
-                    <field name='country_id'/>
+                    <field name='code' readonly="True"/>
+                    <field name="name" readonly="True"/>
+                    <field name='doc_code_prefix' readonly="True"/>
+                    <field name='report_name' readonly="True"/>
+                    <field name='internal_type' readonly="True"/>
+                    <field name='country_id' readonly="True"/>
                 </group>
             </form>
         </field>
     </record>
 
     <record id="view_document_type_tree" model="ir.ui.view">
-        <field name="name">l10n_latam.document.type.tree</field>
+        <field name="name">l10n_latam.document.type.list</field>
         <field name="model">l10n_latam.document.type</field>
         <field name="arch" type="xml">
-            <tree string="Document Type" decoration-muted="(not active)" create="0" edit="0">
+            <list string="Document Type" decoration-muted="(not active)" create="0" edit="0">
                 <field name="code"/>
                 <field name="name"/>
                 <field name="doc_code_prefix"/>
@@ -30,7 +30,7 @@
                 <field name='internal_type'/>
                 <field name='country_id'/>
                 <field name="active" widget="boolean_toggle"/>
-            </tree>
+            </list>
         </field>
     </record>
 
@@ -45,7 +45,7 @@
                 <field name='country_id'/>
                 <filter name="active" string="Active" domain="[('active','=',True)]" help="Show active document types"/>
                 <filter name="inactive" string="Archived" domain="[('active','=',False)]" help="Show archived document types"/>
-                <group expand="1" string="Group By...">
+                <group>
                     <filter string="Internal Type" name="group_by_internal_type" context="{'group_by':'internal_type'}"/>
                     <filter string="Localization" name="group_by_localization" context="{'group_by':'country_id'}"/>
                 </group>

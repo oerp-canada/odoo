@@ -1,9 +1,8 @@
-# -*- coding: utf-8 -*-
 # Part of Odoo. See LICENSE file for full copyright and licensing details.
 
 {
     'name': 'Sales Timesheet',
-    'category': 'Hidden',
+    'category': 'Sales/Sales',
     'summary': 'Sell based on timesheets',
     'description': """
 Allows to sell timesheets in your sales order
@@ -16,22 +15,20 @@ have real delivered quantities in sales orders.
     'depends': ['sale_project', 'hr_timesheet'],
     'data': [
         'data/sale_service_data.xml',
-        'report/timesheets_analysis_views.xml',
         'security/ir.model.access.csv',
         'security/sale_timesheet_security.xml',
+        'views/account_analytic_line_views.xml',
         'views/account_invoice_views.xml',
         'views/sale_order_views.xml',
         'views/product_views.xml',
         'views/project_task_views.xml',
-        'views/project_update_templates.xml',
-        'views/hr_timesheet_views.xml',
         'views/res_config_settings_views.xml',
         'views/sale_timesheet_portal_templates.xml',
         'views/project_sharing_views.xml',
         'views/project_portal_templates.xml',
+        'report/timesheets_analysis_views.xml',
         'report/report_timesheet_templates.xml',
-        'wizard/project_create_sale_order_views.xml',
-        'wizard/project_create_invoice_views.xml',
+        'report/project_report_view.xml',
         'wizard/sale_make_invoice_advance_views.xml',
     ],
     'demo': [
@@ -47,9 +44,17 @@ have real delivered quantities in sales orders.
             'sale_timesheet/static/src/components/**/*',
         ],
         'web.assets_tests': [
-            'sale_timesheet/static/tests/**/*',
+            'sale_timesheet/static/tests/tours/**/*',
         ],
+        'web.assets_unit_tests': [
+            'sale_timesheet/static/tests/**/*',
+            ('remove', 'sale_timesheet/static/tests/tours/**/*'),
+        ],
+        'project.webclient': [
+            'sale_timesheet/static/src/components/so_line_field/*',
+        ]
     },
+    'author': 'Odoo S.A.',
     'license': 'LGPL-3',
     'post_init_hook': '_sale_timesheet_post_init',
 }

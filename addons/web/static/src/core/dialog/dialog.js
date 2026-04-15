@@ -1,11 +1,11 @@
-/** @odoo-module **/
-
+import { useChildSubEnv, useExternalListener, useState } from "@web/owl2/utils";
 import { useHotkey } from "@web/core/hotkeys/hotkey_hook";
 import { useActiveElement } from "../ui/ui_service";
-import { useForwardRefToParent } from "@web/core/utils/hooks";
-import { Component, useChildSubEnv, useExternalListener, useState } from "@odoo/owl";
+import { useBackButton, useForwardRefToParent } from "@web/core/utils/hooks";
+import { Component, onWillDestroy } from "@odoo/owl";
 import { throttleForAnimation } from "@web/core/utils/timing";
-import { makeDraggableHook } from "../utils/draggable_hook_builder";
+import { makeDraggableHook } from "../utils/draggable_hook_builder_owl";
+import { hasTouch } from "@web/core/browser/feature_detection";
 
 const useDialogDraggable = makeDraggableHook({
     name: "useDialogDraggable",
@@ -32,6 +32,44 @@ const useDialogDraggable = makeDraggableHook({
 });
 
 export class Dialog extends Component {
+    static template = "web.Dialog";
+    static props = {
+        contentClass: { type: String, optional: true },
+        bodyClass: { type: String, optional: true },
+        fullscreen: { type: Boolean, optional: true },
+        footer: { type: Boolean, optional: true },
+        header: { type: Boolean, optional: true },
+        size: {
+            type: String,
+            optional: true,
+            validate: (s) => ["sm", "md", "lg", "xl", "fs", "fullscreen"].includes(s),
+        },
+        technical: { type: Boolean, optional: true },
+        title: { type: String, optional: true },
+        modalRef: { type: Function, optional: true },
+        slots: {
+            type: Object,
+            shape: {
+                default: Object, // Content is not optional
+                header: { type: Object, optional: true },
+                footer: { type: Object, optional: true },
+            },
+        },
+        withBodyPadding: { type: Boolean, optional: true },
+        onExpand: { type: Function, optional: true },
+    };
+    static defaultProps = {
+        contentClass: "",
+        bodyClass: "",
+        fullscreen: false,
+        footer: true,
+        header: true,
+        size: "lg",
+        technical: true,
+        title: "Odoo",
+        withBodyPadding: true,
+    };
+
     setup() {
         this.modalRef = useForwardRefToParent("modalRef");
         useActiveElement("modalRef");
@@ -48,40 +86,59 @@ export class Dialog extends Component {
                     return styles.display !== "none";
                 });
                 if (firstVisibleBtn) {
+                    // Allows the active element to be blurred before triggering the click on the button
+                    firstVisibleBtn.focus();
                     firstVisibleBtn.click();
                 }
             },
             { bypassEditableProtection: true }
         );
         this.id = `dialog_${this.data.id}`;
-        useChildSubEnv({ inDialog: true, dialogId: this.id, closeDialog: () => this.data.close() });
-        this.position = useState({ left: 0, top: 0 });
-        useDialogDraggable({
-            ref: this.modalRef,
-            elements: ".modal-content",
-            handle: ".modal-header",
-            ignore: "button",
-            edgeScrolling: { enabled: false },
-            onDrop: ({ top, left }) => {
-                this.position.left += left;
-                this.position.top += top;
-            },
-        });
-        const throttledResize = throttleForAnimation(this.onResize.bind(this));
-        useExternalListener(window, "resize", throttledResize);
-        owl.onWillDestroy(() => {
+        useChildSubEnv({ inDialog: true, dialogId: this.id });
+        this.isMovable = this.props.header;
+        if (this.isMovable) {
+            this.position = useState({ left: 0, top: 0 });
+            useDialogDraggable({
+                enable: () => !this.env.isSmall,
+                ref: this.modalRef,
+                elements: ".modal-content",
+                handle: ".modal-header",
+                ignore: "button, input",
+                edgeScrolling: { enabled: false },
+                onDrop: ({ top, left }) => {
+                    this.position.left += left;
+                    this.position.top += top;
+                },
+            });
+            const throttledResize = throttleForAnimation(this.onResize.bind(this));
+            useExternalListener(window, "resize", throttledResize);
+        }
+        onWillDestroy(() => {
             if (this.env.isSmall) {
                 this.data.scrollToOrigin();
             }
         });
+        this.bodyTabIndex = hasTouch() ? "0" : undefined;
+        useBackButton(() => this.dismiss());
+    }
+
+    get size() {
+        return this.props.size;
     }
 
     get isFullscreen() {
-        return this.props.fullscreen || this.env.isSmall;
+        return this.props.fullscreen || (this.env.isSmall && this.design !== "minimal");
+    }
+
+    get design() {
+        return ["sm", "md"].includes(this.size) ? "minimal" : "default";
     }
 
     get contentStyle() {
-        return `top: ${this.position.top}px; left: ${this.position.left}px;`;
+        if (this.isMovable) {
+            return `top: ${this.position.top}px; left: ${this.position.left}px;`;
+        }
+        return "";
     }
 
     onResize() {
@@ -90,42 +147,13 @@ export class Dialog extends Component {
     }
 
     onEscape() {
-        this.data.close();
+        return this.dismiss();
+    }
+
+    async dismiss() {
+        if (this.data.dismiss) {
+            await this.data.dismiss();
+        }
+        return this.data.close({ dismiss: true });
     }
 }
-Dialog.template = "web.Dialog";
-Dialog.props = {
-    contentClass: { type: String, optional: true },
-    bodyClass: { type: String, optional: true },
-    fullscreen: { type: Boolean, optional: true },
-    footer: { type: Boolean, optional: true },
-    header: { type: Boolean, optional: true },
-    size: {
-        type: String,
-        optional: true,
-        validate: (s) => ["sm", "md", "lg", "xl", "fs"].includes(s),
-    },
-    technical: { type: Boolean, optional: true },
-    title: { type: String, optional: true },
-    modalRef: { type: Function, optional: true },
-    slots: {
-        type: Object,
-        shape: {
-            default: Object, // Content is not optional
-            header: { type: Object, optional: true },
-            footer: { type: Object, optional: true },
-        },
-    },
-    withBodyPadding: { type: Boolean, optional: true },
-};
-Dialog.defaultProps = {
-    contentClass: "",
-    bodyClass: "",
-    fullscreen: false,
-    footer: true,
-    header: true,
-    size: "lg",
-    technical: true,
-    title: "Odoo",
-    withBodyPadding: true,
-};

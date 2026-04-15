@@ -1,20 +1,22 @@
-# -*- coding: utf-8 -*-
 # Part of Odoo. See LICENSE file for full copyright and licensing details.
+
 import datetime
-
 from freezegun import freeze_time
+from datetime import timedelta
 
-from odoo.addons.base.tests.common import TransactionCaseWithUserDemo
-from odoo.exceptions import UserError
+from odoo.addons.gamification.tests.common import TransactionCaseGamification
+from odoo.exceptions import UserError, ValidationError
+from odoo.tests import tagged
+
 from odoo.tools import mute_logger
 
 
-class TestGamificationCommon(TransactionCaseWithUserDemo):
+class TestGamificationCommon(TransactionCaseGamification):
 
     def setUp(self):
         super(TestGamificationCommon, self).setUp()
         employees_group = self.env.ref('base.group_user')
-        self.user_ids = employees_group.users
+        self.user_ids = employees_group.all_user_ids
 
         # Push demo user into the challenge before creating a new one
         self.env.ref('gamification.challenge_base_discover')._update_all()
@@ -22,11 +24,12 @@ class TestGamificationCommon(TransactionCaseWithUserDemo):
             'name': 'R2D2',
             'login': 'r2d2@openerp.com',
             'email': 'r2d2@openerp.com',
-            'groups_id': [(6, 0, [employees_group.id])]
+            'group_ids': [(6, 0, [employees_group.id])]
         })
         self.badge_good_job = self.env.ref('gamification.badge_good_job')
 
 
+@tagged('at_install', '-post_install')  # LEGACY at_install
 class test_challenge(TestGamificationCommon):
 
     def test_00_join_challenge(self):
@@ -76,9 +79,9 @@ class test_challenge(TestGamificationCommon):
                 'name': f'{kind} {age} login',
                 'login': f'{kind}_{age}',
                 'email': f'{kind}_{age}',
-                'groups_id': [(6, 0, groups_id)],
+                'group_ids': [(6, 0, group_ids)],
             }
-            for kind, groups_id in (
+            for kind, group_ids in (
                 ('Portal', []),
                 ('Internal', [self.env.ref('base.group_user').id]),
             )
@@ -93,26 +96,16 @@ class test_challenge(TestGamificationCommon):
         })
 
         # Setup user presence
-        self.env['bus.presence'].search([('user_id', 'in', challenge.user_ids.ids)]).unlink()
-        now = self.env.cr.now()
+        challenge.user_ids.presence_ids.unlink()
 
         # Create "old" log in records
-        twenty_minutes_ago = now - datetime.timedelta(minutes=20)
-        with freeze_time(twenty_minutes_ago):
-            # Not using BusPresence.update_presence to avoid lower level cursor handling there.
-            self.env['bus.presence'].create([
-                {
-                    'user_id': user.id,
-                    'last_presence': twenty_minutes_ago,
-                    'last_poll': twenty_minutes_ago,
-                }
-                for user in (
-                    portal_last_active_old,
-                    portal_last_active_recent,
-                    internal_last_active_old,
-                    internal_last_active_recent,
-                )
-            ])
+        for user in (
+            portal_last_active_old,
+            portal_last_active_recent,
+            internal_last_active_old,
+            internal_last_active_recent,
+        ):
+            self.env["mail.presence"]._update_presence(user, 20 * 60 * 1000)  # 20 min
 
         # Reset goal objective values
         all_test_users.partner_id.tz = False
@@ -128,12 +121,12 @@ class test_challenge(TestGamificationCommon):
         self.assertEqual(len(goal_ids), 4)
         self.assertEqual(set(goal_ids.mapped('state')), {'inprogress'})
 
-        # Update presence for 2 users
-        users_recent = internal_last_active_recent | portal_last_active_recent
-        users_recent_presence = self.env['bus.presence'].search([('user_id', 'in', users_recent.ids)])
-        users_recent_presence.last_presence = now
-        users_recent_presence.last_poll = now
-        users_recent_presence.flush_recordset()
+        # +1 second to avoid microsecond inaccuracy when comparing to write_date in _update_all
+        current_date = datetime.datetime.now() + timedelta(seconds=1)
+        with freeze_time(current_date):
+            # Update presence for 2 users
+            self.env["mail.presence"]._update_presence(internal_last_active_recent)
+            self.env["mail.presence"]._update_presence(portal_last_active_recent)
 
         # Update goal objective checked by goal definition
         all_test_users.partner_id.write({'tz': 'Europe/Paris'})
@@ -152,7 +145,110 @@ class test_challenge(TestGamificationCommon):
             unchanged_goal_ids.user_id,
         )
 
+    def test_30_create_challenge_with_sum_goal(self):
+        challenge = self.env['gamification.challenge'].create({
+            'name': 'test',
+            'state': 'draft',
+            'user_domain': '[("active", "=", True)]', #Include all active users to get a least one participant
+            'reward_id': self.badge_good_job.id,
+        })
 
+        model = self.env['ir.model'].search([('model', '=', 'gamification.badge')])[0]
+        field = self.env['ir.model.fields'].search([('model', '=', 'gamification.badge'), ('name', '=', 'rule_max_number')])[0]
+
+        sum_goal = self.env['gamification.goal.definition'].create({
+            'name': 'test',
+            'computation_mode': 'sum',
+            'model_id': model.id,
+            'field_id': field.id
+        })
+
+        self.env['gamification.challenge.line'].create({
+            'challenge_id': challenge.id,
+            'definition_id': sum_goal.id,
+            'condition': 'higher',
+            'target_goal': 1
+        })
+
+        challenge.action_start()
+
+        self.assertEqual(
+            challenge.state,
+            'inprogress',
+            "Challenge failed to start",
+        )
+
+    def test_40_create_challenge_with_sum_goal(self):
+        model = self.env['ir.model'].search([('model', '=', 'gamification.badge')], limit=1)
+
+        field = self.env['ir.model.fields'].search([
+            ('model', '=', 'gamification.badge'),
+            ('name', '=', 'name')
+        ], limit=1)
+
+        self.assertNotIn(field.ttype, {'integer', 'float', 'monetary'}, "Field should not be numeric")
+
+        with self.assertRaises(ValidationError):
+            self.env['gamification.goal.definition'].create({
+                'name': 'Test Definition',
+                'computation_mode': 'sum',
+                'model_id': model.id,
+                'field_id': field.id,
+            })
+
+        with self.assertRaises(ValidationError):
+            self.env['gamification.goal.definition'].create({
+                'name': 'Test Definition',
+                'computation_mode': 'sum',
+                'model_id': model.id,
+            })
+
+    def test_send_report_in_ranking(self):
+        gamification_model = self.env['ir.model']._get_id('gamification.badge')
+        field = self.env['ir.model.fields'].search([('model', '=', 'gamification.badge'), ('name', '=', 'rule_max_number')], limit=1)
+
+        sum_goal = self.env['gamification.goal.definition'].create({
+            'name': 'test1',
+            'computation_mode': 'sum',
+            'model_id': gamification_model,
+            'field_id': field.id
+        })
+
+        challenge = self.env['gamification.challenge'].create({
+            'name': 'test1',
+            'state': 'draft',
+            'user_domain': '[("active", "=", True)]',
+            'reward_id': self.badge_good_job.id,
+            'visibility_mode': 'ranking'
+        })
+
+        self.env['gamification.challenge.line'].create({
+            'challenge_id': challenge.id,
+            'definition_id': sum_goal.id,
+            'condition': 'higher',
+            'target_goal': 1
+        })
+
+        challenge.action_start()
+        current_date = datetime.datetime.now()
+
+        with freeze_time(current_date):
+            challenge.action_report_progress()
+
+            self.assertEqual(
+                challenge.state,
+                'inprogress',
+                "Challenge failed to start",
+            )
+
+            self.assertEqual(
+                challenge.last_report_date,
+                current_date.date(),
+                "Challenge last report date is not as expected"
+            )
+
+
+@tagged('at_install', '-post_install')  # LEGACY at_install
 class test_badge_wizard(TestGamificationCommon):
 
     def test_grant_badge(self):

@@ -52,7 +52,6 @@ class ResCompany(models.Model):
                 'code': 'dropship',
                 'default_location_src_id': self.env.ref('stock.stock_location_suppliers').id,
                 'default_location_dest_id': self.env.ref('stock.stock_location_customers').id,
-                'sequence_code': 'DS',
                 'use_existing_lots': False,
             })
         if dropship_vals:
@@ -62,12 +61,7 @@ class ResCompany(models.Model):
     def create_missing_dropship_picking_type(self):
         company_ids = self.env['res.company'].search([])
         company_has_dropship_picking_type = (
-            self.env['stock.picking.type']
-            .search([
-                ('default_location_src_id.usage', '=', 'supplier'),
-                ('default_location_dest_id.usage', '=', 'customer'),
-            ])
-            .mapped('company_id')
+            self.env['stock.picking.type'].search([("code", "=", "dropship")]).company_id
         )
         company_todo_picking_type = company_ids - company_has_dropship_picking_type
         company_todo_picking_type._create_dropship_picking_type()

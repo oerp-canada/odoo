@@ -1,5 +1,3 @@
-.o-mail-ChatWindow-command {
-    &:hover {
-        @extend .bg-200;
-    }
+.o-mail-ChatWindow-moreActions {
+    --mail-ChatWindow-moreActionsHoverColor: white;
 }

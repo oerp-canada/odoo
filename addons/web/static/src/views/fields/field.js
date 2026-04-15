@@ -1,24 +1,125 @@
-/** @odoo-module **/
-
-import { makeContext } from "@web/core/context";
 import { Domain } from "@web/core/domain";
-import { evaluateExpr } from "@web/core/py_js/py";
+import { evaluateBooleanExpr, evaluateExpr } from "@web/core/py_js/py";
 import { registry } from "@web/core/registry";
-import {
-    archParseBoolean,
-    evalDomain,
-    getClassNameFromDecoration,
-    X2M_TYPES,
-} from "@web/views/utils";
+import { utils } from "@web/core/ui/ui_service";
+import { exprToBoolean } from "@web/core/utils/strings";
+import { getFieldContext } from "@web/model/relational_model/utils";
+import { X2M_TYPES, getClassNameFromDecoration } from "@web/views/utils";
 import { getTooltipInfo } from "./field_tooltip";
 
 import { Component, xml } from "@odoo/owl";
+import { useService } from "@web/core/utils/hooks";
 
+const isSmall = utils.isSmall;
+
+const formatterRegistry = registry.category("formatters");
 const viewRegistry = registry.category("views");
 const fieldRegistry = registry.category("fields");
 
-class DefaultField extends Component {}
-DefaultField.template = xml``;
+const validFieldTypes = {
+    binary: { availableOffline: false },
+    boolean: { availableOffline: true },
+    json: { availableOffline: true },
+    integer: { availableOffline: true },
+    float: { availableOffline: true },
+    monetary: { availableOffline: true },
+    properties: { availableOffline: false },
+    properties_definition: { availableOffline: false },
+    reference: { availableOffline: false },
+    many2one_reference: { availableOffline: false },
+    many2one: { availableOffline: true },
+    one2many: { availableOffline: false },
+    many2many: { availableOffline: true },
+    selection: { availableOffline: true },
+    date: { availableOffline: true },
+    datetime: { availableOffline: true },
+    char: { availableOffline: true },
+    text: { availableOffline: true },
+    html: { availableOffline: true },
+};
+
+const supportedInfoValidation = {
+    type: Array,
+    element: Object,
+    shape: {
+        label: String,
+        name: String,
+        type: String,
+        availableTypes: { type: Array, element: String, optional: true },
+        default: { type: String, optional: true },
+        help: { type: String, optional: true },
+        choices: /* choices if type == selection */ {
+            type: Array,
+            element: Object,
+            shape: { label: String, value: String },
+            optional: true,
+        },
+        /**
+         * If true, the listed fields come from the relation.
+         * e.g.: the field is a relational one like many2many_tags, so
+         * property 'field' will search on the relation.
+         * */
+        isRelationalField: { type: Boolean, optional: false },
+    },
+    optional: true,
+};
+
+fieldRegistry.addValidation({
+    component: { validate: (c) => c.prototype instanceof Component },
+    displayName: { type: String, optional: true },
+    supportedAttributes: supportedInfoValidation,
+    supportedOptions: supportedInfoValidation,
+    supportedTypes: {
+        type: Array,
+        element: String,
+        optional: true,
+        validate: (array) => array.every((x) => x in validFieldTypes),
+    },
+    extractProps: { type: Function, optional: true },
+    isEmpty: { type: Function, optional: true },
+    isValid: { type: Function, optional: true }, // Override the validation for the validation visual feedbacks
+    additionalClasses: { type: Array, element: String, optional: true },
+    fieldDependencies: {
+        type: [Function, { type: Array, element: Object, shape: { name: String, type: String } }],
+        optional: true,
+    },
+    relatedFields: {
+        type: [
+            Function,
+            {
+                type: Array,
+                element: Object,
+                shape: {
+                    name: String,
+                    type: String,
+                    readonly: { type: Boolean, optional: true },
+                    selection: { type: Array, element: { type: Array, element: String } },
+                    optional: true,
+                },
+            },
+        ],
+        optional: true,
+    },
+    useSubView: { type: Boolean, optional: true },
+    label: { type: [String, { value: false }], optional: true },
+    listViewWidth: {
+        type: [
+            Number,
+            {
+                type: Array,
+                element: Number,
+                validate: (array) => array.length === 1 || array.length === 2,
+            },
+            Function,
+        ],
+        optional: true,
+    },
+});
+
+class DefaultField extends Component {
+    static template = xml``;
+    static props = ["*"];
+}
 
 export function getFieldFromRegistry(fieldType, widget, viewType, jsClass) {
     const prefixes = jsClass ? [jsClass, viewType, ""] : [viewType, ""];
@@ -33,6 +134,9 @@ export function getFieldFromRegistry(fieldType, widget, viewType, jsClass) {
     if (widget) {
         const field = findInRegistry(widget);
         if (field) {
+            if (field.supportedTypes && !field.supportedTypes?.includes(fieldType)) {
+                console.warn(`The widget: ${widget} don't support the type ${fieldType}`);
+            }
             return field;
         }
         console.warn(`Missing widget: ${widget} for field of type ${fieldType}`);
@@ -41,8 +145,11 @@ export function getFieldFromRegistry(fieldType, widget, viewType, jsClass) {
 }
 
 export function fieldVisualFeedback(field, record, fieldName, fieldInfo) {
-    const modifiers = fieldInfo.modifiers || {};
-    const readonly = evalDomain(modifiers.readonly, record.evalContext);
+    const readonly =
+        fieldInfo.viewType === "form" && !record.isInEdition
+            ? true
+            : evaluateBooleanExpr(fieldInfo.readonly, record.evalContextWithVirtualIds);
+    const required = evaluateBooleanExpr(fieldInfo.required, record.evalContextWithVirtualIds);
     const inEdit = record.isInEdition;
 
     let empty = !record.isNew;
@@ -54,14 +161,206 @@ export function fieldVisualFeedback(field, record, fieldName, fieldInfo) {
     empty = inEdit ? empty && readonly : empty;
     return {
         readonly,
-        required: evalDomain(modifiers.required, record.evalContext),
-        invalid: record.isInvalid(fieldName),
+        required,
+        invalid: field.isValid
+            ? !field.isValid(record, fieldName, fieldInfo)
+            : record.isFieldInvalid(fieldName),
         empty,
     };
 }
 
+export function getPropertyFieldInfo(propertyField) {
+    const { name, relatedPropertyField, string, type, widget } = propertyField;
+
+    const fieldInfo = {
+        name,
+        string,
+        type,
+        widget: widget || type,
+        options: {},
+        column_invisible: "False",
+        invisible: "False",
+        readonly: "False",
+        required: "False",
+        attrs: {},
+        relatedPropertyField,
+
+        // ??? We don t use it ? But it s in the fieldInfo of the field
+        context: "{}",
+        help: undefined,
+        onChange: false,
+        forceSave: false,
+        decorations: {},
+        // ???
+    };
+
+    if (type === "many2one" || type === "many2many") {
+        const { domain, relation } = propertyField;
+        fieldInfo.relation = relation;
+        fieldInfo.domain = domain;
+
+        if (relation === "res.users" || relation === "res.partner") {
+            fieldInfo.widget =
+                propertyField.type === "many2one" ? "many2one_avatar" : "many2many_tags_avatar";
+        } else {
+            fieldInfo.widget = propertyField.type === "many2one" ? type : "many2many_tags";
+        }
+    } else if (type === "tags") {
+        fieldInfo.tags = propertyField.tags;
+        fieldInfo.widget = `property_tags`;
+    } else if (type === "selection") {
+        fieldInfo.selection = propertyField.selection;
+    }
+
+    fieldInfo.field = getFieldFromRegistry(propertyField.type, fieldInfo.widget);
+    let { relatedFields } = fieldInfo.field;
+    if (relatedFields) {
+        if (relatedFields instanceof Function) {
+            relatedFields = relatedFields({ options: {}, attrs: {} });
+        }
+        fieldInfo.relatedFields = Object.fromEntries(relatedFields.map((f) => [f.name, f]));
+    }
+
+    return fieldInfo;
+}
 export class Field extends Component {
+    static template = "web.Field";
+    static props = ["fieldInfo?", "*"];
+    static parseFieldNode = function (node, models, modelName, viewType, jsClass) {
+        const name = node.getAttribute("name");
+        const widget = node.getAttribute("widget");
+        const fields = models[modelName].fields;
+        if (!fields[name]) {
+            throw new Error(`"${modelName}"."${name}" field is undefined.`);
+        }
+        const field = getFieldFromRegistry(fields[name].type, widget, viewType, jsClass);
+        const fieldInfo = {
+            name,
+            type: fields[name].type,
+            viewType,
+            widget,
+            field,
+            context: "{}",
+            string: fields[name].string,
+            help: undefined,
+            onChange: false,
+            forceSave: false,
+            options: {},
+            decorations: {},
+            attrs: {},
+            domain: undefined,
+        };
+
+        for (const attr of ["invisible", "column_invisible", "readonly", "required"]) {
+            fieldInfo[attr] = node.getAttribute(attr);
+            if (fieldInfo[attr] === "True") {
+                if (attr === "column_invisible") {
+                    fieldInfo.invisible = "True";
+                }
+            } else if (fieldInfo[attr] === null && fields[name][attr]) {
+                fieldInfo[attr] = "True";
+            }
+        }
+
+        for (const { name, value } of node.attributes) {
+            if (["name", "widget"].includes(name)) {
+                // avoid adding name and widget to attrs
+                continue;
+            }
+            if (["context", "string", "help", "domain"].includes(name)) {
+                fieldInfo[name] = value;
+            } else if (name === "on_change") {
+                fieldInfo.onChange = exprToBoolean(value);
+            } else if (name === "options") {
+                fieldInfo.options = evaluateExpr(value);
+            } else if (name === "force_save") {
+                fieldInfo.forceSave = exprToBoolean(value);
+            } else if (name.startsWith("decoration-")) {
+                // prepare field decorations
+                fieldInfo.decorations[name.replace("decoration-", "")] = value;
+            } else if (!name.startsWith("t-att")) {
+                // all other (non dynamic) attributes
+                fieldInfo.attrs[name] = value;
+            }
+        }
+        if (name === "id") {
+            fieldInfo.readonly = "True";
+        }
+
+        if (widget === "handle") {
+            fieldInfo.isHandle = true;
+        }
+
+        if (X2M_TYPES.includes(fields[name].type)) {
+            const views = {};
+            let relatedFields = fieldInfo.field.relatedFields;
+            if (relatedFields) {
+                if (relatedFields instanceof Function) {
+                    relatedFields = relatedFields(fieldInfo);
+                }
+                for (const relatedField of relatedFields) {
+                    if (!("readonly" in relatedField)) {
+                        relatedField.readonly = true;
+                    }
+                }
+                relatedFields = Object.fromEntries(relatedFields.map((f) => [f.name, f]));
+                views.default = { fieldNodes: relatedFields, fields: relatedFields };
+                if (!fieldInfo.field.useSubView) {
+                    fieldInfo.viewMode = "default";
+                }
+            }
+            for (const child of node.children) {
+                const viewType = child.tagName;
+                const { ArchParser } = viewRegistry.get(viewType);
+                // We copy and hence isolate the subview from the main view's tree
+                // This way, the subview's tree is autonomous and CSS selectors will work normally
+                const childCopy = child.cloneNode(true);
+                const archInfo = new ArchParser().parse(childCopy, models, fields[name].relation);
+                views[viewType] = {
+                    ...archInfo,
+                    limit: archInfo.limit || 40,
+                    fields: models[fields[name].relation].fields,
+                };
+            }
+
+            let viewMode = node.getAttribute("mode");
+            if (viewMode) {
+                if (viewMode.split(",").length !== 1) {
+                    viewMode = isSmall() ? "kanban" : "list";
+                }
+            } else {
+                if (views.list && !views.kanban) {
+                    viewMode = "list";
+                } else if (!views.list && views.kanban) {
+                    viewMode = "kanban";
+                } else if (views.list && views.kanban) {
+                    viewMode = isSmall() ? "kanban" : "list";
+                }
+            }
+            if (viewMode) {
+                fieldInfo.viewMode = viewMode;
+            }
+            if (Object.keys(views).length) {
+                fieldInfo.relatedFields = models[fields[name].relation]?.fields;
+                fieldInfo.views = views;
+            }
+        }
+        if (["many2one", "many2one_reference"].includes(fields[name].type)) {
+            let relatedFields = fieldInfo.field.relatedFields;
+            if (relatedFields) {
+                relatedFields = Object.fromEntries(relatedFields.map((f) => [f.name, f]));
+                fieldInfo.viewMode = "default";
+                fieldInfo.views = {
+                    default: { fieldNodes: relatedFields, fields: relatedFields },
+                };
+            }
+        }
+
+        return fieldInfo;
+    };
+
     setup() {
+        this.offlineService = useService("offline");
         if (this.props.fieldInfo) {
             this.field = this.props.fieldInfo.field;
         } else {
@@ -98,9 +397,11 @@ export class Field extends Component {
         // only handle the text-decoration.
         if (fieldInfo && fieldInfo.decorations) {
             const { decorations } = fieldInfo;
-            const evalContext = record.evalContext;
             for (const decoName in decorations) {
-                const value = evaluateExpr(decorations[decoName], evalContext);
+                const value = evaluateBooleanExpr(
+                    decorations[decoName],
+                    record.evalContextWithVirtualIds
+                );
                 classNames[getClassNameFromDecoration(decoName)] = value;
             }
         }
@@ -114,16 +415,20 @@ export class Field extends Component {
 
     get fieldComponentProps() {
         const record = this.props.record;
-        const evalContext = record.evalContext;
-        const readonly = this.props.readonly === true;
+        // Disable edition in offline mode, except for a some fields
+        let readonly =
+            this.props.readonly ||
+            (this.offlineService.offline &&
+                !validFieldTypes[this.props.record.fields[this.props.name].type]
+                    .availableOffline) ||
+            false;
 
-        let readonlyFromModifiers = false;
         let propsFromNode = {};
         if (this.props.fieldInfo) {
             let fieldInfo = this.props.fieldInfo;
-
-            const modifiers = fieldInfo.modifiers || {};
-            readonlyFromModifiers = evalDomain(modifiers.readonly, evalContext);
+            readonly =
+                readonly ||
+                evaluateBooleanExpr(fieldInfo.readonly, record.evalContextWithVirtualIds);
 
             if (this.field.extractProps) {
                 if (this.props.attrs) {
@@ -132,44 +437,29 @@ export class Field extends Component {
                         attrs: { ...fieldInfo.attrs, ...this.props.attrs },
                     };
                 }
+                if (fieldInfo.options.placeholder_field) {
+                    const placeholderField = fieldInfo.options.placeholder_field;
+                    const formatter = formatterRegistry.get(record.fields[placeholderField].type);
+                    fieldInfo.placeholder = formatter(record.data[placeholderField]);
+                } else if (fieldInfo.attrs.placeholder) {
+                    fieldInfo.placeholder = fieldInfo.attrs.placeholder;
+                }
+
                 const dynamicInfo = {
                     get context() {
-                        const evalContext = record.getEvalContext
-                            ? record.getEvalContext(false)
-                            : record.evalContext;
-
-                        const context = {};
-                        for (const key in record.context) {
-                            if (!key.startsWith("default_") && !key.endsWith("_view_ref")) {
-                                context[key] = record.context[key];
-                            }
-                        }
-
-                        return {
-                            ...context,
-                            ...makeContext([fieldInfo.context], evalContext),
-                        };
+                        return getFieldContext(record, fieldInfo.name, fieldInfo.context);
                     },
                     domain() {
-                        const evalContext = record.getEvalContext
-                            ? record.getEvalContext(true)
-                            : record.evalContext;
+                        const evalContext = record.evalContext;
                         if (fieldInfo.domain) {
                             return new Domain(evaluateExpr(fieldInfo.domain, evalContext)).toList();
                         }
-                        const { domain } = record.fields[fieldInfo.name];
-                        return typeof domain === "string"
-                            ? new Domain(evaluateExpr(domain, evalContext)).toList()
-                            : domain || [];
                     },
-                    readonly: readonly || readonlyFromModifiers,
-                    get required() {
-                        return (
-                            fieldInfo.modifiers &&
-                            fieldInfo.modifiers.required &&
-                            evalDomain(fieldInfo.modifiers.required, record.evalContext)
-                        );
-                    },
+                    required: evaluateBooleanExpr(
+                        fieldInfo.required,
+                        record.evalContextWithVirtualIds
+                    ),
+                    readonly: readonly,
                 };
                 propsFromNode = this.field.extractProps(fieldInfo, dynamicInfo);
             }
@@ -185,7 +475,7 @@ export class Field extends Component {
         delete props.readonly;
 
         return {
-            readonly: readonly || !record.isInEdition || readonlyFromModifiers || false,
+            readonly: readonly || !record.isInEdition || false,
             ...propsFromNode,
             ...props,
         };
@@ -203,100 +493,10 @@ export class Field extends Component {
         }
         return false;
     }
+    onFieldFocus(isActive) {
+        const formLabelSelector = `.o_cell:has(+ .o_cell .o_field_widget[name=${this.props.name}]) .o_form_label`;
+        document
+            .querySelector(`label[for=${this.fieldComponentProps.id}], ${formLabelSelector}`)
+            ?.classList.toggle("o_label_active", isActive);
+    }
 }
-Field.template = "web.Field";
-
-Field.parseFieldNode = function (node, models, modelName, viewType, jsClass) {
-    const name = node.getAttribute("name");
-    const widget = node.getAttribute("widget");
-    const fields = models[modelName];
-    const field = getFieldFromRegistry(fields[name].type, widget, viewType, jsClass);
-    const fieldInfo = {
-        name,
-        type: fields[name].type,
-        viewType,
-        widget,
-        modifiers: {},
-        field,
-        context: "{}",
-        string: fields[name].string,
-        help: undefined,
-        onChange: false,
-        forceSave: false,
-        options: {},
-        alwaysInvisible: false,
-        decorations: {},
-        attrs: {},
-        domain: undefined,
-    };
-
-    for (const { name, value } of node.attributes) {
-        if (["name", "widget"].includes(name)) {
-            // avoid adding name and widget to attrs
-            continue;
-        }
-        if (["context", "string", "help", "domain"].includes(name)) {
-            fieldInfo[name] = value;
-        } else if (name === "modifiers") {
-            fieldInfo.modifiers = JSON.parse(value);
-            fieldInfo.alwaysInvisible =
-                fieldInfo.modifiers.invisible === true ||
-                fieldInfo.modifiers.column_invisible === true;
-        } else if (name === "on_change") {
-            fieldInfo.onChange = archParseBoolean(value);
-        } else if (name === "options") {
-            fieldInfo.options = evaluateExpr(value);
-        } else if (name === "force_save") {
-            fieldInfo.forceSave = archParseBoolean(value);
-        } else if (name.startsWith("decoration-")) {
-            // prepare field decorations
-            fieldInfo.decorations[name.replace("decoration-", "")] = value;
-        } else if (!name.startsWith("t-att")) {
-            // all other (non dynamic) attributes
-            fieldInfo.attrs[name] = value;
-        }
-    }
-
-    if (X2M_TYPES.includes(fields[name].type)) {
-        const views = {};
-        for (const child of node.children) {
-            const viewType = child.tagName === "tree" ? "list" : child.tagName;
-            const { ArchParser } = viewRegistry.get(viewType);
-            const xmlSerializer = new XMLSerializer();
-            const subArch = xmlSerializer.serializeToString(child);
-            const archInfo = new ArchParser().parse(subArch, models, fields[name].relation);
-            views[viewType] = {
-                ...archInfo,
-                fields: models[fields[name].relation],
-            };
-            fieldInfo.relatedFields = models[fields[name].relation];
-        }
-
-        let viewMode = node.getAttribute("mode");
-        if (!viewMode) {
-            if (views.list && !views.kanban) {
-                viewMode = "list";
-            } else if (!views.list && views.kanban) {
-                viewMode = "kanban";
-            } else if (views.list && views.kanban) {
-                viewMode = "list,kanban";
-            }
-        } else {
-            viewMode = viewMode.replace("tree", "list");
-        }
-        fieldInfo.viewMode = viewMode;
-        fieldInfo.views = views;
-
-        let relatedFields = field.relatedFields;
-        if (relatedFields) {
-            if (relatedFields instanceof Function) {
-                relatedFields = relatedFields(fieldInfo);
-            }
-            fieldInfo.relatedFields = Object.fromEntries(relatedFields.map((f) => [f.name, f]));
-        }
-    }
-
-    return fieldInfo;
-};
-
-Field.props = ["fieldInfo?", "*"];

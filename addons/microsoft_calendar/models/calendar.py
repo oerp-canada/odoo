@@ -1,17 +1,17 @@
-# -*- coding: utf-8 -*-
 # Part of Odoo. See LICENSE file for full copyright and licensing details.
 
 import logging
-import pytz
 import re
-from datetime import datetime
+from datetime import datetime, UTC
+from zoneinfo import ZoneInfo
+
 from dateutil.parser import parse
 from dateutil.relativedelta import relativedelta
 
 from odoo import api, fields, models, _
 from odoo.exceptions import UserError, ValidationError
-from odoo.tools import is_html_empty, email_normalize
-from odoo.addons.microsoft_calendar.utils.event_id_storage import combine_ids
+from odoo.fields import Domain
+from odoo.tools import email_normalize
 
 ATTENDEE_CONVERTER_O2M = {
     'needsAction': 'notresponded',
@@ -34,13 +34,29 @@ MAX_RECURRENT_EVENT = 720
 
 _logger = logging.getLogger(__name__)
 
-class Meeting(models.Model):
+
+class CalendarEvent(models.Model):
     _name = 'calendar.event'
     _inherit = ['calendar.event', 'microsoft.calendar.sync']
 
-    # contains organizer event id and universal event id separated by a ':'
-    microsoft_id = fields.Char('Microsoft Calendar Event Id')
     microsoft_recurrence_master_id = fields.Char('Microsoft Recurrence Master Id')
+    microsoft_sync_active = fields.Boolean('Microsoft Sync Active', compute='_compute_microsoft_sync_active')
+
+    @api.depends('user_id.microsoft_calendar_rtoken', 'user_id.microsoft_synchronization_stopped')
+    def _compute_microsoft_sync_active(self):
+        # Check token and sync status manually to avoid calling
+        # _check_microsoft_sync_status, which may trigger a token refresh
+        for event in self:
+            sync_active = (
+                bool(event.user_id.sudo().microsoft_calendar_rtoken)
+                and not event.user_id.sudo().microsoft_synchronization_stopped
+            )
+            event.microsoft_sync_active = sync_active
+
+    @api.depends('microsoft_sync_active', 'recurrency')
+    def _compute_user_can_edit(self):
+        super()._compute_user_can_edit()
+        self.filtered(lambda e: e.microsoft_sync_active and e.recurrency).user_can_edit = False
 
     def _get_organizer(self):
         return self.user_id
@@ -49,25 +65,69 @@ class Meeting(models.Model):
     def _get_microsoft_synced_fields(self):
         return {'name', 'description', 'allday', 'start', 'date_end', 'stop',
                 'user_id', 'privacy',
-                'attendee_ids', 'alarm_ids', 'location', 'show_as', 'active'}
+                'attendee_ids', 'alarm_ids', 'location', 'show_as', 'active', 'videocall_location'}
 
     @api.model
     def _restart_microsoft_sync(self):
-        self.env['calendar.event'].search(self._get_microsoft_sync_domain()).write({
+        domain = self._get_microsoft_sync_domain()
+
+        self.env['calendar.event'].with_context(dont_notify=True).search(domain).write({
             'need_sync_m': True,
         })
+
+    def _check_microsoft_sync_status(self):
+        """
+        Returns True if synchronization with Outlook Calendar is active and False otherwise.
+        The 'microsoft_synchronization_stopped' variable needs to be 'False' and Outlook account must be connected.
+        """
+        outlook_connected = self.env.user._get_microsoft_calendar_token()
+        return outlook_connected and self.env.user.sudo().microsoft_synchronization_stopped is False
+
+    def _skip_send_mail_status_update(self):
+        """If microsoft calendar is not syncing, don't send a mail."""
+        user_id = self._get_event_user_m()
+        if self.with_user(user_id)._check_microsoft_sync_status() and user_id._get_microsoft_sync_status() == "sync_active":
+            return self.microsoft_id or self.need_sync_m
+        return super()._skip_send_mail_status_update()
 
     @api.model_create_multi
     def create(self, vals_list):
         notify_context = self.env.context.get('dont_notify', False)
 
+        # Forbid recurrence creation in Odoo, suggest its creation in Outlook due to the spam limitation.
+        recurrency_in_batch = any(vals.get('recurrency') for vals in vals_list)
+        if self._check_microsoft_sync_status() and not notify_context and recurrency_in_batch:
+            self._forbid_recurrence_creation()
+
+        vals_check_organizer = self._check_organizer_validation_conditions(vals_list)
+        for vals in [vals for vals, check_organizer in zip(vals_list, vals_check_organizer) if check_organizer]:
+            # If event has a different organizer, check its sync status and verify if the user is listed as attendee.
+            sender_user, partner_ids = self._get_organizer_user_change_info(vals)
+            partner_included = partner_ids and len(partner_ids) > 0 and sender_user.partner_id.id in partner_ids
+            self._check_organizer_validation(sender_user, partner_included)
+
         # for a recurrent event, we do not create events separately but we directly
         # create the recurrency from the corresponding calendar.recurrence.
         # That's why, events from a recurrency have their `need_sync_m` attribute set to False.
-        return super(Meeting, self.with_context(dont_notify=notify_context)).create([
+        return super(CalendarEvent, self.with_context(dont_notify=notify_context)).create([
             dict(vals, need_sync_m=False) if vals.get('recurrence_id') or vals.get('recurrency') else vals
             for vals in vals_list
         ])
+
+    def _check_organizer_validation(self, sender_user, partner_included):
+        """ Check if the proposed event organizer can be set accordingly. """
+        # Edge case: events created or updated from Microsoft should not check organizer validation.
+        change_from_microsoft = self.env.context.get('dont_notify', False)
+        if sender_user and sender_user != self.env.user and not change_from_microsoft:
+            current_sync_status = self._check_microsoft_sync_status()
+            sender_sync_status = self.with_user(sender_user)._check_microsoft_sync_status()
+            if not sender_sync_status and current_sync_status:
+                raise ValidationError(
+                    _("For having a different organizer in your event, it is necessary that "
+                      "the organizer have its Odoo Calendar synced with Outlook Calendar."))
+            elif sender_sync_status and not partner_included:
+                raise ValidationError(
+                    _("It is necessary adding the proposed organizer as attendee before saving the event."))
 
     def _check_recurrence_overlapping(self, new_start):
         """
@@ -78,11 +138,13 @@ class Meeting(models.Model):
         the day of the following occurrence.
         For example: E1 E2 E3 E4 cannot becomes E1 E3 E2 E4
         """
+        if isinstance(new_start, str):
+            new_start = parse(new_start)
         before_count = len(self.recurrence_id.calendar_event_ids.filtered(
             lambda e: e.start.date() < self.start.date() and e != self
         ))
         after_count = len(self.recurrence_id.calendar_event_ids.filtered(
-            lambda e: e.start.date() < parse(new_start).date() and e != self
+            lambda e: e.start.date() < new_start.date() and e != self
         ))
         if before_count != after_count:
             raise UserError(_(
@@ -103,41 +165,167 @@ class Meeting(models.Model):
 
         return (event_start, event_stop) == (start, stop)
 
-    def write(self, values):
+    def _forbid_recurrence_update(self):
+        """
+        Suggest user to update recurrences in Outlook due to the Outlook Calendar spam limitation.
+        """
+        error_msg = _("Due to an Outlook Calendar limitation, recurrence updates must be done directly in Outlook Calendar.")
+        if any(not record.ms_universal_event_id for record in self):
+            # If any event is not synced, suggest deleting it in Odoo and recreating it in Outlook.
+            error_msg = _(
+                "Due to an Outlook Calendar limitation, recurrence updates must be done directly in Outlook Calendar.\n"
+                "If this recurrence is not shown in Outlook Calendar, you must delete it in Odoo Calendar and recreate it in Outlook Calendar.")
+
+        raise UserError(error_msg)
+
+    def _forbid_recurrence_creation(self):
+        """
+        Suggest user to update recurrences in Outlook due to the Outlook Calendar spam limitation.
+        """
+        raise UserError(_("Due to an Outlook Calendar limitation, recurrent events must be created directly in Outlook Calendar."))
+
+    def write(self, vals):
+        values = vals
         recurrence_update_setting = values.get('recurrence_update')
+        notify_context = self.env.context.get('dont_notify', False)
+
+        # Forbid recurrence updates through Odoo and suggest user to update it in Outlook.
+        if not notify_context:
+            recurrency_in_batch = self.filtered(lambda ev: ev.recurrency)
+            recurrence_update_attempt = recurrence_update_setting or 'recurrency' in values or recurrency_in_batch and len(recurrency_in_batch) > 0
+            # Check if this is an Outlook recurring event with active sync
+            if recurrence_update_attempt and 'active' not in values:
+                recurring_events = self.filtered('microsoft_recurrence_master_id')
+                if recurring_events and any(
+                    event.with_user(organizer)._check_microsoft_sync_status()
+                    for event in recurring_events
+                    if (organizer := event._get_organizer())
+                ):
+                    self._forbid_recurrence_update()
+
+        # When changing the organizer, check its sync status and verify if the user is listed as attendee.
+        # Updates from Microsoft must skip this check since changing the organizer on their side is not possible.
+        change_from_microsoft = self.env.context.get('dont_notify', False)
+        deactivated_events_ids = []
+        new_user_id = values.get('user_id')
+        for event in self:
+            if new_user_id and event.user_id.id != new_user_id and not change_from_microsoft and event.microsoft_id:
+                sender_user, partner_ids = event._get_organizer_user_change_info(values)
+                partner_included = sender_user.partner_id in event.attendee_ids.partner_id or sender_user.partner_id.id in partner_ids
+                event._check_organizer_validation(sender_user, partner_included)
+                if event.microsoft_id:
+                    event._recreate_event_different_organizer(values, sender_user)
+                    deactivated_events_ids.append(event.id)
 
         # check a Outlook limitation in overlapping the actual recurrence
         if recurrence_update_setting == 'self_only' and 'start' in values:
             self._check_recurrence_overlapping(values['start'])
 
         # if a single event becomes the base event of a recurrency, it should be first
-        # removed from the Outlook calendar.
-        if 'recurrency' in values and values['recurrency']:
-            for e in self.filtered(lambda e: not e.recurrency and not e.recurrence_id):
-                e._microsoft_delete(e._get_organizer(), e.ms_organizer_event_id, timeout=3)
-                e.microsoft_id = False
+        # removed from the Outlook calendar. Additionaly, checks if synchronization is not paused.
+        if self.env.user._get_microsoft_sync_status() != "sync_paused" and values.get('recurrency'):
+            for event in self:
+                if not event.recurrency and not event.recurrence_id:
+                    event._microsoft_delete(event._get_organizer(), event.microsoft_id, timeout=3)
+                    event.microsoft_id = False
+                    event.ms_universal_event_id = False
 
-        notify_context = self.env.context.get('dont_notify', False)
-        res = super(Meeting, self.with_context(dont_notify=notify_context)).write(values)
+        deactivated_events = self.browse(deactivated_events_ids)
+        # Update attendee status before 'values' variable is overridden in super.
+        attendee_ids = values.get('attendee_ids')
+        if attendee_ids and values.get('partner_ids'):
+            (self - deactivated_events)._update_attendee_status(attendee_ids)
+
+        res = super(CalendarEvent, (self - deactivated_events).with_context(dont_notify=notify_context)).write(values)
+
+        # Deactivate events that were recreated after changing organizer.
+        if deactivated_events:
+            res |= super(CalendarEvent, deactivated_events.with_context(dont_notify=notify_context)).write({**values, 'active': False})
 
         if recurrence_update_setting in ('all_events',) and len(self) == 1 \
            and values.keys() & self._get_microsoft_synced_fields():
             self.recurrence_id.need_sync_m = True
         return res
 
+    def unlink(self):
+        # Forbid recurrent events unlinking from calendar list view with sync active.
+        if self and self._check_microsoft_sync_status():
+            synced_events = self._get_synced_events()
+            change_from_microsoft = self.env.context.get('dont_notify', False)
+            recurrence_deletion = any(ev.recurrency and ev.recurrence_id and ev.follow_recurrence for ev in synced_events)
+            if not change_from_microsoft and recurrence_deletion:
+                self._forbid_recurrence_update()
+        return super().unlink()
+
+    def _recreate_event_different_organizer(self, values, sender_user):
+        """ Copy current event values, delete it and recreate it with the new organizer user. """
+        self.ensure_one()
+        event_copy = {**self.copy_data()[0], 'microsoft_id': False}
+        self.env['calendar.event'].with_user(sender_user).with_context(skip_contact_description=True).create(
+            {**event_copy, **values},
+        )
+        if self.ms_universal_event_id:
+            self._microsoft_delete(self._get_organizer(), self.microsoft_id)
+
+    @api.model
+    def _get_organizer_user_change_info(self, values):
+        """ Return the sender user of the event and the partner ids listed on the event values. """
+        sender_user_id = values.get('user_id')
+        if not sender_user_id:
+            sender_user_id = self.env.user.id
+        sender_user = self.env['res.users'].browse(sender_user_id)
+        attendee_values = self._attendees_values(values['partner_ids']) if 'partner_ids' in values else []
+        partner_ids = []
+        if attendee_values:
+            for command in attendee_values:
+                if len(command) == 3 and isinstance(command[2], dict):
+                    partner_ids.append(command[2].get('partner_id'))
+        return sender_user, partner_ids
+
+    def _update_attendee_status(self, attendee_ids):
+        """ Merge current status from 'attendees_ids' with new attendees values for avoiding their info loss in write().
+        Create a dict getting the state of each attendee received from 'attendee_ids' variable and then update their state.
+        :param attendee_ids: List of attendee commands carrying a dict with 'partner_id' and 'state' keys in its third position.
+        """
+        state_by_partner = {}
+        for cmd in attendee_ids:
+            if len(cmd) == 3 and isinstance(cmd[2], dict) and all(key in cmd[2] for key in ['partner_id', 'state']):
+                state_by_partner[cmd[2]['partner_id']] = cmd[2]['state']
+        for attendee in self.attendee_ids:
+            state_update = state_by_partner.get(attendee.partner_id.id)
+            if state_update:
+                attendee.state = state_update
+
+    def action_mass_archive(self, recurrence_update_setting):
+        # Do not allow archiving if recurrence is synced with Outlook. Suggest updating directly from Outlook.
+        self.ensure_one()
+        if self._check_microsoft_sync_status() and self.microsoft_id:
+            self._forbid_recurrence_update()
+        super().action_mass_archive(recurrence_update_setting)
+
     def _get_microsoft_sync_domain(self):
         # in case of full sync, limit to a range of 1y in past and 1y in the future by default
         ICP = self.env['ir.config_parameter'].sudo()
-        day_range = int(ICP.get_param('microsoft_calendar.sync.range_days', default=365))
+        day_range = ICP.get_int('microsoft_calendar.sync.range_days') or 365
         lower_bound = fields.Datetime.subtract(fields.Datetime.now(), days=day_range)
         upper_bound = fields.Datetime.add(fields.Datetime.now(), days=day_range)
-        domain = [
-            ('partner_ids.user_ids', 'in', self.env.user.id),
+
+        # Define 'custom_lower_bound_range' param for limiting old events updates in Odoo and avoid spam on Microsoft.
+        custom_lower_bound_range = ICP.get_int('microsoft_calendar.sync.lower_bound_range')
+        if custom_lower_bound_range:
+            lower_bound = fields.Datetime.subtract(fields.Datetime.now(), days=custom_lower_bound_range)
+        domain = Domain([
+            ('partner_ids.user_ids', 'in', [self.env.user.id]),
             ('stop', '>', lower_bound),
             ('start', '<', upper_bound),
-            # Do not sync events that follow the recurrence, they are already synced at recurrence creation
             '!', '&', '&', ('recurrency', '=', True), ('recurrence_id', '!=', False), ('follow_recurrence', '=', True)
-        ]
+        ])
+
+        # Synchronize events that were created after the first synchronization date, when applicable.
+        first_synchronization_date = ICP.get_str('microsoft_calendar.sync.first_synchronization_date')
+        if first_synchronization_date:
+            domain &= Domain('create_date', '>=', first_synchronization_date)
+
         return self._extend_microsoft_domain(domain)
 
 
@@ -153,8 +341,8 @@ class Meeting(models.Model):
         }
 
         commands_attendee, commands_partner = self._odoo_attendee_commands_m(microsoft_event)
-        timeZone_start = pytz.timezone(microsoft_event.start.get('timeZone'))
-        timeZone_stop = pytz.timezone(microsoft_event.end.get('timeZone'))
+        timeZone_start = ZoneInfo(microsoft_event.start.get('timeZone'))
+        timeZone_stop = ZoneInfo(microsoft_event.end.get('timeZone'))
         start = parse(microsoft_event.start.get('dateTime')).astimezone(timeZone_start).replace(tzinfo=None)
         if microsoft_event.isAllDay:
             stop = parse(microsoft_event.end.get('dateTime')).astimezone(timeZone_stop).replace(tzinfo=None) - relativedelta(days=1)
@@ -166,7 +354,7 @@ class Meeting(models.Model):
             'description': microsoft_event.body and microsoft_event.body['content'],
             'location': microsoft_event.location and microsoft_event.location.get('displayName') or False,
             'user_id': microsoft_event.owner_id(self.env),
-            'privacy': sensitivity_o2m.get(microsoft_event.sensitivity, self.default_get(['privacy'])['privacy']),
+            'privacy': sensitivity_o2m.get(microsoft_event.sensitivity, False),
             'attendee_ids': commands_attendee,
             'allday': microsoft_event.isAllDay,
             'start': start,
@@ -194,7 +382,9 @@ class Meeting(models.Model):
                 values['location'] = False
 
         if with_ids:
-            values['microsoft_id'] = combine_ids(microsoft_event.id, microsoft_event.iCalUId)
+            values['microsoft_id'] = microsoft_event.id
+            values['ms_universal_event_id'] = microsoft_event.iCalUId
+
 
         if microsoft_event.is_recurrent():
             values['microsoft_recurrence_master_id'] = microsoft_event.seriesMasterId
@@ -207,8 +397,8 @@ class Meeting(models.Model):
 
     @api.model
     def _microsoft_to_odoo_recurrence_values(self, microsoft_event, default_values=None):
-        timeZone_start = pytz.timezone(microsoft_event.start.get('timeZone'))
-        timeZone_stop = pytz.timezone(microsoft_event.end.get('timeZone'))
+        timeZone_start = ZoneInfo(microsoft_event.start.get('timeZone'))
+        timeZone_stop = ZoneInfo(microsoft_event.end.get('timeZone'))
         start = parse(microsoft_event.start.get('dateTime')).astimezone(timeZone_start).replace(tzinfo=None)
         if microsoft_event.isAllDay:
             stop = parse(microsoft_event.end.get('dateTime')).astimezone(timeZone_stop).replace(tzinfo=None) - relativedelta(days=1)
@@ -216,7 +406,8 @@ class Meeting(models.Model):
             stop = parse(microsoft_event.end.get('dateTime')).astimezone(timeZone_stop).replace(tzinfo=None)
         values = default_values or {}
         values.update({
-            'microsoft_id': combine_ids(microsoft_event.id, microsoft_event.iCalUId),
+            'microsoft_id': microsoft_event.id,
+            'ms_universal_event_id': microsoft_event.iCalUId,
             'microsoft_recurrence_master_id': microsoft_event.seriesMasterId,
             'start': start,
             'stop': stop,
@@ -242,10 +433,18 @@ class Meeting(models.Model):
         elif self.env.user.partner_id.email not in emails:
             commands_attendee += [(0, 0, {'state': 'accepted', 'partner_id': self.env.user.partner_id.id})]
             commands_partner += [(4, self.env.user.partner_id.id)]
-        partners = self.env['mail.thread']._mail_find_partner_from_emails(emails, records=self, force_create=True)
+        partners = self.env['mail.thread']._partner_find_from_emails_single(emails, no_create=False)
         attendees_by_emails = {a.email: a for a in existing_attendees}
-        for email, partner, attendee_info in zip(emails, partners, microsoft_attendees):
-            state = ATTENDEE_CONVERTER_M2O.get(attendee_info.get('status').get('response'), 'needsAction')
+        partners_by_emails = {p.email_normalized: p for p in partners}
+        for email, attendee_info in zip(emails, microsoft_attendees):
+            partner = partners_by_emails.get(email_normalize(email) or email, self.env['res.partner'])
+            # Responses from external invitations are stored in the 'responseStatus' field.
+            # This field only carries the current user's event status because Microsoft hides other user's status.
+            if self.env.user.email == email and microsoft_event.responseStatus:
+                attendee_microsoft_status = microsoft_event.responseStatus.get('response', 'none')
+            else:
+                attendee_microsoft_status = attendee_info.get('status').get('response')
+            state = ATTENDEE_CONVERTER_M2O.get(attendee_microsoft_status, 'needsAction')
 
             if email in attendees_by_emails:
                 # Update existing attendees
@@ -324,12 +523,10 @@ class Meeting(models.Model):
             return 'organizer'
         return ATTENDEE_CONVERTER_O2M.get(attendee.state, 'None')
 
-    def _microsoft_values(self, fields_to_sync, initial_values={}):
+    def _microsoft_values(self, fields_to_sync, initial_values=()):
         values = dict(initial_values)
         if not fields_to_sync:
             return values
-
-        microsoft_guid = self.env['ir.config_parameter'].sudo().get_param('microsoft_calendar.microsoft_guid', False)
 
         if self.microsoft_recurrence_master_id and 'type' not in values:
             values['seriesMasterId'] = self.microsoft_recurrence_master_id
@@ -340,7 +537,7 @@ class Meeting(models.Model):
 
         if 'description' in fields_to_sync:
             values['body'] = {
-                'content': self.description if not is_html_empty(self.description) else '',
+                'content': self._get_customer_description(),
                 'contentType': "html",
             }
 
@@ -349,8 +546,8 @@ class Meeting(models.Model):
                 start = {'dateTime': self.start_date.isoformat(), 'timeZone': 'Europe/London'}
                 end = {'dateTime': (self.stop_date + relativedelta(days=1)).isoformat(), 'timeZone': 'Europe/London'}
             else:
-                start = {'dateTime': pytz.utc.localize(self.start).isoformat(), 'timeZone': 'Europe/London'}
-                end = {'dateTime': pytz.utc.localize(self.stop).isoformat(), 'timeZone': 'Europe/London'}
+                start = {'dateTime': self.start.replace(tzinfo=UTC).isoformat(), 'timeZone': 'Europe/London'}
+                end = {'dateTime': self.stop.replace(tzinfo=UTC).isoformat(), 'timeZone': 'Europe/London'}
 
             values['start'] = start
             values['end'] = end
@@ -358,6 +555,12 @@ class Meeting(models.Model):
 
         if 'location' in fields_to_sync:
             values['location'] = {'displayName': self.location or ''}
+
+        if not self.location and 'videocall_location' in fields_to_sync and self._need_video_call():
+            values['isOnlineMeeting'] = True
+            values['onlineMeetingProvider'] = 'teamsForBusiness'
+        else:
+            values['isOnlineMeeting'] = False
 
         if 'alarm_ids' in fields_to_sync:
             alarm_id = self.alarm_ids.filtered(lambda a: a.alarm_type == 'notification')[:1]
@@ -383,6 +586,11 @@ class Meeting(models.Model):
                 'private': 'private',
                 'confidential': 'confidential',
             }
+            # Set default privacy in event according to the organizer's calendar default privacy if defined.
+            if self.user_id:
+                sensitivity_o2m[False] = sensitivity_o2m.get(self.user_id.calendar_default_privacy)
+            else:
+                sensitivity_o2m[False] = 'normal'
             values['sensitivity'] = sensitivity_o2m.get(self.privacy)
 
         if 'active' in fields_to_sync and not self.active:
@@ -465,19 +673,19 @@ class Meeting(models.Model):
                                     "all attendees must have an email address. However, some events do "
                                     "not respect this condition. As long as the events are incorrect, "
                                     "the calendars will not be synchronized."
-                                    "\nEither update the events/attendees or archive these events %s:"
-                                    "\n%s", details, invalid_events))
+                                    "\nEither update the events/attendees or archive these events %(details)s:"
+                                    "\n%(invalid_events)s", details=details, invalid_events=invalid_events))
 
-    def _microsoft_values_occurence(self, initial_values={}):
-        values = initial_values
+    def _microsoft_values_occurence(self, initial_values=()):
+        values = dict(initial_values)
         values['type'] = 'occurrence'
 
         if self.allday:
             start = {'dateTime': self.start_date.isoformat(), 'timeZone': 'Europe/London'}
             end = {'dateTime': (self.stop_date + relativedelta(days=1)).isoformat(), 'timeZone': 'Europe/London'}
         else:
-            start = {'dateTime': pytz.utc.localize(self.start).isoformat(), 'timeZone': 'Europe/London'}
-            end = {'dateTime': pytz.utc.localize(self.stop).isoformat(), 'timeZone': 'Europe/London'}
+            start = {'dateTime': self.start.replace(tzinfo=UTC).isoformat(), 'timeZone': 'Europe/London'}
+            end = {'dateTime': self.stop.replace(tzinfo=UTC).isoformat(), 'timeZone': 'Europe/London'}
 
         values['start'] = start
         values['end'] = end
@@ -493,7 +701,25 @@ class Meeting(models.Model):
           2) the organizer is NOT an Odoo user: any attendee should remove the Odoo event.
         """
         user = self.env.user
-        records = self.filtered(lambda e: not e.user_id or e.user_id == user)
-        super(Meeting, records)._cancel_microsoft()
+        records = self.filtered(lambda e: not e.user_id or e.user_id == user or user.partner_id in e.partner_ids)
+        records._track_clear_for_template()
+        super(CalendarEvent, records)._cancel_microsoft()
         attendees = (self - records).attendee_ids.filtered(lambda a: a.partner_id == user.partner_id)
         attendees.do_decline()
+
+    def _get_event_user_m(self, user_id=None):
+        """ Get the user who will send the request to Microsoft (organizer if synchronized and current user otherwise). """
+        self.ensure_one()
+        # Current user must have access to token in order to access event properties (non-public user).
+        current_user_status = self.env.user._get_microsoft_calendar_token()
+        if user_id != self.env.user and current_user_status:
+            if user_id is None:
+                user_id = self.user_id
+            if user_id and self.with_user(user_id).sudo()._check_microsoft_sync_status():
+                return user_id
+        return self.env.user
+
+    def _is_microsoft_insertion_blocked(self, sender_user):
+        self.ensure_one()
+        has_different_owner = self.user_id and self.user_id != sender_user
+        return has_different_owner

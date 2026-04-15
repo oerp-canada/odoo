@@ -1,8 +1,6 @@
-# -*- coding: utf-8 -*-
 # Part of Odoo. See LICENSE file for full copyright and licensing details.
 {
     'name': 'HR Gamification',
-    'version': '1.0',
     'category': 'Human Resources',
     'depends': ['gamification', 'hr'],
     'description': """Use the HR resources for the gamification process.
@@ -19,5 +17,14 @@ Badge received are displayed on the user profile.
         'views/hr_employee_views.xml',
         ],
     'auto_install': True,
+    'assets': {
+        'web.assets_backend': [
+            'hr_gamification/static/src/**/*',
+        ],
+        "web.assets_unit_tests": [
+            "hr_gamification/static/tests/**/*",
+        ],
+    },
+    'author': 'Odoo S.A.',
     'license': 'LGPL-3',
 }

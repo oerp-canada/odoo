@@ -1,9 +1,9 @@
-# -*- coding: utf-8 -*-
 # Part of Odoo. See LICENSE file for full copyright and licensing details.
 
 from lxml.html import document_fromstring
 
 import odoo.tests
+from odoo.exceptions import ValidationError
 
 
 class TestUrlCommon(odoo.tests.HttpCase):
@@ -30,7 +30,7 @@ class TestUrlCommon(odoo.tests.HttpCase):
 class TestBaseUrl(TestUrlCommon):
     def test_01_base_url(self):
         ICP = self.env['ir.config_parameter']
-        icp_base_url = ICP.sudo().get_param('web.base.url')
+        icp_base_url = ICP.sudo().get_str('web.base.url')
 
         # Test URL is correct for the website itself when the domain is set
         self.assertEqual(self.website.get_base_url(), self.domain)
@@ -92,7 +92,7 @@ class TestBaseUrl(TestUrlCommon):
 class TestGetBaseUrl(odoo.tests.TransactionCase):
     def test_01_get_base_url(self):
         # Setup
-        web_base_url = self.env['ir.config_parameter'].sudo().get_param('web.base.url')
+        web_base_url = self.env['ir.config_parameter'].sudo().get_str('web.base.url')
         company_1 = self.env['res.company'].create({
             'name': 'Company 1',
         })
@@ -143,9 +143,17 @@ class TestGetBaseUrl(odoo.tests.TransactionCase):
 
     def test_02_get_base_url_recordsets(self):
         Attachment = self.env['ir.attachment']
-        web_base_url = self.env['ir.config_parameter'].sudo().get_param('web.base.url')
+        web_base_url = self.env['ir.config_parameter'].sudo().get_str('web.base.url')
         self.assertEqual(Attachment.get_base_url(), web_base_url, "Empty recordset should get ICP value.")
 
         with self.assertRaises(ValueError):
             # if more than one record, an error we should be raised
             Attachment.search([], limit=2).get_base_url()
+
+    def test_03_invalid_website_domain(self):
+        website = self.env['website'].create({
+            'name': 'Website Test 2',
+        })
+
+        with self.assertRaises(ValidationError):
+            website.write({'domain': 'https://my-website.net['})

@@ -1,7 +1,6 @@
-/** @odoo-module **/
-
 import { localization } from "@web/core/l10n/localization";
-import { useOwnedDialogs, useService } from "@web/core/utils/hooks";
+import { useOwnedDialogs } from "@web/core/utils/hooks";
+import { user } from "@web/core/user";
 import { TranslationDialog } from "./translation_dialog";
 
 import { Component } from "@odoo/owl";
@@ -18,7 +17,7 @@ export function useTranslationDialog() {
     const addDialog = useOwnedDialogs();
 
     async function openTranslationDialog({ record, fieldName }) {
-        const saved = await record.save({ stayInEdition: true });
+        const saved = await record.save();
         if (!saved) {
             return;
         }
@@ -32,7 +31,6 @@ export function useTranslationDialog() {
             isComingFromTranslationAlert: false,
             onSave: async () => {
                 await record.load();
-                record.model.notify();
             },
         });
     }
@@ -41,8 +39,13 @@ export function useTranslationDialog() {
 }
 
 export class TranslationButton extends Component {
+    static template = "web.TranslationButton";
+    static props = {
+        fieldName: { type: String },
+        record: { type: Object },
+    };
+
     setup() {
-        this.user = useService("user");
         this.translationDialog = useTranslationDialog();
     }
 
@@ -50,7 +53,7 @@ export class TranslationButton extends Component {
         return localization.multiLang;
     }
     get lang() {
-        return this.user.lang.split("_")[0].toUpperCase();
+        return new Intl.Locale(user.lang).language.toUpperCase();
     }
 
     onClick() {
@@ -58,8 +61,3 @@ export class TranslationButton extends Component {
         this.translationDialog({ fieldName, record });
     }
 }
-TranslationButton.template = "web.TranslationButton";
-TranslationButton.props = {
-    fieldName: { type: String },
-    record: { type: Object },
-};

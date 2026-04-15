@@ -1,10 +1,8 @@
-# -*- coding: utf-8 -*-
 # Part of Odoo. See LICENSE file for full copyright and licensing details.
 
 {
     'name': 'Online Event Booths',
     'category': 'Marketing/Events',
-    'version': '1.0',
     'summary': 'Events, display your booths on your website',
     'description': """
 Display your booths on your website for the users to register.
@@ -24,10 +22,11 @@ Display your booths on your website for the users to register.
     'auto_install': True,
     'assets': {
         'web.assets_frontend': [
-            '/website_event_booth/static/src/js/booth_register.js',
+            '/website_event_booth/static/src/interactions/*',
             '/website_event_booth/static/src/scss/website_event_booth.scss',
-            'website_event_booth/static/src/xml/event_booth_registration_templates.xml',
+            '/website_event_booth/static/src/xml/event_booth_registration_templates.xml',
         ],
     },
+    'author': 'Odoo S.A.',
     'license': 'LGPL-3',
 }

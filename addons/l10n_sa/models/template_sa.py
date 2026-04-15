@@ -1,5 +1,5 @@
 # Part of Odoo. See LICENSE file for full copyright and licensing details.
-from odoo import models, Command
+from odoo import models
 from odoo.addons.account.models.chart_template import template
 
 
@@ -9,12 +9,6 @@ class AccountChartTemplate(models.AbstractModel):
     @template('sa')
     def _get_sa_template_data(self):
         return {
-            'property_account_receivable_id': 'sa_account_102011',
-            'property_account_payable_id': 'sa_account_201002',
-            'property_account_expense_categ_id': 'sa_account_400001',
-            'property_account_income_categ_id': 'sa_account_500001',
-            'property_tax_payable_account_id': 'sa_account_202003',
-            'property_tax_receivable_account_id': 'sa_account_100103',
             'code_digits': '6',
         }
 
@@ -27,8 +21,18 @@ class AccountChartTemplate(models.AbstractModel):
                 'cash_account_code_prefix': '105',
                 'transfer_account_code_prefix': '100',
                 'account_default_pos_receivable_account_id': 'sa_account_102012',
-                'income_currency_exchange_account_id': 'sa_account_400053',
-                'expense_currency_exchange_account_id': 'sa_account_500011',
+                'income_currency_exchange_account_id': 'sa_account_500011',
+                'expense_currency_exchange_account_id': 'sa_account_400053',
+                'account_sale_tax_id': 'sa_sales_tax_15',
+                'account_purchase_tax_id': 'sa_purchase_tax_15',
+                'expense_account_id': 'sa_account_400001',
+                'income_account_id': 'sa_account_500001',
+                'receivable_account_id': 'sa_account_102011',
+                'payable_account_id': 'sa_account_201002',
+                'deferred_expense_account_id': 'sa_account_104020',
+                'deferred_revenue_account_id': 'sa_account_201018',
+                'account_cash_basis_base_account_id': 'sa_account_201030',
+                'account_stock_valuation_id': 'sa_account_131100',
             },
         }
 
@@ -41,30 +45,36 @@ class AccountChartTemplate(models.AbstractModel):
                 'code': 'TA',
                 'type': 'general',
                 'show_on_dashboard': True,
-                'sequence': 1,
+                'sequence': 10,
             },
             "ifrs16": {
                 'name': 'IFRS 16 Right of Use Asset',
                 'code': 'IFRS',
                 'type': 'general',
                 'show_on_dashboard': True,
-                'sequence': 10,
+                'sequence': 11,
             },
             "zakat": {
                 'name': 'Zakat',
                 'code': 'ZAKAT',
                 'type': 'general',
                 'show_on_dashboard': True,
-                'sequence': 10,
+                'sequence': 11,
             }
         }
 
     @template('sa', 'account.account')
     def _get_sa_account_account(self):
         return {
-            "sa_account_100101": {'allowed_journal_ids': [Command.link('ifrs16')]},
-            "sa_account_100102": {'allowed_journal_ids': [Command.link('ifrs16')]},
-            "sa_account_400070": {'allowed_journal_ids': [Command.link('ifrs16')]},
-            "sa_account_201019": {'allowed_journal_ids': [Command.link('zakat')]},
-            "sa_account_400072": {'allowed_journal_ids': [Command.link('zakat')]},
+            'sa_account_100105': {'asset_depreciation_account_id': 'sa_account_100105', 'asset_expense_account_id': 'sa_account_401002'},
+            'sa_account_100106': {'asset_depreciation_account_id': 'sa_account_100106', 'asset_expense_account_id': 'sa_account_401003'},
+            'sa_account_100107': {'asset_depreciation_account_id': 'sa_account_100107', 'asset_expense_account_id': 'sa_account_401004'},
+            'sa_account_100108': {'asset_depreciation_account_id': 'sa_account_100108', 'asset_expense_account_id': 'sa_account_401006'},
+            'sa_account_100109': {'asset_depreciation_account_id': 'sa_account_100109', 'asset_expense_account_id': 'sa_account_401001'},
+            'sa_account_100110': {'asset_depreciation_account_id': 'sa_account_100110', 'asset_expense_account_id': 'sa_account_401007'},
+            'sa_account_100111': {'asset_depreciation_account_id': 'sa_account_100111', 'asset_expense_account_id': 'sa_account_401008'},
+            'sa_account_100112': {'asset_depreciation_account_id': 'sa_account_100112', 'asset_expense_account_id': 'sa_account_401005'},
+            'sa_account_131100': {
+                'account_stock_variation_id': 'sa_account_400001',
+            },
         }

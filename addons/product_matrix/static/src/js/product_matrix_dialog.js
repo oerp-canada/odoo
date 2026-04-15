@@ -1,15 +1,24 @@
-/** @odoo-module **/
-
+import { useRef } from "@web/owl2/utils";
 import { Dialog } from '@web/core/dialog/dialog';
 import { formatMonetary } from "@web/views/fields/formatters";
 import { useHotkey } from "@web/core/hotkeys/hotkey_hook";
-const { Component, onMounted, markup, useRef } = owl;
-
+import { Component, onMounted, markup } from "@odoo/owl";
 
 export class ProductMatrixDialog extends Component {
+    static template = "product_matrix.dialog";
+    static props = {
+        header: { type: Object },
+        rows: { type: Object },
+        dialogTitle: { type: String }, 
+        editedCellAttributes: { type: String },
+        product_template_id: { type: Number },
+        record: { type: Object },
+        close: { type: Function },
+    };
+    static components = { Dialog };
+
     setup() {
         this.size = 'xl';
-        this.title = this.env._t("Choose Product Variants");
 
         const productMatrixRef = useRef('productMatrix');
         useHotkey("enter", () => this._onConfirm(), {
@@ -28,13 +37,24 @@ export class ProductMatrixDialog extends Component {
         onMounted(() => {
             if(this.props.editedCellAttributes.length) {
                 const inputs = document.getElementsByClassName('o_matrix_input');
-                Array.from(inputs).filter((matrixInput) =>
+                const relevantInput = Array.from(inputs).filter((matrixInput) =>
                     matrixInput.attributes.ptav_ids.nodeValue === this.props.editedCellAttributes
-                )[0].select();
+                )[0];
+                if (relevantInput) {
+                    relevantInput.select();
+                } else {
+                    // Based on the record creation, it may ignore the 'no_variant' attributes
+                    // (e.g. from a stock.move), thus finding no match in the matrix.
+                    inputs[0].select();
+                }
             } else {
                 document.getElementsByClassName('o_matrix_input')[0].select();
             }
         });
+    }
+
+    toggleOpacity(ev) {
+        ev.target.classList.toggle('opacity-25', ev.target.value === '0');
     }
 
     _format({price, currency_id}) {
@@ -53,7 +73,7 @@ export class ProductMatrixDialog extends Component {
         const inputs = document.getElementsByClassName('o_matrix_input');
         let matrixChanges = [];
         for (let matrixInput of inputs) {
-            if (matrixInput.value && matrixInput.value !== matrixInput.nodeValue) {
+            if (matrixInput.value && matrixInput.value !== matrixInput.attributes.value.nodeValue) {
                 matrixChanges.push({
                     qty: parseFloat(matrixInput.value),
                     ptav_ids: matrixInput.attributes.ptav_ids.nodeValue.split(",").map(
@@ -75,14 +95,3 @@ export class ProductMatrixDialog extends Component {
         this.props.close();
     }
 }
-
-ProductMatrixDialog.template = 'product_matrix.dialog';
-ProductMatrixDialog.props = {
-    header: { type: Object },
-    rows: { type: Object },
-    editedCellAttributes: { type: String },
-    product_template_id: { type: Number },
-    record: { type: Object },
-    close: { type: Function },
-};
-ProductMatrixDialog.components = { Dialog };

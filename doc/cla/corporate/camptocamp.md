@@ -46,3 +46,18 @@ Anna Janiszewska anna.janiszewska@camptocamp.com https://github.com/ajaniszewska
 Matthieu Mequignon matthieu.mequignon@camptocamp.com https://github.com/mmequignon
 Silvio Gregorini silvio.gregorini@camptocamp.com https://github.com/SilvioC2C
 Iryna Vyshnevska iryna.vyshnevska@camptocamp.com https://github.com/i-vyshnevska
+Ricardo Almeida Soares ricardo.almeidasoares@camptocamp.com https://github.com/Ricardoalso
+Juan Miguel Sánchez Arce juan.sanchez@camptocamp.com https://github.com/JuMiSanAr
+Maksym Yankin maksym.yankin@camptocamp.com https://github.com/yankinmax
+Vincent Van Rossem vincent.vanrossem@camptocamp.com https://github.com/vvrossem
+Victor Vermot-Petit-Outhenin victor.vermot@camptocamp.com https://github.com/victorvermot
+Sarah Jallon sarah.jallon@camptocamp.com https://github.com/sarsurgithub
+Ricardo Almeida Soares ricardo.almeidasoares@camptocamp.com https://github.com/ricardoalso
+Italo Lopes italo.lopes@camptocamp.com https://github.com/imlopes
+Rafael Lima rafael.lima@camptocamp.com https://github.com/rlimaeco
+Luca Policastro luca.policastro@camptocamp.com https://github.com/Luca-Policastro
+Tomasz Walter tomasz.walter@camptocamp.com https://github.com/twalter-c2c
+Florent Xicluna florent.xicluna@camptocamp.com https://github.com/florentx
+Paolo Yammouni paolo.yammouni@camptocamp.com https://github.com/paoloyam
+Cyril Jeanneret cyril.jeanneret@camptocamp.com https://github.com/cyrilmanuel
+Henry Backman henry.backman@camptocamp.com https://github.com/henrybackman

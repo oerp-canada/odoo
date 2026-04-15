@@ -1,10 +1,10 @@
 # Part of Odoo. See LICENSE file for full copyright and licensing details.
 {
-    'name': 'Finnish Localization',
-    'website': 'https://www.odoo.com/documentation/master/applications/finance/fiscal_localizations.html',
+    'name': 'Finland - Accounting',
+    'website': 'https://www.odoo.com/documentation/latest/applications/finance/fiscal_localizations.html',
     'icon': '/account/static/description/l10n.png',
     'countries': ['fi'],
-    'version': '13.0.1',
+    'version': '13.0.2',
     'author': 'Avoin.Systems, Tawasta, Vizucom, Sprintit',
     'category': 'Accounting/Localizations/Account Charts',
     'description': """
@@ -20,17 +20,19 @@ After installing this module, you'll have access to:
 Set the payment reference type from the Sales Journal.
     """,
     'depends': [
-        'base_iban',
         'base_vat',
         'account',
+        'account_edi_ubl_cii',
     ],
+    'auto_install': ['account'],
     'data': [
         'data/account_account_tag_data.xml',
         'data/account_tax_report_line.xml',
+        'views/res_company_views.xml',
+        'views/res_partner_views.xml',
     ],
     'demo': [
         'demo/demo_company.xml',
     ],
-    'installable': True,
     'license': 'LGPL-3',
 }

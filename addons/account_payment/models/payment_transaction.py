@@ -1,7 +1,6 @@
 # Part of Odoo. See LICENSE file for full copyright and licensing details.
 
-from markupsafe import escape
-from odoo import api, fields, models, SUPERUSER_ID, _
+from odoo import SUPERUSER_ID, _, api, fields, models
 
 
 class PaymentTransaction(models.Model):
@@ -20,16 +19,18 @@ class PaymentTransaction(models.Model):
 
     @api.depends('invoice_ids')
     def _compute_invoices_count(self):
-        self.env.cr.execute(
-            '''
-            SELECT transaction_id, count(invoice_id)
-            FROM account_invoice_transaction_rel
-            WHERE transaction_id IN %s
-            GROUP BY transaction_id
-            ''',
-            [tuple(self.ids)]
-        )
-        tx_data = dict(self.env.cr.fetchall())  # {id: count}
+        tx_data = {}
+        if self.ids:
+            self.env.cr.execute(
+                '''
+                SELECT transaction_id, count(invoice_id)
+                FROM account_invoice_transaction_rel
+                WHERE transaction_id IN %s
+                GROUP BY transaction_id
+                ''',
+                [tuple(self.ids)]
+            )
+            tx_data = dict(self.env.cr.fetchall())  # {id: count}
         for tx in self:
             tx.invoices_count = tx_data.get(tx.id, 0)
 
@@ -58,14 +59,14 @@ class PaymentTransaction(models.Model):
             action['view_mode'] = 'form'
             action['views'] = [(self.env.ref('account.view_move_form').id, 'form')]
         else:
-            action['view_mode'] = 'tree,form'
+            action['view_mode'] = 'list,form'
             action['domain'] = [('id', 'in', invoice_ids)]
         return action
 
     #=== BUSINESS METHODS - PAYMENT FLOW ===#
 
     @api.model
-    def _compute_reference_prefix(self, provider_code, separator, **values):
+    def _compute_reference_prefix(self, separator, **values):
         """ Compute the reference prefix from the transaction values.
 
         If the `values` parameter has an entry with 'invoice_ids' as key and a list of (4, id, O) or
@@ -74,7 +75,6 @@ class PaymentTransaction(models.Model):
 
         Note: This method should be called in sudo mode to give access to documents (INV, SO, ...).
 
-        :param str provider_code: The code of the provider handling the transaction
         :param str separator: The custom separator used to separate data references
         :param dict values: The transaction values used to compute the reference prefix. It should
                             have the structure {'invoice_ids': [(X2M command), ...], ...}.
@@ -87,44 +87,48 @@ class PaymentTransaction(models.Model):
             invoice_ids = self._fields['invoice_ids'].convert_to_cache(command_list, self)
             invoices = self.env['account.move'].browse(invoice_ids).exists()
             if len(invoices) == len(invoice_ids):  # All ids are valid
-                return separator.join(invoices.mapped('name'))
-        return super()._compute_reference_prefix(provider_code, separator, **values)
-
-    def _set_canceled(self, state_message=None, **kwargs):
-        """ Update the transactions' state to 'cancel'.
-
-        :param str state_message: The reason for which the transaction is set in 'cancel' state
-        :return: updated transactions
-        :rtype: `payment.transaction` recordset
-        """
-        processed_txs = super()._set_canceled(state_message, **kwargs)
-        # Cancel the existing payments
-        processed_txs.payment_id.action_cancel()
-        return processed_txs
+                prefix = separator.join(invoices.filtered(lambda inv: inv.name).mapped('name'))
+                if name := values.get('name_next_installment'):
+                    prefix = name
+                return prefix
+        return super()._compute_reference_prefix(separator, **values)
 
     #=== BUSINESS METHODS - POST-PROCESSING ===#
 
-    def _reconcile_after_done(self):
-        """ Post relevant fiscal documents and create missing payments.
+    def _post_process(self):
+        """ Override of `payment` to add account-specific logic to the post-processing.
 
-        As there is nothing to reconcile for validation transactions, no payment is created for
-        them. This is also true for validations with a validity check (transfer of a small amount
-        with immediate refund) because validation amounts are not included in payouts.
-
-        As the reconciliation is done in the child transactions for partial voids and captures, no
-        payment is created for their source transactions.
-
-        :return: None
+        In particular, for confirmed transactions we write a message in the chatter with the payment
+        and transaction references, post relevant fiscal documents, and create missing payments. For
+        cancelled transactions, we cancel the payment.
         """
-        super()._reconcile_after_done()
+        super()._post_process()
+        for tx in self.filtered(lambda t: t.state == 'done'):
+            # Validate invoices automatically once the transaction is confirmed.
+            self.invoice_ids.filtered(lambda inv: inv.state == 'draft').action_post()
 
-        # Validate invoices automatically once the transaction is confirmed
-        self.invoice_ids.filtered(lambda inv: inv.state == 'draft').action_post()
+            # Create and post missing payments.
+            # As there is nothing to reconcile for validation transactions, no payment is created
+            # for them. This is also true for validations with or without a validity check (transfer
+            # of a small amount with immediate refund) because validation amounts are not included
+            # in payouts. As the reconciliation is done in the child transactions for partial voids
+            # and captures, no payment is created for their source transactions either.
+            if (
+                tx.operation != 'validation'
+                and not tx.payment_id
+                and not any(child.state in ['done', 'cancel'] for child in tx.child_transaction_ids)
+            ):
+                tx.with_company(tx.company_id)._create_payment()
 
-        # Create and post missing payments for transactions requiring reconciliation
-        for tx in self.filtered(lambda t: t.operation != 'validation' and not t.payment_id):
-            if not any(child.state in ['done', 'cancel'] for child in tx.child_transaction_ids):
-                tx._create_payment()
+            if tx.payment_id:
+                message = _(
+                    "The payment related to transaction %(ref)s has been posted: %(link)s",
+                    ref=tx._get_html_link(),
+                    link=tx.payment_id._get_html_link(),
+                )
+                tx._log_message_on_linked_documents(message)
+        for tx in self.filtered(lambda t: t.state == 'cancel'):
+            tx.payment_id.action_cancel()
 
     def _create_payment(self, **extra_create_values):
         """Create an `account.payment` record for the current transaction.
@@ -139,13 +143,8 @@ class PaymentTransaction(models.Model):
         """
         self.ensure_one()
 
-        reference = (f'{self.reference} - '
-                     f'{self.partner_id.display_name or ""} - '
-                     f'{self.provider_reference or ""}'
-                    )
-
         payment_method_line = self.provider_id.journal_id.inbound_payment_method_line_ids\
-            .filtered(lambda l: l.code == self.provider_code)
+            .filtered(lambda l: l.payment_provider_id == self.provider_id)
         payment_values = {
             'amount': abs(self.amount),  # A tx may have a negative amount, but a payment must >= 0
             'payment_type': 'inbound' if self.amount > 0 else 'outbound',
@@ -157,9 +156,36 @@ class PaymentTransaction(models.Model):
             'payment_method_line_id': payment_method_line.id,
             'payment_token_id': self.token_id.id,
             'payment_transaction_id': self.id,
-            'ref': reference,
+            'memo': self.reference,
+            'write_off_line_vals': [],
+            'invoice_ids': self.invoice_ids,
             **extra_create_values,
         }
+
+        for invoice in self.invoice_ids:
+            if invoice.state != 'posted':
+                continue
+            next_payment_values = invoice._get_invoice_next_payment_values()
+            if next_payment_values['installment_state'] == 'epd' and self.amount == next_payment_values['amount_due']:
+                aml = next_payment_values['epd_line']
+                epd_aml_values_list = [({
+                    'aml': aml,
+                    'amount_currency': -aml.amount_residual_currency,
+                    'balance': -aml.balance,
+                })]
+                open_balance = next_payment_values['epd_discount_amount']
+                early_payment_values = self.env['account.move']._get_invoice_counterpart_amls_for_early_payment_discount(epd_aml_values_list, open_balance)
+                for aml_values_list in early_payment_values.values():
+                    if (aml_values_list):
+                        aml_vl = aml_values_list[0]
+                        aml_vl['partner_id'] = invoice.partner_id.id
+                        payment_values['write_off_line_vals'] += [aml_vl]
+                break
+
+        payment_term_lines = self.invoice_ids.line_ids.filtered(lambda line: line.display_type == 'payment_term')
+        if payment_term_lines:
+            payment_values['destination_account_id'] = payment_term_lines[0].account_id.id
+
         payment = self.env['account.payment'].create(payment_values)
         payment.action_post()
 
@@ -171,10 +197,11 @@ class PaymentTransaction(models.Model):
             invoices = self.source_transaction_id.invoice_ids
         else:
             invoices = self.invoice_ids
+        invoices = invoices.filtered(lambda inv: inv.state != 'cancel')
         if invoices:
             invoices.filtered(lambda inv: inv.state == 'draft').action_post()
 
-            (payment.line_ids + invoices.line_ids).filtered(
+            (payment.move_id.line_ids + invoices.line_ids).filtered(
                 lambda line: line.account_id == payment.destination_account_id
                 and not line.reconciled
             ).reconcile()
@@ -195,27 +222,19 @@ class PaymentTransaction(models.Model):
         :return: None
         """
         self.ensure_one()
-        self = self.with_user(SUPERUSER_ID)  # Log messages as 'OdooBot'
+        if self.env.uid == SUPERUSER_ID or self.env.context.get('payment_backend_action'):
+            author = self.env.user.partner_id
+        else:
+            author = self.partner_id
         if self.source_transaction_id:
             for invoice in self.source_transaction_id.invoice_ids:
-                invoice.message_post(body=message)
+                invoice.message_post(body=message, author_id=author.id)
             payment_id = self.source_transaction_id.payment_id
             if payment_id:
-                payment_id.message_post(body=message)
-        for invoice in self.invoice_ids:
-            invoice.message_post(body=message)
+                payment_id.message_post(body=message, author_id=author.id)
+        for invoice in self._get_invoices_to_notify():
+            invoice.message_post(body=message, author_id=author.id)
 
-    #=== BUSINESS METHODS - POST-PROCESSING ===#
-
-    def _finalize_post_processing(self):
-        """ Override of `payment` to write a message in the chatter with the payment and transaction
-        references.
-
-        :return: None
-        """
-        super()._finalize_post_processing()
-        for tx in self.filtered('payment_id'):
-            message = escape(_("The payment related to the transaction with reference %(ref)s has been posted: %(link)s")) % {
-                'ref':tx.reference, 'link':tx.payment_id._get_html_link()
-            }
-            tx._log_message_on_linked_documents(message)
+    def _get_invoices_to_notify(self):
+        """ Return the invoices on which to log payment-related messages. """
+        return self.invoice_ids

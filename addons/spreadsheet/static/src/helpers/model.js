@@ -1,82 +1,205 @@
-/** @odoo-module */
-import { DataSources } from "@spreadsheet/data_sources/data_sources";
-import { Model, parse, helpers, iterateAstNodes } from "@odoo/o-spreadsheet";
-import { migrate } from "@spreadsheet/o_spreadsheet/migration";
-import { _t } from "@web/core/l10n/translation";
-import { loadJS } from "@web/core/assets";
+// @ts-check
 
-const { toCartesian } = helpers;
+import { parse, helpers, iterateAstNodes } from "@odoo/o-spreadsheet";
+import { isLoadingError } from "@spreadsheet/o_spreadsheet/errors";
+import { OdooSpreadsheetModel } from "@spreadsheet/model";
+import { OdooDataProvider } from "@spreadsheet/data_sources/odoo_data_provider";
+
+const { formatValue, isDefined, toCartesian, toXC } = helpers;
+import {
+    isMarkdownViewUrl,
+    isMarkdownIrMenuIdUrl,
+    isIrMenuXmlUrl,
+} from "@spreadsheet/ir_ui_menu/odoo_menu_link_cell";
+
+/**
+ * @typedef {import("@spreadsheet").OdooSpreadsheetModel} OdooSpreadsheetModel
+ */
 
 export async function fetchSpreadsheetModel(env, resModel, resId) {
-    const { data, revisions } = await env.services.orm.call(resModel, "join_spreadsheet_session", [
-        resId,
-    ]);
+    const { data, revisions } = await env.services.http.get(
+        `/spreadsheet/data/${resModel}/${resId}`
+    );
     return createSpreadsheetModel({ env, data, revisions });
 }
 
 export function createSpreadsheetModel({ env, data, revisions }) {
-    const dataSources = new DataSources(env);
-    const model = new Model(migrate(data), { custom: { dataSources } }, revisions);
+    const odooDataProvider = new OdooDataProvider(env);
+    const model = new OdooSpreadsheetModel(data, { custom: { env, odooDataProvider } }, revisions);
     return model;
 }
 
 /**
+ * @param {OdooSpreadsheetModel} model
+ */
+export async function waitForOdooSources(model) {
+    const promises = model.getters
+        .getOdooChartIds()
+        .map((chartId) => model.getters.getChartDataSource(chartId).load());
+    promises.push(
+        ...model.getters
+            .getPivotIds()
+            .filter((pivotId) => model.getters.getPivotCoreDefinition(pivotId).type === "ODOO")
+            .map((pivotId) => model.getters.getPivot(pivotId))
+            .map((pivot) => pivot.load())
+    );
+    promises.push(
+        ...model.getters
+            .getListIds()
+            .map((listId) => model.getters.getListDataSource(listId))
+            .map((list) => list.load())
+    );
+    await Promise.all(promises);
+}
+
+/**
  * Ensure that the spreadsheet does not contains cells that are in loading state
- * @param {Model} model
+ * @param {OdooSpreadsheetModel} model
  * @returns {Promise<void>}
  */
 export async function waitForDataLoaded(model) {
-    const dataSources = model.config.custom.dataSources;
-    await dataSources.waitForAllLoaded();
-    return new Promise((resolve, reject) => {
+    await waitForOdooSources(model);
+    const odooDataProvider = model.config.custom.odooDataProvider;
+    if (!odooDataProvider) {
+        return;
+    }
+    await new Promise((resolve, reject) => {
         function check() {
             model.dispatch("EVALUATE_CELLS");
             if (isLoaded(model)) {
-                dataSources.removeEventListener("data-source-updated", check);
+                odooDataProvider.removeEventListener("data-source-updated", check);
                 resolve();
             }
         }
-        dataSources.addEventListener("data-source-updated", check);
+        odooDataProvider.addEventListener("data-source-updated", check);
         check();
     });
 }
 
+function containsLinkToOdoo(link) {
+    if (link && link.url) {
+        return (
+            isMarkdownViewUrl(link.url) ||
+            isIrMenuXmlUrl(link.url) ||
+            isMarkdownIrMenuIdUrl(link.url)
+        );
+    }
+}
+
 /**
- * @param {Model} model
- * @returns {object}
+ * @param {OdooSpreadsheetModel} model
+ * @returns {Promise<object>}
  */
 export async function freezeOdooData(model) {
     await waitForDataLoaded(model);
-    const data = model.exportData();
+    const data = model._exportData(false);
+    //TODO: rewrite with normal export and squished positions ?
     for (const sheet of Object.values(data.sheets)) {
-        for (const [xc, cell] of Object.entries(sheet.cells)) {
-            if (containsOdooFunction(cell.content)) {
-                const { col, row } = toCartesian(xc);
-                const sheetId = sheet.id;
-                const evaluatedCell = model.getters.getEvaluatedCell({
-                    sheetId,
-                    col,
-                    row,
-                });
-                cell.content = evaluatedCell.formattedValue;
-                if (evaluatedCell.format) {
-                    cell.format = getItemId(evaluatedCell.format, data.formats);
+        sheet.formats ??= {};
+        for (const [xc, content] of Object.entries(sheet.cells)) {
+            const { col, row } = toCartesian(xc);
+            const sheetId = sheet.id;
+            const position = { sheetId, col, row };
+            const evaluatedCell = model.getters.getEvaluatedCell(position);
+            if (containsOdooFunction(content)) {
+                const pivotId = model.getters.getPivotIdFromPosition(position);
+                if (pivotId && model.getters.getPivotCoreDefinition(pivotId).type !== "ODOO") {
+                    continue;
                 }
+                sheet.cells[xc] = toFrozenContent(evaluatedCell);
+                if (evaluatedCell.format) {
+                    sheet.formats[xc] = getItemId(evaluatedCell.format, data.formats);
+                }
+                const spreadZone = model.getters.getSpreadZone(position);
+                if (spreadZone) {
+                    const { left, right, top, bottom } = spreadZone;
+                    for (let row = top; row <= bottom; row++) {
+                        for (let col = left; col <= right; col++) {
+                            const xc = toXC(col, row);
+                            const evaluatedCell = model.getters.getEvaluatedCell({
+                                sheetId,
+                                col,
+                                row,
+                            });
+                            sheet.cells[xc] = toFrozenContent(evaluatedCell);
+                            if (evaluatedCell.format) {
+                                sheet.formats[xc] = getItemId(evaluatedCell.format, data.formats);
+                            }
+                        }
+                    }
+                }
+            }
+            if (containsLinkToOdoo(evaluatedCell.link)) {
+                sheet.cells[xc] = evaluatedCell.link.label;
             }
         }
         for (const figure of sheet.figures) {
-            if (figure.tag === "chart" && figure.data.type.startsWith("odoo_")) {
-                await loadJS("/web/static/lib/Chart/Chart.js");
-                const img = odooChartToImage(model, figure);
+            if (
+                figure.tag === "chart" &&
+                (figure.data.dataSource?.type === "odoo" || figure.data.type === "geo")
+            ) {
+                const img = odooChartToImage(model, figure, figure.data.chartId);
                 figure.tag = "image";
                 figure.data = {
                     path: img,
                     size: { width: figure.width, height: figure.height },
                 };
+            } else if (figure.tag === "carousel") {
+                const hasImageChart = figure.data.items.some((item) => {
+                    if (item.type !== "chart") {
+                        return false;
+                    }
+                    const chartDefinition = model.getters.getChartDefinition(item.chartId);
+                    return (
+                        chartDefinition.dataSource?.type === "odoo" ||
+                        chartDefinition.type === "geo"
+                    );
+                });
+                if (hasImageChart) {
+                    const chartId = figure.data.items.find((item) => item.type === "chart").chartId;
+                    figure.tag = "image";
+                    figure.data = {
+                        path: odooChartToImage(model, figure, chartId),
+                        size: { width: figure.width, height: figure.height },
+                    };
+                }
             }
         }
     }
+    if (data.pivots) {
+        data.pivots = Object.fromEntries(
+            Object.entries(data.pivots).filter(([id, def]) => def.type !== "ODOO")
+        );
+    }
+    data.lists = {};
+    exportGlobalFiltersToSheet(model, data);
     return data;
+}
+
+function toFrozenContent(evaluatedCell) {
+    const value = evaluatedCell.value;
+    if (value === "") {
+        return '=""';
+    }
+    return value.toString();
+}
+
+/**
+ * @param {OdooSpreadsheetModel} model
+ * @returns {object}
+ */
+function exportGlobalFiltersToSheet(model, data) {
+    model.getters.exportSheetWithActiveFilters(data);
+    const locale = model.getters.getLocale();
+    for (const filter of data.globalFilters) {
+        const content = model.getters.getFilterDisplayValue(filter.label);
+        filter["value"] = content
+            .flat()
+            .filter(isDefined)
+            .map(({ value, format }) => formatValue(value, { format, locale }))
+            .filter((formattedValue) => formattedValue !== "")
+            .join(", ");
+    }
 }
 
 /**
@@ -105,23 +228,37 @@ export function getItemId(item, itemsDic) {
  * @returns {boolean}
  */
 function containsOdooFunction(content) {
-    if (!content || !content.startsWith("=") || !content.toUpperCase().includes("ODOO.")) {
+    if (
+        !content ||
+        !content.startsWith("=") ||
+        (!content.toUpperCase().includes("ODOO.") &&
+            !content.toUpperCase().includes("_T") &&
+            !content.toUpperCase().includes("PIVOT"))
+    ) {
         return false;
     }
     try {
         const ast = parse(content);
         return iterateAstNodes(ast).some(
-            (ast) => ast.type === "FUNCALL" && ast.value.toUpperCase().startsWith("ODOO.")
+            (ast) =>
+                ast.type === "FUNCALL" &&
+                (ast.value.toUpperCase().startsWith("ODOO.") ||
+                    ast.value.toUpperCase().startsWith("_T") ||
+                    ast.value.toUpperCase().startsWith("PIVOT"))
         );
     } catch {
         return false;
     }
 }
 
+/**
+ * @param {OdooSpreadsheetModel} model
+ * @returns {boolean}
+ */
 function isLoaded(model) {
     for (const sheetId of model.getters.getSheetIds()) {
         for (const cell of Object.values(model.getters.getEvaluatedCells(sheetId))) {
-            if (cell.type === "error" && cell.error.message === _t("Data is loading")) {
+            if (cell.type === "error" && isLoadingError(cell)) {
                 return false;
             }
         }
@@ -132,12 +269,13 @@ function isLoaded(model) {
 /**
  * Return the chart figure as a base64 image.
  * "data:image/png;base64,iVBORw0KGg..."
- * @param {Model} model
+ * @param {OdooSpreadsheetModel} model
  * @param {object} figure
+ * @param {string} chartId
  * @returns {string}
  */
-function odooChartToImage(model, figure) {
-    const runtime = model.getters.getChartRuntime(figure.id);
+function odooChartToImage(model, figure, chartId) {
+    const runtime = model.getters.getChartRuntime(chartId);
     // wrap the canvas in a div with a fixed size because chart.js would
     // fill the whole page otherwise
     const div = document.createElement("div");
@@ -149,7 +287,11 @@ function odooChartToImage(model, figure) {
     canvas.setAttribute("height", figure.height);
     // we have to add the canvas to the DOM otherwise it won't be rendered
     document.body.append(div);
+    if (!("chartJsConfig" in runtime)) {
+        return "";
+    }
     runtime.chartJsConfig.plugins = [backgroundColorPlugin];
+    // @ts-ignore
     const chart = new Chart(canvas, runtime.chartJsConfig);
     const img = chart.toBase64Image();
     chart.destroy();

@@ -1,17 +1,22 @@
-# -*- coding: utf-8 -*-
 # Part of Odoo. See LICENSE file for full copyright and licensing details.
 
 import json
+from datetime import date
 
-from odoo import api, fields, models, tools, _
+from odoo import api, fields, models, tools
+from odoo.api import SUPERUSER_ID
 from odoo.exceptions import ValidationError
+from odoo.fields import Domain
+from odoo.tools import SQL
 
 
 class IrDefault(models.Model):
     """ User-defined default values for fields. """
     _name = 'ir.default'
-    _description = 'Default Values'
+    _description = 'Default Value'
     _rec_name = 'field_id'
+    _allow_sudo_commands = False
+    _clear_cache_name = 'default'
 
     field_id = fields.Many2one('ir.model.fields', string="Field", required=True,
                                ondelete='cascade', index=True)
@@ -22,28 +27,41 @@ class IrDefault(models.Model):
     condition = fields.Char('Condition', help="If set, applies the default upon condition.")
     json_value = fields.Char('Default Value (JSON format)', required=True)
 
-    @api.constrains('json_value')
+    @api.constrains('json_value', 'field_id')
     def _check_json_format(self):
         for record in self:
+            model_name = record.sudo().field_id.model_id.model
+            model = self.env[model_name]
+            field = model._fields[record.field_id.name]
             try:
-                json.loads(record.json_value)
+                value = json.loads(record.json_value)
+                field.convert_to_cache(value, model)
             except json.JSONDecodeError:
-                raise ValidationError(_('Invalid JSON format in Default Value field.'))
+                raise ValidationError(self.env._('Invalid JSON format in Default Value field.'))
+            except Exception:  # noqa: BLE001
+                raise ValidationError(self.env._("Invalid value in Default Value field. Expected type '%(field_type)s' for '%(model_name)s.%(field_name)s'.",
+                                        field_type=record.field_id.ttype, model_name=model_name, field_name=record.field_id.name))
 
     @api.model_create_multi
     def create(self, vals_list):
-        self.clear_caches()
-        return super(IrDefault, self).create(vals_list)
+        # invalidate all company dependent fields since their fallback value in cache may be changed
+        self.env.invalidate_all()
+        return super().create(vals_list)
 
     def write(self, vals):
         if self:
-            self.clear_caches()
-        return super(IrDefault, self).write(vals)
+            # invalidate all company dependent fields since their fallback value in cache may be changed
+            self.env.invalidate_all()
+        new_default = super().write(vals)
+        self.check_access('write')
+        return new_default
 
     def unlink(self):
+        res = super().unlink()
         if self:
-            self.clear_caches()
-        return super(IrDefault, self).unlink()
+            # invalidate all company dependent fields since their fallback value in cache may be changed
+            self.env.invalidate_all()
+        return res
 
     @api.model
     def set(self, model_name, field_name, value, user_id=False, company_id=False, condition=False):
@@ -72,12 +90,16 @@ class IrDefault(models.Model):
         try:
             model = self.env[model_name]
             field = model._fields[field_name]
-            field.convert_to_cache(value, model)
+            parsed = field.convert_to_cache(value, model)
+            if field.type in ('date', 'datetime') and isinstance(value, date):
+                value = field.to_string(value)
             json_value = json.dumps(value, ensure_ascii=False)
         except KeyError:
-            raise ValidationError(_("Invalid field %s.%s") % (model_name, field_name))
+            raise ValidationError(self.env._("Invalid field %(model)s.%(field)s", model=model_name, field=field_name))
         except Exception:
-            raise ValidationError(_("Invalid value for %s.%s: %s") % (model_name, field_name, value))
+            raise ValidationError(self.env._("Invalid value for %(model)s.%(field)s: %(value)s", model=model_name, field=field_name, value=value))
+        if field.type == 'integer' and not (-2**31 < parsed < 2**31-1):
+            raise ValidationError(self.env._("Invalid value for %(model)s.%(field)s: %(value)s is out of bounds (integers should be between -2,147,483,648 and 2,147,483,647)", model=model_name, field=field_name, value=value))
 
         # update existing default for the same scope, or create one
         field = self.env['ir.model.fields']._get(model_name, field_name)
@@ -86,7 +108,7 @@ class IrDefault(models.Model):
             ('user_id', '=', user_id),
             ('company_id', '=', company_id),
             ('condition', '=', condition),
-        ])
+        ], limit=1)
         if default:
             # Avoid clearing the cache if nothing changes
             if default.json_value != json_value:
@@ -141,6 +163,7 @@ class IrDefault(models.Model):
             current user), as a dict mapping field names to values.
         """
         cr = self.env.cr
+        self.flush_model()
         query = """ SELECT f.name, d.json_value
                     FROM ir_default d
                     JOIN ir_model_fields f ON d.field_id=f.id
@@ -183,3 +206,33 @@ class IrDefault(models.Model):
         json_vals = [json.dumps(value, ensure_ascii=False) for value in values]
         domain = [('field_id', '=', field.id), ('json_value', 'in', json_vals)]
         return self.search(domain).unlink()
+
+    @tools.ormcache('model_name', 'field_name')
+    def _get_field_column_fallbacks(self, model_name, field_name):
+        company_ids = self.env.execute_query(SQL('SELECT ARRAY_AGG(id) FROM res_company'))[0][0]
+        field = self.env[model_name]._fields[field_name]
+        self_super = self.with_user(SUPERUSER_ID)
+        return json.dumps({
+            id_: field.convert_to_column(
+                self_super.with_company(id_)._get_model_defaults(model_name).get(field_name),
+                self_super.with_company(id_)
+            )
+            for id_ in company_ids
+        })
+
+    def _evaluate_condition_with_fallback(self, model_name, field_expr, operator, value):
+        """
+        when the field value of the condition is company_dependent without
+        customization, evaluate if its fallback value will be kept by
+        the condition
+        return True/False/None(for unknown)
+        """
+        field_name, _property_name = fields.parse_field_expr(field_expr)
+        model = self.env[model_name]
+        field = model._fields[field_name]
+        fallback = field.get_company_dependent_fallback(model)
+        try:
+            record = model.new({field_name: field.convert_to_write(fallback, model)})
+            return bool(record.filtered_domain(Domain(field_expr, operator, value)))
+        except ValueError:
+            return None

@@ -9,14 +9,6 @@ class AccountChartTemplate(models.AbstractModel):
     @template('ke')
     def _get_ke_template_data(self):
         return {
-            'property_account_receivable_id': 'ke1100',
-            'property_account_payable_id': 'ke2100',
-            'property_account_expense_categ_id': 'ke5001',
-            'property_account_income_categ_id': 'ke4001',
-            'property_stock_valuation_account_id': 'ke1001',
-            'property_stock_account_output_categ_id': 'ke100120',
-            'property_stock_account_input_categ_id': 'ke100110',
-            'use_anglo_saxon': True,
             'code_digits': '6',
         }
 
@@ -24,6 +16,7 @@ class AccountChartTemplate(models.AbstractModel):
     def _get_ke_res_company(self):
         return {
             self.env.company.id: {
+                'anglo_saxon_accounting': True,
                 'account_fiscal_country_id': 'base.ke',
                 'bank_account_code_prefix': '12000',
                 'cash_account_code_prefix': '12500',
@@ -35,5 +28,22 @@ class AccountChartTemplate(models.AbstractModel):
                 'account_journal_early_pay_discount_gain_account_id': 'ke400710',
                 'default_cash_difference_income_account_id': 'ke5146',
                 'default_cash_difference_expense_account_id': 'ke5146',
+                'account_sale_tax_id': 'ST16',
+                'account_purchase_tax_id': 'PT16',
+                'tax_exigibility': 'True',
+                'expense_account_id': 'ke5001',
+                'income_account_id': 'ke4001',
+                'receivable_account_id': 'ke1100',
+                'payable_account_id': 'ke2100',
+                'account_stock_valuation_id': 'ke1001',
+            },
+        }
+
+    @template('ke', 'account.account')
+    def _get_ke_account_account(self):
+        return {
+            'ke1001': {
+                'account_stock_expense_id': 'ke5001',
+                'account_stock_variation_id': 'ke500105',
             },
         }

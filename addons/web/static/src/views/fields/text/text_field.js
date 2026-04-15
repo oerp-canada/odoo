@@ -1,6 +1,5 @@
-/** @odoo-module **/
-
-import { _lt } from "@web/core/l10n/translation";
+import { useExternalListener, useLayoutEffect, useRef } from "@web/owl2/utils";
+import { _t } from "@web/core/l10n/translation";
 import { registry } from "@web/core/registry";
 import { useAutoresize } from "@web/core/utils/autoresize";
 import { useSpellCheck } from "@web/core/utils/hooks";
@@ -10,7 +9,7 @@ import { parseInteger } from "../parsers";
 import { standardFieldProps } from "../standard_field_props";
 import { TranslationButton } from "../translation_button";
 
-import { Component, useExternalListener, useEffect, useRef } from "@odoo/owl";
+import { Component } from "@odoo/owl";
 
 export class TextField extends Component {
     static template = "web.TextField";
@@ -32,25 +31,48 @@ export class TextField extends Component {
     };
 
     setup() {
-        this.divRef = useRef("div");
         this.textareaRef = useRef("textarea");
         if (this.props.dynamicPlaceholder) {
-            const dynamicPlaceholder = useDynamicPlaceholder(this.textareaRef);
-            useExternalListener(document, "keydown", dynamicPlaceholder.onKeydown);
-            useEffect(() =>
-                dynamicPlaceholder.updateModel(this.props.dynamicPlaceholderModelReferenceField)
+            this.dynamicPlaceholder = useDynamicPlaceholder(this.textareaRef);
+            useExternalListener(document, "keydown", this.dynamicPlaceholder.onKeydown);
+            useLayoutEffect(() =>
+                this.dynamicPlaceholder.updateModel(
+                    this.props.dynamicPlaceholderModelReferenceField
+                )
             );
         }
         useInputField({
             getValue: () => this.props.record.data[this.props.name] || "",
             refName: "textarea",
+            parse: (v) => this.parse(v),
             preventLineBreaks: !this.props.lineBreaks,
         });
         useSpellCheck({ refName: "textarea" });
 
-        if (!this.props.readonly) {
-            useAutoresize(this.textareaRef, { minimumHeight: this.minimumHeight });
+        useAutoresize(this.textareaRef, { minimumHeight: this.minimumHeight });
+
+        this.selectionStart = this.props.record.data[this.props.name]?.length || 0;
+    }
+
+    get shouldTrim() {
+        return this.props.record.fields[this.props.name].trim;
+    }
+
+    parse(value) {
+        if (this.shouldTrim) {
+            return value.trim();
         }
+        return value;
+    }
+
+    async onBlur() {
+        this.selectionStart = this.textareaRef.el.selectionStart;
+    }
+
+    async onDynamicPlaceholderOpen() {
+        await this.dynamicPlaceholder.open({
+            validateCallback: this.onDynamicPlaceholderValidate.bind(this),
+        });
     }
 
     get isTranslatable() {
@@ -62,22 +84,47 @@ export class TextField extends Component {
     get rowCount() {
         return this.props.lineBreaks ? this.props.rowCount : 1;
     }
+
+    async onDynamicPlaceholderValidate(chain, defaultValue) {
+        if (chain) {
+            this.textareaRef.el.focus();
+            const dynamicPlaceholder = ` {{object.${chain}${
+                defaultValue?.length ? ` ||| ${defaultValue}` : ""
+            }}}`;
+            this.textareaRef.el.setRangeText(
+                dynamicPlaceholder,
+                this.selectionStart,
+                this.selectionStart,
+                "end"
+            );
+            // trigger events to make the field dirty
+            this.textareaRef.el.dispatchEvent(new InputEvent("input"));
+            this.textareaRef.el.dispatchEvent(new KeyboardEvent("keydown"));
+            this.textareaRef.el.focus();
+        }
+    }
 }
 
 export const textField = {
     component: TextField,
-    displayName: _lt("Multiline Text"),
+    displayName: _t("Multiline Text"),
     supportedOptions: [
         {
-            label: _lt("Enable line breaks"),
+            label: _t("Enable line breaks"),
             name: "line_breaks",
             type: "boolean",
             default: true,
         },
+        {
+            label: _t("Dynamic Placeholder"),
+            name: "placeholder_field",
+            type: "field",
+            availableTypes: ["char"],
+        },
     ],
-    supportedTypes: ["html", "text"],
-    extractProps: ({ attrs, options }) => ({
-        placeholder: attrs.placeholder,
+    supportedTypes: ["html", "text", "char"],
+    extractProps: ({ attrs, options, placeholder }) => ({
+        placeholder,
         dynamicPlaceholder: options?.dynamic_placeholder || false,
         dynamicPlaceholderModelReferenceField:
             options?.dynamic_placeholder_model_reference_field || "",

@@ -1,64 +1,118 @@
-/** @odoo-module **/
-
-export const translatedTerms = {};
+import { formatList } from "@web/core/l10n/utils";
+import { isIterable } from "@web/core/utils/arrays";
+import { htmlSprintf, isMarkup } from "@web/core/utils/html";
+import { mapSubstitutions, sprintf } from "@web/core/utils/strings";
 
 /**
- * Translate a term, or return the term if no translation can be found.
- *
- * Note that it translates eagerly, which means that if the translations have
- * not been loaded yet, it will return the untranslated term. If it cannot be
- * guaranteed that translations are ready, one should use the _lt function
- * instead (see below)
- *
- * @param {string} term
- * @returns {string}
+ * @typedef {ReturnType<markup>} Markup
  */
-export function _t(term) {
-    return translatedTerms[term] || term;
-}
 
-class LazyTranslatedString extends String {
-    valueOf() {
-        const str = super.valueOf();
-        return _t(str);
-    }
-    toString() {
-        return this.valueOf();
-    }
+/**
+ * Returns true if the given value is a non-empty string, i.e. it contains other
+ * characters than white spaces and zero-width spaces.
+ *
+ * @param {unknown} value
+ */
+function isNotBlank(value) {
+    return typeof value === "string" && !R_BLANK.test(value);
 }
 
 /**
- * Lazy translation function, only performs the translation when actually
- * printed (e.g. inserted into a template).
- * Useful when defining translatable strings in code evaluated before the
- * translations are loaded, as class attributes or at the top-level of
- * an Odoo Web module
+ * Same behavior as sprintf, but doing two additional things:
+ * - If any of the provided values is an iterable, it will format its items
+ *   as a language-specific formatted string representing the elements of the
+ *   list.
+ * - If any of the provided values is a markup, it will escape all non-markup
+ *   content before performing the interpolation, then wraps the result in a
+ *   markup.
  *
- * @param {string} term
- * @returns {LazyTranslatedString}
+ * @param {string} str
+ * @param {Substitutions} substitutions
+ * @returns {string | Markup | TranslatedString}
  */
-export function _lt(term) {
-    return new LazyTranslatedString(term);
+function translationSprintf(str, substitutions) {
+    let hasMarkup = false;
+
+    /**
+     * @param {string | Markup} value
+     * @returns {string | Markup}
+     */
+    function formatSubstitution(value) {
+        hasMarkup ||= isMarkup(value);
+        // The `!(value instanceof String)` check is to prevent interpreting `Markup` and `TranslatedString`
+        // objects as iterables, since they are both subclasses of `String`.
+        if (isIterable(value) && !(value instanceof String)) {
+            return formatList(value);
+        } else {
+            return value;
+        }
+    }
+    const formattedSubstitutions = mapSubstitutions(substitutions, formatSubstitution);
+    if (hasMarkup) {
+        return htmlSprintf(str, ...formattedSubstitutions);
+    } else {
+        return sprintf(str, ...formattedSubstitutions);
+    }
 }
 
-/*
- * Setup jQuery timeago:
- * Strings in timeago are "composed" with prefixes, words and suffixes. This
- * makes their detection by our translating system impossible. Use all literal
- * strings we're using with a translation mark here so the extractor can do its
- * job.
+/**
+ * @template [T=unknown]
+ * @typedef {import("@web/core/utils/strings").Substitutions<T>} Substitutions
  */
-_lt("less than a minute ago");
-_lt("about a minute ago");
-_lt("%d minutes ago");
-_lt("about an hour ago");
-_lt("%d hours ago");
-_lt("a day ago");
-_lt("%d days ago");
-_lt("about a month ago");
-_lt("%d months ago");
-_lt("about a year ago");
-_lt("%d years ago");
+
+const DEFAULT_MODULE = "base";
+const R_BLANK = /^[\s\u200B]*$/;
+
+/**
+ * Translates a term, or returns the term as it is if no translation can be
+ * found.
+ *
+ * Extra positional arguments are inserted in place of %s placeholders.
+ *
+ * If the first extra argument is an object, the keys of that object are used to
+ * map its entries to keyworded placeholders (%(kw_placeholder)s) for
+ * replacement.
+ *
+ * If one or more of the extra arguments are iterables, they will be turned
+ * into language-specific formatted strings representing the elements of the
+ * list.
+ *
+ * If at least one of the extra arguments is a markup, the translation and
+ * non-markup content are escaped, and the result is wrapped in a markup.
+ *
+ * @example
+ * _t("Good morning"); // "Bonjour"
+ * _t("Good morning %s", user.name); // "Bonjour Marc"
+ * _t("Good morning %(newcomer)s, goodbye %(departer)s", { newcomer: Marc, departer: Mitchel }); // Bonjour Marc, au revoir Mitchel
+ * _t("I love %s", markup`<blink>Minecraft</blink>`); // Markup {"J'adore <blink>Minecraft</blink>"}
+ * _t("Good morning %s!", ["Mitchell", "Marc", "Louis"]); // Bonjour Mitchell, Marc et Louis !
+ *
+ * @param {string} source
+ * @param {Substitutions} substitutions
+ * @returns {string | Markup | TranslatedString}
+ */
+export function _t(source, ...substitutions) {
+    return appTranslateFn(source, odoo.translationContext, ...substitutions);
+}
+
+/**
+ * This is a wrapper for _t that the transpiler injects in its place
+ * to provide the knowledge of the module from which it was called.
+ *
+ * Providing the context of the module is useful to avoid conflicting
+ * translations, e.g. "table" has a different meaning depending on the module:
+ * the table of a restaurant (POS module) vs. a spreadsheet table.
+ *
+ * @param {string} source The term to translate
+ * @param {string} moduleName The name of the module, used as a context key to
+ * retrieve the translation.
+ * @param  {Substitutions} substitutions The other arguments passed to _t.
+ * @returns {string | Markup | TranslatedString}
+ */
+export function appTranslateFn(source, moduleName, ...substitutions) {
+    const string = new TranslatedString(source, substitutions, moduleName);
+    return string.lazy ? string : string.valueOf();
+}
 
 /**
  * Load the installed languages long names and code
@@ -66,6 +120,8 @@ _lt("%d years ago");
  * The result of the call is put in cache.
  * If any new language is installed, a full page refresh will happen,
  * so there is no need invalidate it.
+ *
+ * @param {import("services").ServiceFactories["orm"]} orm
  */
 export async function loadLanguages(orm) {
     if (!loadLanguages.installedLanguages) {
@@ -73,3 +129,63 @@ export async function loadLanguages(orm) {
     }
     return loadLanguages.installedLanguages;
 }
+
+export class TranslatedString extends String {
+    /** @type {string} */
+    context;
+    lazy = false;
+    /** @type {Substitutions} */
+    substitutions;
+
+    /**
+     *
+     * @param {string} value
+     * @param {Substitutions} substitutions
+     * @param {string | null} [context]
+     */
+    constructor(value, substitutions, context) {
+        super(value);
+
+        if (!isNotBlank(value)) {
+            return new String(value);
+        }
+
+        this.lazy = !translatedTerms[translationLoaded];
+        this.substitutions = substitutions;
+        this.context = context || DEFAULT_MODULE;
+    }
+
+    toString() {
+        return this.valueOf();
+    }
+
+    valueOf() {
+        const source = super.valueOf();
+        if (this.lazy && !translatedTerms[translationLoaded]) {
+            // Evaluate lazy translated string while translations are not loaded
+            // -> error
+            throw new Error(`Cannot translate string: translations have not been loaded`);
+        }
+        const translation =
+            translatedTerms[this.context]?.[source] ?? translatedTermsGlobal[source] ?? source;
+        if (this.substitutions.length) {
+            return translationSprintf(translation, this.substitutions);
+        } else {
+            return translation;
+        }
+    }
+}
+
+export const translationLoaded = Symbol("translationLoaded");
+/** @type {Record<string, string>} */
+export const translatedTerms = {
+    [translationLoaded]: false,
+};
+/**
+ * Contains all the translated terms. Unlike "translatedTerms", there is no
+ * "namespacing" by module. It is used as a fallback when no translation is
+ * found within the module's context, or when the context is not known.
+ */
+export const translatedTermsGlobal = Object.create(null);
+export const translationResolvers = Promise.withResolvers();
+export const translationIsReady = translationResolvers.promise;

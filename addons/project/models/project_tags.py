@@ -1,16 +1,16 @@
-# -*- coding: utf-8 -*-
 # Part of Odoo. See LICENSE file for full copyright and licensing details.
 
 from random import randint
 
-from odoo import api, fields, models, SUPERUSER_ID
-from odoo.osv import expression
+from odoo import api, fields, models
+from odoo.fields import Domain
+from odoo.tools import SQL
 
 
 class ProjectTags(models.Model):
     """ Tags of project's tasks """
-    _name = "project.tags"
-    _description = "Project Tags"
+    _name = 'project.tags'
+    _description = "Project Tag"
     _order = "name"
 
     def _get_default_color(self):
@@ -19,103 +19,97 @@ class ProjectTags(models.Model):
     name = fields.Char('Name', required=True, translate=True)
     color = fields.Integer(string='Color', default=_get_default_color,
         help="Transparent tags are not visible in the kanban view of your projects and tasks.")
-    project_ids = fields.Many2many('project.project', 'project_project_project_tags_rel', string='Projects')
-    task_ids = fields.Many2many('project.task', string='Tasks')
+    project_ids = fields.Many2many('project.project', 'project_project_project_tags_rel', string='Projects', export_string_translation=False)
+    task_ids = fields.Many2many('project.task', string='Tasks', export_string_translation=False)
 
-    _sql_constraints = [
-        ('name_uniq', 'unique (name)', "A tag with the same name already exists."),
-    ]
+    _name_uniq = models.Constraint(
+        'unique (name)',
+        'A tag with the same name already exists.',
+    )
 
     def _get_project_tags_domain(self, domain, project_id):
         # TODO: Remove in master
         return domain
 
     @api.model
-    def read_group(self, domain, fields, groupby, offset=0, limit=None, orderby=False, lazy=True):
+    def formatted_read_group(self, domain, groupby=(), aggregates=(), having=(), offset=0, limit=None, order=None) -> list[dict]:
         if 'project_id' in self.env.context:
-            tag_ids = self._name_search('')
-            domain = expression.AND([domain, [('id', 'in', tag_ids)]])
-        return super().read_group(domain, fields, groupby, offset=offset, limit=limit, orderby=orderby, lazy=lazy)
+            tag_ids = [id_ for id_, _label in self.name_search()]
+            domain = Domain.AND([domain, [('id', 'in', tag_ids)]])
+        return super().formatted_read_group(domain, groupby, aggregates, having=having, offset=offset, limit=limit, order=order)
 
     @api.model
     def search_read(self, domain=None, fields=None, offset=0, limit=None, order=None):
         if 'project_id' in self.env.context:
-            tag_ids = self._name_search('')
-            domain = expression.AND([domain, [('id', 'in', tag_ids)]])
+            tag_ids = [id_ for id_, _label in self.name_search()]
+            domain = Domain.AND([domain, [('id', 'in', tag_ids)]])
             return self.arrange_tag_list_by_id(super().search_read(domain=domain, fields=fields, offset=offset, limit=limit), tag_ids)
         return super().search_read(domain=domain, fields=fields, offset=offset, limit=limit, order=order)
 
     @api.model
     def arrange_tag_list_by_id(self, tag_list, id_order):
-        """arrange_tag_list_by_id re-order a list of record values (dict) following a given id sequence
-           complexity: O(n)
-           param:
-                - tag_list: ordered (by id) list of record values, each record being a dict
-                  containing at least an 'id' key
-                - id_order: list of value (int) corresponding to the id of the records to re-arrange
-           result:
-                - Sorted list of record values (dict)
+        """
+        Re-order a list of record values (dict) according to a given ID sequence.
+
+        This method rearranges the input ``tag_list`` so that the resulting list
+        follows the order specified in ``id_order``. Complexity is O(n).
+
+        :param list[dict] tag_list: Ordered (by ID) list of record values, each record being
+            a dict containing at least an 'id' key.
+
+        :param list[int] id_order: List of integer IDs specifying the desired order of records.
+
+        :returns: The sorted list of record values (dict) following the given ID sequence.
+        :rtype: list[dict]
         """
         tags_by_id = {tag['id']: tag for tag in tag_list}
         return [tags_by_id[id] for id in id_order if id in tags_by_id]
 
     @api.model
-    def _name_search(self, name, domain=None, operator='ilike', limit=None, order=None):
-        if self.env.context.get('project_id') and operator == 'ilike':
-            # `domain` has the form of the default filter ['!', ['id', 'in', <ids>]]
-            # passed to exclude already selected tags -> exclude them in our query too
-            excluded_ids = list(domain[1][2]) \
-                if domain and len(domain) == 2 and domain[0] == '!' and len(domain[1]) == 3 and domain[1][:2] == ["id", "in"] \
-                else []
-            # UNION ALL is lazy evaluated, if the first query has enough results,
-            # the second is not executed (just planned).
-            query = """
-                WITH query_tags_in_tasks AS (
-                    SELECT tags.id, COALESCE(tags.name ->> %(lang)s, tags.name ->> 'en_US') AS name, 1 AS sequence
-                    FROM project_tags AS tags
-                    JOIN (
-                        SELECT project_tags_id
-                        FROM project_tags_project_task_rel AS rel
-                        JOIN project_task AS task
-                            ON task.project_id = %(project_id)s
-                            AND task.id = rel.project_task_id
-                        ORDER BY task.id DESC
-                        LIMIT 1000 -- arbitrary limit to speed up lookup on huge projects (fallback below on global scope)
-                    ) AS tags__tasks_ids
-                        ON tags__tasks_ids.project_tags_id = tags.id
-                    WHERE tags.id != ALL(%(excluded_ids)s)
-                    AND COALESCE(tags.name ->> %(lang)s, tags.name ->> 'en_US') ILIKE %(search_term)s
-                    GROUP BY 1, 2, 3  -- faster than a distinct
-                    LIMIT %(limit)s
-                ), query_all_tags AS (
-                    SELECT tags.id, COALESCE(tags.name ->> %(lang)s, tags.name ->> 'en_US') AS name, 2 AS sequence
-                    FROM project_tags AS tags
-                    WHERE tags.id != ALL(%(excluded_ids)s)
-                    AND tags.id NOT IN (SELECT id FROM query_tags_in_tasks)
-                    AND COALESCE(tags.name ->> %(lang)s, tags.name ->> 'en_US') ILIKE %(search_term)s
-                    LIMIT %(limit)s
-                )
-                SELECT id FROM (
-                    SELECT id, name, sequence
-                    FROM query_tags_in_tasks
-                    UNION ALL
-                    SELECT id, name, sequence
-                    FROM query_all_tags
-                    LIMIT %(limit)s
-                ) AS tags
-                ORDER BY sequence, name
-            """
-            params = {
-                'project_id': self.env.context.get('project_id'),
-                'excluded_ids': excluded_ids,
-                'limit': limit,
-                'lang': self.env.context.get('lang', 'en_US'),
-                'search_term': '%' + name + '%',
-            }
-            self.env.cr.execute(query, params)
-            return [row[0] for row in self.env.cr.fetchall()]
-        else:
-            return super()._name_search(name, domain, operator, limit, order)
+    def name_search(self, name='', domain=None, operator='ilike', limit=100):
+        if limit is None:
+            return super().name_search(name, domain, operator, limit)
+        tags = self.browse()
+        domain = Domain.AND([self._search_display_name(operator, name), domain or Domain.TRUE])
+        if self.env.context.get('project_id'):
+            # optimisation for large projects, we look first for tags present on the last 1000 tasks of said project.
+            # when not enough results are found, we complete them with a fallback on a regular search
+            tag_sql = SQL("""
+                (SELECT DISTINCT project_tasks_tags.id
+                FROM (
+                    SELECT rel.project_tags_id AS id
+                    FROM project_tags_project_task_rel AS rel
+                    JOIN project_task AS task
+                        ON task.id=rel.project_task_id
+                        AND task.project_id=%(project_id)s
+                    ORDER BY task.id DESC
+                    LIMIT 1000
+                ) AS project_tasks_tags
+            )""", project_id=self.env.context['project_id'])
+            tags += self.search_fetch(Domain('id', 'in', tag_sql) & domain, ['display_name'], limit=limit)
+        elif self.env.context.get('use_user_history'):
+            # optimisation for large projects, we look first for tags present on the last 1000 tasks of said project.
+            # when not enough results are found, we complete them with a fallback on a regular search
+            tag_sql = SQL("""
+                (SELECT DISTINCT project_tasks_tags.id
+                FROM (
+                    SELECT rel.project_tags_id AS id
+                    FROM project_tags_project_task_rel AS rel
+                    JOIN project_task AS task
+                        ON task.id=rel.project_task_id
+                    JOIN project_task_user_rel AS user_rel
+                        ON user_rel.task_id = task.id
+                        AND user_rel.user_id = %(user_id)s
+                        AND task.active = TRUE
+                        AND task.project_id IS NULL
+                    ORDER BY task.id DESC
+                    LIMIT 1000
+                ) AS project_tasks_tags
+            )""", user_id=self.env.user.id)
+            tags += self.search_fetch(Domain('id', 'in', tag_sql) & domain, ['display_name'], limit=limit)
+        if len(tags) < limit:
+            tags += self.search_fetch(Domain('id', 'not in', tags.ids) & domain, ['display_name'], limit=limit - len(tags))
+        return [(tag.id, tag.display_name) for tag in tags.sudo()]
 
     @api.model
     def name_create(self, name):

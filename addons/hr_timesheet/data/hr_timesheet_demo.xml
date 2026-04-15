@@ -1,14 +1,14 @@
 <?xml version="1.0" encoding="utf-8"?>
 <odoo>
+    <data noupdate="1">
+        <record id="base.user_demo" model="res.users">
+            <field name="group_ids" eval="[(4, ref('hr_timesheet.group_hr_timesheet_user'))]"/>
+        </record>
 
-    <!-- User Demo -->
-    <record id="base.user_demo" model="res.users">
-        <field name="groups_id" eval="[
-            Command.unlink(ref('project.group_project_manager')),
-            Command.unlink(ref('group_timesheet_manager')),
-            Command.link(ref('group_hr_timesheet_user'))
-        ]"/>
-    </record>
+        <record id="base.default_user_group" model="res.groups">
+            <field name="implied_ids" eval="[(4, ref('hr_timesheet.group_timesheet_manager'))]"/>
+        </record>
+    </data>
 
     <!-- Projects -->
     <record id="project.project_project_1" model="project.project">
@@ -27,6 +27,7 @@
         <field name="unit_amount">2.00</field>
         <field name="project_id" ref='project.project_project_2'/>
         <field name="amount">-60.00</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="working_hours_design" model="account.analytic.line">
@@ -36,6 +37,7 @@
         <field name="unit_amount">1.00</field>
         <field name="project_id" ref='project.project_project_2'/>
         <field name="amount">-30.00</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="working_hours_coding" model="account.analytic.line">
@@ -45,6 +47,7 @@
         <field name="unit_amount">3.00</field>
         <field name="project_id" ref='project.project_project_2'/>
         <field name="amount">-90.00</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="working_hours_testing" model="account.analytic.line">
@@ -54,6 +57,7 @@
         <field name="unit_amount">1.00</field>
         <field name="project_id" ref='project.project_project_2'/>
         <field name="amount">-30.00</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="working_hours_maintenance" model="account.analytic.line">
@@ -63,6 +67,7 @@
         <field name="unit_amount">1.00</field>
         <field name="project_id" ref='project.project_project_2'/>
         <field name="amount">-30.00</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_1_task_1_account_analytic_line_1" model="account.analytic.line">
@@ -73,6 +78,7 @@
         <field name="project_id" ref="project.project_project_1"/>
         <field name="task_id" ref="project.project_1_task_1"/>
         <field name="amount">-30.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_1_task_1_account_analytic_line_2" model="account.analytic.line">
@@ -83,6 +89,7 @@
         <field name="project_id" ref="project.project_project_1"/>
         <field name="task_id" ref="project.project_1_task_1"/>
         <field name="amount">-30.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_1_task_1_account_analytic_line_3" model="account.analytic.line">
@@ -93,6 +100,7 @@
         <field name="project_id" ref="project.project_project_1"/>
         <field name="task_id" ref="project.project_1_task_1"/>
         <field name="amount">-90.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_1_task_1_account_analytic_line_4" model="account.analytic.line">
@@ -103,6 +111,7 @@
         <field name="project_id" ref="project.project_project_1"/>
         <field name="task_id" ref="project.project_1_task_1"/>
         <field name="amount">-30.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_1_task_1_account_analytic_line_5" model="account.analytic.line">
@@ -113,6 +122,7 @@
         <field name="project_id" ref="project.project_project_1"/>
         <field name="task_id" ref="project.project_1_task_1"/>
         <field name="amount">-60.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_1_task_1_account_analytic_line_6" model="account.analytic.line">
@@ -123,6 +133,7 @@
         <field name="project_id" ref="project.project_project_1"/>
         <field name="task_id" ref="project.project_1_task_1"/>
         <field name="amount">-60.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_1_task_1_account_analytic_line_7" model="account.analytic.line">
@@ -133,6 +144,7 @@
         <field name="project_id" ref="project.project_project_1"/>
         <field name="task_id" ref="project.project_1_task_1"/>
         <field name="amount">-30.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_1_task_1_account_analytic_line_8" model="account.analytic.line">
@@ -143,6 +155,7 @@
         <field name="project_id" ref="project.project_project_1"/>
         <field name="task_id" ref="project.project_1_task_1"/>
         <field name="amount">-30.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_1_task_1_account_analytic_line_9" model="account.analytic.line">
@@ -153,6 +166,7 @@
         <field name="project_id" ref="project.project_project_1"/>
         <field name="task_id" ref="project.project_1_task_1"/>
         <field name="amount">-30.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_1_task_1_account_analytic_line_10" model="account.analytic.line">
@@ -163,6 +177,7 @@
         <field name="project_id" ref="project.project_project_1"/>
         <field name="task_id" ref="project.project_1_task_1"/>
         <field name="amount">-30.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_1_task_1_account_analytic_line_11" model="account.analytic.line">
@@ -173,6 +188,7 @@
         <field name="project_id" ref="project.project_project_1"/>
         <field name="task_id" ref="project.project_1_task_1"/>
         <field name="amount">-30.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_1_task_1_account_analytic_line_12" model="account.analytic.line">
@@ -183,6 +199,7 @@
         <field name="project_id" ref="project.project_project_1"/>
         <field name="task_id" ref="project.project_1_task_1"/>
         <field name="amount">-30.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_1_task_1_account_analytic_line_13" model="account.analytic.line">
@@ -193,6 +210,7 @@
         <field name="project_id" ref="project.project_project_1"/>
         <field name="task_id" ref="project.project_1_task_1"/>
         <field name="amount">-90.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_1_task_1_account_analytic_line_14" model="account.analytic.line">
@@ -203,6 +221,7 @@
         <field name="project_id" ref="project.project_project_1"/>
         <field name="task_id" ref="project.project_1_task_1"/>
         <field name="amount">-60.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_1_task_1_account_analytic_line_15" model="account.analytic.line">
@@ -213,6 +232,7 @@
         <field name="project_id" ref="project.project_project_1"/>
         <field name="task_id" ref="project.project_1_task_1"/>
         <field name="amount">-90.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_1_task_1_account_analytic_line_16" model="account.analytic.line">
@@ -223,6 +243,7 @@
         <field name="project_id" ref="project.project_project_1"/>
         <field name="task_id" ref="project.project_1_task_1"/>
         <field name="amount">-30.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_1_task_1_account_analytic_line_17" model="account.analytic.line">
@@ -233,6 +254,7 @@
         <field name="project_id" ref="project.project_project_1"/>
         <field name="task_id" ref="project.project_1_task_1"/>
         <field name="amount">-60.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_1_task_1_account_analytic_line_18" model="account.analytic.line">
@@ -243,6 +265,7 @@
         <field name="project_id" ref="project.project_project_1"/>
         <field name="task_id" ref="project.project_1_task_1"/>
         <field name="amount">-60.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_1_task_1_account_analytic_line_19" model="account.analytic.line">
@@ -253,6 +276,7 @@
         <field name="project_id" ref="project.project_project_1"/>
         <field name="task_id" ref="project.project_1_task_1"/>
         <field name="amount">-30.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_1_task_1_account_analytic_line_20" model="account.analytic.line">
@@ -263,6 +287,7 @@
         <field name="project_id" ref="project.project_project_1"/>
         <field name="task_id" ref="project.project_1_task_1"/>
         <field name="amount">-60.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_1_task_1_account_analytic_line_21" model="account.analytic.line">
@@ -273,6 +298,7 @@
         <field name="project_id" ref="project.project_project_1"/>
         <field name="task_id" ref="project.project_1_task_1"/>
         <field name="amount">-60.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_1_task_1_account_analytic_line_22" model="account.analytic.line">
@@ -283,6 +309,7 @@
         <field name="project_id" ref="project.project_project_1"/>
         <field name="task_id" ref="project.project_1_task_1"/>
         <field name="amount">-60.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_1_task_1_account_analytic_line_23" model="account.analytic.line">
@@ -293,6 +320,7 @@
         <field name="project_id" ref="project.project_project_1"/>
         <field name="task_id" ref="project.project_1_task_1"/>
         <field name="amount">-90.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_1_task_1_account_analytic_line_24" model="account.analytic.line">
@@ -303,6 +331,7 @@
         <field name="project_id" ref="project.project_project_1"/>
         <field name="task_id" ref="project.project_1_task_1"/>
         <field name="amount">-30.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_1_task_1_account_analytic_line_25" model="account.analytic.line">
@@ -313,6 +342,7 @@
         <field name="project_id" ref="project.project_project_1"/>
         <field name="task_id" ref="project.project_1_task_1"/>
         <field name="amount">-60.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_1_task_2_account_analytic_line_1" model="account.analytic.line">
@@ -323,6 +353,7 @@
         <field name="project_id" ref="project.project_project_1"/>
         <field name="task_id" ref="project.project_1_task_2"/>
         <field name="amount">-30.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_1_task_2_account_analytic_line_2" model="account.analytic.line">
@@ -333,6 +364,7 @@
         <field name="project_id" ref="project.project_project_1"/>
         <field name="task_id" ref="project.project_1_task_2"/>
         <field name="amount">-60.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_1_task_2_account_analytic_line_3" model="account.analytic.line">
@@ -343,6 +375,7 @@
         <field name="project_id" ref="project.project_project_1"/>
         <field name="task_id" ref="project.project_1_task_2"/>
         <field name="amount">-60.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_1_task_2_account_analytic_line_4" model="account.analytic.line">
@@ -353,6 +386,7 @@
         <field name="project_id" ref="project.project_project_1"/>
         <field name="task_id" ref="project.project_1_task_2"/>
         <field name="amount">-60.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_1_task_2_account_analytic_line_5" model="account.analytic.line">
@@ -363,6 +397,7 @@
         <field name="project_id" ref="project.project_project_1"/>
         <field name="task_id" ref="project.project_1_task_2"/>
         <field name="amount">-30.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_1_task_2_account_analytic_line_6" model="account.analytic.line">
@@ -373,6 +408,7 @@
         <field name="project_id" ref="project.project_project_1"/>
         <field name="task_id" ref="project.project_1_task_2"/>
         <field name="amount">-90.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_1_task_2_account_analytic_line_7" model="account.analytic.line">
@@ -383,6 +419,7 @@
         <field name="project_id" ref="project.project_project_1"/>
         <field name="task_id" ref="project.project_1_task_2"/>
         <field name="amount">-30.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_1_task_2_account_analytic_line_8" model="account.analytic.line">
@@ -393,6 +430,7 @@
         <field name="project_id" ref="project.project_project_1"/>
         <field name="task_id" ref="project.project_1_task_2"/>
         <field name="amount">-30.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_1_task_2_account_analytic_line_9" model="account.analytic.line">
@@ -403,6 +441,7 @@
         <field name="project_id" ref="project.project_project_1"/>
         <field name="task_id" ref="project.project_1_task_2"/>
         <field name="amount">-30.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_1_task_2_account_analytic_line_10" model="account.analytic.line">
@@ -413,6 +452,7 @@
         <field name="project_id" ref="project.project_project_1"/>
         <field name="task_id" ref="project.project_1_task_2"/>
         <field name="amount">-30.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_1_task_2_account_analytic_line_11" model="account.analytic.line">
@@ -423,6 +463,7 @@
         <field name="project_id" ref="project.project_project_1"/>
         <field name="task_id" ref="project.project_1_task_2"/>
         <field name="amount">-30.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_1_task_2_account_analytic_line_12" model="account.analytic.line">
@@ -433,6 +474,7 @@
         <field name="project_id" ref="project.project_project_1"/>
         <field name="task_id" ref="project.project_1_task_2"/>
         <field name="amount">-30.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_1_task_2_account_analytic_line_13" model="account.analytic.line">
@@ -443,6 +485,7 @@
         <field name="project_id" ref="project.project_project_1"/>
         <field name="task_id" ref="project.project_1_task_2"/>
         <field name="amount">-90.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_1_task_2_account_analytic_line_14" model="account.analytic.line">
@@ -453,6 +496,7 @@
         <field name="project_id" ref="project.project_project_1"/>
         <field name="task_id" ref="project.project_1_task_2"/>
         <field name="amount">-90.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_1_task_2_account_analytic_line_15" model="account.analytic.line">
@@ -463,6 +507,7 @@
         <field name="project_id" ref="project.project_project_1"/>
         <field name="task_id" ref="project.project_1_task_2"/>
         <field name="amount">-30.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_1_task_2_account_analytic_line_16" model="account.analytic.line">
@@ -473,6 +518,7 @@
         <field name="project_id" ref="project.project_project_1"/>
         <field name="task_id" ref="project.project_1_task_2"/>
         <field name="amount">-90.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_1_task_2_account_analytic_line_17" model="account.analytic.line">
@@ -483,6 +529,7 @@
         <field name="project_id" ref="project.project_project_1"/>
         <field name="task_id" ref="project.project_1_task_2"/>
         <field name="amount">-30.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_1_task_2_account_analytic_line_18" model="account.analytic.line">
@@ -493,6 +540,7 @@
         <field name="project_id" ref="project.project_project_1"/>
         <field name="task_id" ref="project.project_1_task_2"/>
         <field name="amount">-30.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_1_task_2_account_analytic_line_19" model="account.analytic.line">
@@ -503,6 +551,7 @@
         <field name="project_id" ref="project.project_project_1"/>
         <field name="task_id" ref="project.project_1_task_2"/>
         <field name="amount">-30.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_1_task_2_account_analytic_line_20" model="account.analytic.line">
@@ -513,6 +562,7 @@
         <field name="project_id" ref="project.project_project_1"/>
         <field name="task_id" ref="project.project_1_task_2"/>
         <field name="amount">-30.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_1_task_2_account_analytic_line_21" model="account.analytic.line">
@@ -523,6 +573,7 @@
         <field name="project_id" ref="project.project_project_1"/>
         <field name="task_id" ref="project.project_1_task_2"/>
         <field name="amount">-90.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_1_task_2_account_analytic_line_22" model="account.analytic.line">
@@ -533,6 +584,7 @@
         <field name="project_id" ref="project.project_project_1"/>
         <field name="task_id" ref="project.project_1_task_2"/>
         <field name="amount">-30.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_1_task_2_account_analytic_line_23" model="account.analytic.line">
@@ -543,6 +595,7 @@
         <field name="project_id" ref="project.project_project_1"/>
         <field name="task_id" ref="project.project_1_task_2"/>
         <field name="amount">-60.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_1_task_2_account_analytic_line_24" model="account.analytic.line">
@@ -553,6 +606,7 @@
         <field name="project_id" ref="project.project_project_1"/>
         <field name="task_id" ref="project.project_1_task_2"/>
         <field name="amount">-30.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_1_task_5_account_analytic_line_1" model="account.analytic.line">
@@ -563,6 +617,7 @@
         <field name="project_id" ref="project.project_project_1"/>
         <field name="task_id" ref="project.project_1_task_5"/>
         <field name="amount">-30.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_1_task_5_account_analytic_line_2" model="account.analytic.line">
@@ -573,6 +628,7 @@
         <field name="project_id" ref="project.project_project_1"/>
         <field name="task_id" ref="project.project_1_task_5"/>
         <field name="amount">-30.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_1_task_5_account_analytic_line_3" model="account.analytic.line">
@@ -583,6 +639,7 @@
         <field name="project_id" ref="project.project_project_1"/>
         <field name="task_id" ref="project.project_1_task_5"/>
         <field name="amount">-30.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_1_task_5_account_analytic_line_4" model="account.analytic.line">
@@ -593,6 +650,7 @@
         <field name="project_id" ref="project.project_project_1"/>
         <field name="task_id" ref="project.project_1_task_5"/>
         <field name="amount">-60.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_1_task_5_account_analytic_line_5" model="account.analytic.line">
@@ -603,6 +661,7 @@
         <field name="project_id" ref="project.project_project_1"/>
         <field name="task_id" ref="project.project_1_task_5"/>
         <field name="amount">-30.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_1_task_5_account_analytic_line_6" model="account.analytic.line">
@@ -613,6 +672,7 @@
         <field name="project_id" ref="project.project_project_1"/>
         <field name="task_id" ref="project.project_1_task_5"/>
         <field name="amount">-90.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_1_task_5_account_analytic_line_7" model="account.analytic.line">
@@ -623,6 +683,7 @@
         <field name="project_id" ref="project.project_project_1"/>
         <field name="task_id" ref="project.project_1_task_5"/>
         <field name="amount">-30.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_1_task_5_account_analytic_line_8" model="account.analytic.line">
@@ -633,6 +694,7 @@
         <field name="project_id" ref="project.project_project_1"/>
         <field name="task_id" ref="project.project_1_task_5"/>
         <field name="amount">-30.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_1_task_5_account_analytic_line_9" model="account.analytic.line">
@@ -643,6 +705,7 @@
         <field name="project_id" ref="project.project_project_1"/>
         <field name="task_id" ref="project.project_1_task_5"/>
         <field name="amount">-30.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_1_task_5_account_analytic_line_10" model="account.analytic.line">
@@ -653,6 +716,7 @@
         <field name="project_id" ref="project.project_project_1"/>
         <field name="task_id" ref="project.project_1_task_5"/>
         <field name="amount">-30.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_1_task_5_account_analytic_line_11" model="account.analytic.line">
@@ -663,6 +727,7 @@
         <field name="project_id" ref="project.project_project_1"/>
         <field name="task_id" ref="project.project_1_task_5"/>
         <field name="amount">-60.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_1_task_5_account_analytic_line_12" model="account.analytic.line">
@@ -673,6 +738,7 @@
         <field name="project_id" ref="project.project_project_1"/>
         <field name="task_id" ref="project.project_1_task_5"/>
         <field name="amount">-30.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_1_task_5_account_analytic_line_13" model="account.analytic.line">
@@ -683,6 +749,7 @@
         <field name="project_id" ref="project.project_project_1"/>
         <field name="task_id" ref="project.project_1_task_5"/>
         <field name="amount">-30.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_1_task_5_account_analytic_line_14" model="account.analytic.line">
@@ -693,6 +760,7 @@
         <field name="project_id" ref="project.project_project_1"/>
         <field name="task_id" ref="project.project_1_task_5"/>
         <field name="amount">-60.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_1_task_5_account_analytic_line_15" model="account.analytic.line">
@@ -703,6 +771,7 @@
         <field name="project_id" ref="project.project_project_1"/>
         <field name="task_id" ref="project.project_1_task_5"/>
         <field name="amount">-60.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_1_task_5_account_analytic_line_16" model="account.analytic.line">
@@ -713,6 +782,7 @@
         <field name="project_id" ref="project.project_project_1"/>
         <field name="task_id" ref="project.project_1_task_5"/>
         <field name="amount">-30.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_1_task_5_account_analytic_line_17" model="account.analytic.line">
@@ -723,6 +793,7 @@
         <field name="project_id" ref="project.project_project_1"/>
         <field name="task_id" ref="project.project_1_task_5"/>
         <field name="amount">-30.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_1_task_5_account_analytic_line_18" model="account.analytic.line">
@@ -733,6 +804,7 @@
         <field name="project_id" ref="project.project_project_1"/>
         <field name="task_id" ref="project.project_1_task_5"/>
         <field name="amount">-30.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_1_task_5_account_analytic_line_19" model="account.analytic.line">
@@ -743,6 +815,7 @@
         <field name="project_id" ref="project.project_project_1"/>
         <field name="task_id" ref="project.project_1_task_5"/>
         <field name="amount">-60.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_1_task_5_account_analytic_line_20" model="account.analytic.line">
@@ -753,6 +826,7 @@
         <field name="project_id" ref="project.project_project_1"/>
         <field name="task_id" ref="project.project_1_task_5"/>
         <field name="amount">-30.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_1_task_5_account_analytic_line_21" model="account.analytic.line">
@@ -763,6 +837,7 @@
         <field name="project_id" ref="project.project_project_1"/>
         <field name="task_id" ref="project.project_1_task_5"/>
         <field name="amount">-60.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_1_task_5_account_analytic_line_22" model="account.analytic.line">
@@ -773,6 +848,7 @@
         <field name="project_id" ref="project.project_project_1"/>
         <field name="task_id" ref="project.project_1_task_5"/>
         <field name="amount">-90.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_1_task_5_account_analytic_line_23" model="account.analytic.line">
@@ -783,6 +859,7 @@
         <field name="project_id" ref="project.project_project_1"/>
         <field name="task_id" ref="project.project_1_task_5"/>
         <field name="amount">-30.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_1_task_5_account_analytic_line_24" model="account.analytic.line">
@@ -793,6 +870,7 @@
         <field name="project_id" ref="project.project_project_1"/>
         <field name="task_id" ref="project.project_1_task_5"/>
         <field name="amount">-60.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_1_task_5_account_analytic_line_25" model="account.analytic.line">
@@ -803,6 +881,7 @@
         <field name="project_id" ref="project.project_project_1"/>
         <field name="task_id" ref="project.project_1_task_5"/>
         <field name="amount">-90.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_1_task_5_account_analytic_line_26" model="account.analytic.line">
@@ -813,6 +892,7 @@
         <field name="project_id" ref="project.project_project_1"/>
         <field name="task_id" ref="project.project_1_task_5"/>
         <field name="amount">-60.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_1_task_5_account_analytic_line_27" model="account.analytic.line">
@@ -823,6 +903,7 @@
         <field name="project_id" ref="project.project_project_1"/>
         <field name="task_id" ref="project.project_1_task_5"/>
         <field name="amount">-90.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_1_task_5_account_analytic_line_28" model="account.analytic.line">
@@ -833,6 +914,7 @@
         <field name="project_id" ref="project.project_project_1"/>
         <field name="task_id" ref="project.project_1_task_5"/>
         <field name="amount">-30.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_1_task_5_account_analytic_line_29" model="account.analytic.line">
@@ -843,6 +925,7 @@
         <field name="project_id" ref="project.project_project_1"/>
         <field name="task_id" ref="project.project_1_task_5"/>
         <field name="amount">-60.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_1_task_5_account_analytic_line_30" model="account.analytic.line">
@@ -853,6 +936,7 @@
         <field name="project_id" ref="project.project_project_1"/>
         <field name="task_id" ref="project.project_1_task_5"/>
         <field name="amount">-30.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_1_task_5_account_analytic_line_31" model="account.analytic.line">
@@ -863,6 +947,7 @@
         <field name="project_id" ref="project.project_project_1"/>
         <field name="task_id" ref="project.project_1_task_5"/>
         <field name="amount">-90.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_1_task_6_account_analytic_line_1" model="account.analytic.line">
@@ -873,6 +958,7 @@
         <field name="project_id" ref="project.project_project_1"/>
         <field name="task_id" ref="project.project_1_task_6"/>
         <field name="amount">-30.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_1_task_6_account_analytic_line_2" model="account.analytic.line">
@@ -883,6 +969,7 @@
         <field name="project_id" ref="project.project_project_1"/>
         <field name="task_id" ref="project.project_1_task_6"/>
         <field name="amount">-30.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_1_task_6_account_analytic_line_3" model="account.analytic.line">
@@ -893,6 +980,7 @@
         <field name="project_id" ref="project.project_project_1"/>
         <field name="task_id" ref="project.project_1_task_6"/>
         <field name="amount">-30.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_1_task_6_account_analytic_line_4" model="account.analytic.line">
@@ -903,6 +991,7 @@
         <field name="project_id" ref="project.project_project_1"/>
         <field name="task_id" ref="project.project_1_task_6"/>
         <field name="amount">-60.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_1_task_6_account_analytic_line_5" model="account.analytic.line">
@@ -913,6 +1002,7 @@
         <field name="project_id" ref="project.project_project_1"/>
         <field name="task_id" ref="project.project_1_task_6"/>
         <field name="amount">-90.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_1_task_6_account_analytic_line_6" model="account.analytic.line">
@@ -923,6 +1013,7 @@
         <field name="project_id" ref="project.project_project_1"/>
         <field name="task_id" ref="project.project_1_task_6"/>
         <field name="amount">-30.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_1_task_6_account_analytic_line_7" model="account.analytic.line">
@@ -933,6 +1024,7 @@
         <field name="project_id" ref="project.project_project_1"/>
         <field name="task_id" ref="project.project_1_task_6"/>
         <field name="amount">-30.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_1_task_6_account_analytic_line_8" model="account.analytic.line">
@@ -943,6 +1035,7 @@
         <field name="project_id" ref="project.project_project_1"/>
         <field name="task_id" ref="project.project_1_task_6"/>
         <field name="amount">-30.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_1_task_6_account_analytic_line_9" model="account.analytic.line">
@@ -953,6 +1046,7 @@
         <field name="project_id" ref="project.project_project_1"/>
         <field name="task_id" ref="project.project_1_task_6"/>
         <field name="amount">-30.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_1_task_6_account_analytic_line_10" model="account.analytic.line">
@@ -963,6 +1057,7 @@
         <field name="project_id" ref="project.project_project_1"/>
         <field name="task_id" ref="project.project_1_task_6"/>
         <field name="amount">-30.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_1_task_6_account_analytic_line_11" model="account.analytic.line">
@@ -973,6 +1068,7 @@
         <field name="project_id" ref="project.project_project_1"/>
         <field name="task_id" ref="project.project_1_task_6"/>
         <field name="amount">-60.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_1_task_6_account_analytic_line_12" model="account.analytic.line">
@@ -983,6 +1079,7 @@
         <field name="project_id" ref="project.project_project_1"/>
         <field name="task_id" ref="project.project_1_task_6"/>
         <field name="amount">-90.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_1_task_6_account_analytic_line_13" model="account.analytic.line">
@@ -993,6 +1090,7 @@
         <field name="project_id" ref="project.project_project_1"/>
         <field name="task_id" ref="project.project_1_task_6"/>
         <field name="amount">-90.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_1_task_6_account_analytic_line_14" model="account.analytic.line">
@@ -1003,6 +1101,7 @@
         <field name="project_id" ref="project.project_project_1"/>
         <field name="task_id" ref="project.project_1_task_6"/>
         <field name="amount">-30.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_1_task_6_account_analytic_line_15" model="account.analytic.line">
@@ -1013,6 +1112,7 @@
         <field name="project_id" ref="project.project_project_1"/>
         <field name="task_id" ref="project.project_1_task_6"/>
         <field name="amount">-30.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_1_task_6_account_analytic_line_16" model="account.analytic.line">
@@ -1023,6 +1123,7 @@
         <field name="project_id" ref="project.project_project_1"/>
         <field name="task_id" ref="project.project_1_task_6"/>
         <field name="amount">-30.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_1_task_6_account_analytic_line_17" model="account.analytic.line">
@@ -1033,6 +1134,7 @@
         <field name="project_id" ref="project.project_project_1"/>
         <field name="task_id" ref="project.project_1_task_6"/>
         <field name="amount">-30.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_1_task_6_account_analytic_line_18" model="account.analytic.line">
@@ -1043,6 +1145,7 @@
         <field name="project_id" ref="project.project_project_1"/>
         <field name="task_id" ref="project.project_1_task_6"/>
         <field name="amount">-30.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_1_task_6_account_analytic_line_19" model="account.analytic.line">
@@ -1053,6 +1156,7 @@
         <field name="project_id" ref="project.project_project_1"/>
         <field name="task_id" ref="project.project_1_task_6"/>
         <field name="amount">-60.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_1_task_6_account_analytic_line_20" model="account.analytic.line">
@@ -1063,6 +1167,7 @@
         <field name="project_id" ref="project.project_project_1"/>
         <field name="task_id" ref="project.project_1_task_6"/>
         <field name="amount">-60.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_1_task_6_account_analytic_line_21" model="account.analytic.line">
@@ -1073,6 +1178,7 @@
         <field name="project_id" ref="project.project_project_1"/>
         <field name="task_id" ref="project.project_1_task_6"/>
         <field name="amount">-90.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_1_task_6_account_analytic_line_22" model="account.analytic.line">
@@ -1083,6 +1189,7 @@
         <field name="project_id" ref="project.project_project_1"/>
         <field name="task_id" ref="project.project_1_task_6"/>
         <field name="amount">-30.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_1_task_6_account_analytic_line_23" model="account.analytic.line">
@@ -1093,6 +1200,7 @@
         <field name="project_id" ref="project.project_project_1"/>
         <field name="task_id" ref="project.project_1_task_6"/>
         <field name="amount">-30.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_1_task_6_account_analytic_line_24" model="account.analytic.line">
@@ -1103,6 +1211,7 @@
         <field name="project_id" ref="project.project_project_1"/>
         <field name="task_id" ref="project.project_1_task_6"/>
         <field name="amount">-60.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_1_task_6_account_analytic_line_25" model="account.analytic.line">
@@ -1113,6 +1222,7 @@
         <field name="project_id" ref="project.project_project_1"/>
         <field name="task_id" ref="project.project_1_task_6"/>
         <field name="amount">-30.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_1_task_6_account_analytic_line_26" model="account.analytic.line">
@@ -1123,6 +1233,7 @@
         <field name="project_id" ref="project.project_project_1"/>
         <field name="task_id" ref="project.project_1_task_6"/>
         <field name="amount">-90.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_1_task_7_account_analytic_line_1" model="account.analytic.line">
@@ -1133,6 +1244,7 @@
         <field name="project_id" ref="project.project_project_1"/>
         <field name="task_id" ref="project.project_1_task_7"/>
         <field name="amount">-30.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_1_task_7_account_analytic_line_2" model="account.analytic.line">
@@ -1143,6 +1255,7 @@
         <field name="project_id" ref="project.project_project_1"/>
         <field name="task_id" ref="project.project_1_task_7"/>
         <field name="amount">-90.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_1_task_7_account_analytic_line_3" model="account.analytic.line">
@@ -1153,6 +1266,7 @@
         <field name="project_id" ref="project.project_project_1"/>
         <field name="task_id" ref="project.project_1_task_7"/>
         <field name="amount">-90.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_1_task_7_account_analytic_line_4" model="account.analytic.line">
@@ -1163,6 +1277,7 @@
         <field name="project_id" ref="project.project_project_1"/>
         <field name="task_id" ref="project.project_1_task_7"/>
         <field name="amount">-60.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_1_task_7_account_analytic_line_5" model="account.analytic.line">
@@ -1173,6 +1288,7 @@
         <field name="project_id" ref="project.project_project_1"/>
         <field name="task_id" ref="project.project_1_task_7"/>
         <field name="amount">-90.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_1_task_7_account_analytic_line_6" model="account.analytic.line">
@@ -1183,6 +1299,7 @@
         <field name="project_id" ref="project.project_project_1"/>
         <field name="task_id" ref="project.project_1_task_7"/>
         <field name="amount">-30.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_1_task_7_account_analytic_line_7" model="account.analytic.line">
@@ -1193,6 +1310,7 @@
         <field name="project_id" ref="project.project_project_1"/>
         <field name="task_id" ref="project.project_1_task_7"/>
         <field name="amount">-30.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_1_task_7_account_analytic_line_8" model="account.analytic.line">
@@ -1203,6 +1321,7 @@
         <field name="project_id" ref="project.project_project_1"/>
         <field name="task_id" ref="project.project_1_task_7"/>
         <field name="amount">-90.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_1_task_7_account_analytic_line_9" model="account.analytic.line">
@@ -1213,6 +1332,7 @@
         <field name="project_id" ref="project.project_project_1"/>
         <field name="task_id" ref="project.project_1_task_7"/>
         <field name="amount">-90.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_1_task_7_account_analytic_line_10" model="account.analytic.line">
@@ -1223,6 +1343,7 @@
         <field name="project_id" ref="project.project_project_1"/>
         <field name="task_id" ref="project.project_1_task_7"/>
         <field name="amount">-60.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_1_task_7_account_analytic_line_11" model="account.analytic.line">
@@ -1233,6 +1354,7 @@
         <field name="project_id" ref="project.project_project_1"/>
         <field name="task_id" ref="project.project_1_task_7"/>
         <field name="amount">-60.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_1_task_7_account_analytic_line_12" model="account.analytic.line">
@@ -1243,6 +1365,7 @@
         <field name="project_id" ref="project.project_project_1"/>
         <field name="task_id" ref="project.project_1_task_7"/>
         <field name="amount">-30.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_1_task_7_account_analytic_line_13" model="account.analytic.line">
@@ -1253,6 +1376,7 @@
         <field name="project_id" ref="project.project_project_1"/>
         <field name="task_id" ref="project.project_1_task_7"/>
         <field name="amount">-60.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_1_task_7_account_analytic_line_14" model="account.analytic.line">
@@ -1263,6 +1387,7 @@
         <field name="project_id" ref="project.project_project_1"/>
         <field name="task_id" ref="project.project_1_task_7"/>
         <field name="amount">-60.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_1_task_7_account_analytic_line_15" model="account.analytic.line">
@@ -1273,6 +1398,7 @@
         <field name="project_id" ref="project.project_project_1"/>
         <field name="task_id" ref="project.project_1_task_7"/>
         <field name="amount">-30.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_1_task_7_account_analytic_line_16" model="account.analytic.line">
@@ -1283,6 +1409,7 @@
         <field name="project_id" ref="project.project_project_1"/>
         <field name="task_id" ref="project.project_1_task_7"/>
         <field name="amount">-60.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_1_task_7_account_analytic_line_17" model="account.analytic.line">
@@ -1293,6 +1420,7 @@
         <field name="project_id" ref="project.project_project_1"/>
         <field name="task_id" ref="project.project_1_task_7"/>
         <field name="amount">-30.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_1_task_7_account_analytic_line_18" model="account.analytic.line">
@@ -1303,6 +1431,7 @@
         <field name="project_id" ref="project.project_project_1"/>
         <field name="task_id" ref="project.project_1_task_7"/>
         <field name="amount">-30.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_1_task_7_account_analytic_line_19" model="account.analytic.line">
@@ -1313,6 +1442,7 @@
         <field name="project_id" ref="project.project_project_1"/>
         <field name="task_id" ref="project.project_1_task_7"/>
         <field name="amount">-30.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_1_task_7_account_analytic_line_20" model="account.analytic.line">
@@ -1323,6 +1453,7 @@
         <field name="project_id" ref="project.project_project_1"/>
         <field name="task_id" ref="project.project_1_task_7"/>
         <field name="amount">-30.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_1_task_7_account_analytic_line_21" model="account.analytic.line">
@@ -1333,6 +1464,7 @@
         <field name="project_id" ref="project.project_project_1"/>
         <field name="task_id" ref="project.project_1_task_7"/>
         <field name="amount">-90.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_1_task_7_account_analytic_line_22" model="account.analytic.line">
@@ -1343,6 +1475,7 @@
         <field name="project_id" ref="project.project_project_1"/>
         <field name="task_id" ref="project.project_1_task_7"/>
         <field name="amount">-30.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_1_task_7_account_analytic_line_23" model="account.analytic.line">
@@ -1353,6 +1486,7 @@
         <field name="project_id" ref="project.project_project_1"/>
         <field name="task_id" ref="project.project_1_task_7"/>
         <field name="amount">-30.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_1_task_8_account_analytic_line_1" model="account.analytic.line">
@@ -1363,6 +1497,7 @@
         <field name="project_id" ref="project.project_project_1"/>
         <field name="task_id" ref="project.project_1_task_8"/>
         <field name="amount">-30.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_1_task_8_account_analytic_line_2" model="account.analytic.line">
@@ -1373,6 +1508,7 @@
         <field name="project_id" ref="project.project_project_1"/>
         <field name="task_id" ref="project.project_1_task_8"/>
         <field name="amount">-30.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_1_task_8_account_analytic_line_3" model="account.analytic.line">
@@ -1383,6 +1519,7 @@
         <field name="project_id" ref="project.project_project_1"/>
         <field name="task_id" ref="project.project_1_task_8"/>
         <field name="amount">-60.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_1_task_8_account_analytic_line_4" model="account.analytic.line">
@@ -1393,6 +1530,7 @@
         <field name="project_id" ref="project.project_project_1"/>
         <field name="task_id" ref="project.project_1_task_8"/>
         <field name="amount">-90.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_1_task_8_account_analytic_line_5" model="account.analytic.line">
@@ -1403,6 +1541,7 @@
         <field name="project_id" ref="project.project_project_1"/>
         <field name="task_id" ref="project.project_1_task_8"/>
         <field name="amount">-30.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_1_task_8_account_analytic_line_6" model="account.analytic.line">
@@ -1413,6 +1552,7 @@
         <field name="project_id" ref="project.project_project_1"/>
         <field name="task_id" ref="project.project_1_task_8"/>
         <field name="amount">-30.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_1_task_8_account_analytic_line_7" model="account.analytic.line">
@@ -1423,6 +1563,7 @@
         <field name="project_id" ref="project.project_project_1"/>
         <field name="task_id" ref="project.project_1_task_8"/>
         <field name="amount">-90.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_1_task_8_account_analytic_line_8" model="account.analytic.line">
@@ -1433,6 +1574,7 @@
         <field name="project_id" ref="project.project_project_1"/>
         <field name="task_id" ref="project.project_1_task_8"/>
         <field name="amount">-30.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_1_task_8_account_analytic_line_9" model="account.analytic.line">
@@ -1443,6 +1585,7 @@
         <field name="project_id" ref="project.project_project_1"/>
         <field name="task_id" ref="project.project_1_task_8"/>
         <field name="amount">-30.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_1_task_8_account_analytic_line_10" model="account.analytic.line">
@@ -1453,6 +1596,7 @@
         <field name="project_id" ref="project.project_project_1"/>
         <field name="task_id" ref="project.project_1_task_8"/>
         <field name="amount">-60.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_1_task_8_account_analytic_line_11" model="account.analytic.line">
@@ -1463,6 +1607,7 @@
         <field name="project_id" ref="project.project_project_1"/>
         <field name="task_id" ref="project.project_1_task_8"/>
         <field name="amount">-60.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_1_task_8_account_analytic_line_12" model="account.analytic.line">
@@ -1473,6 +1618,7 @@
         <field name="project_id" ref="project.project_project_1"/>
         <field name="task_id" ref="project.project_1_task_8"/>
         <field name="amount">-30.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_1_task_8_account_analytic_line_13" model="account.analytic.line">
@@ -1483,6 +1629,7 @@
         <field name="project_id" ref="project.project_project_1"/>
         <field name="task_id" ref="project.project_1_task_8"/>
         <field name="amount">-60.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_1_task_8_account_analytic_line_14" model="account.analytic.line">
@@ -1493,6 +1640,7 @@
         <field name="project_id" ref="project.project_project_1"/>
         <field name="task_id" ref="project.project_1_task_8"/>
         <field name="amount">-30.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_1_task_8_account_analytic_line_15" model="account.analytic.line">
@@ -1503,6 +1651,7 @@
         <field name="project_id" ref="project.project_project_1"/>
         <field name="task_id" ref="project.project_1_task_8"/>
         <field name="amount">-90.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_1_task_8_account_analytic_line_16" model="account.analytic.line">
@@ -1513,6 +1662,7 @@
         <field name="project_id" ref="project.project_project_1"/>
         <field name="task_id" ref="project.project_1_task_8"/>
         <field name="amount">-30.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_1_task_8_account_analytic_line_17" model="account.analytic.line">
@@ -1523,6 +1673,7 @@
         <field name="project_id" ref="project.project_project_1"/>
         <field name="task_id" ref="project.project_1_task_8"/>
         <field name="amount">-90.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_1_task_8_account_analytic_line_18" model="account.analytic.line">
@@ -1533,6 +1684,7 @@
         <field name="project_id" ref="project.project_project_1"/>
         <field name="task_id" ref="project.project_1_task_8"/>
         <field name="amount">-30.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_1_task_8_account_analytic_line_19" model="account.analytic.line">
@@ -1543,6 +1695,7 @@
         <field name="project_id" ref="project.project_project_1"/>
         <field name="task_id" ref="project.project_1_task_8"/>
         <field name="amount">-60.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_1_task_8_account_analytic_line_20" model="account.analytic.line">
@@ -1553,6 +1706,7 @@
         <field name="project_id" ref="project.project_project_1"/>
         <field name="task_id" ref="project.project_1_task_8"/>
         <field name="amount">-30.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_1_task_8_account_analytic_line_21" model="account.analytic.line">
@@ -1563,6 +1717,7 @@
         <field name="project_id" ref="project.project_project_1"/>
         <field name="task_id" ref="project.project_1_task_8"/>
         <field name="amount">-30.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_1_task_8_account_analytic_line_22" model="account.analytic.line">
@@ -1573,6 +1728,7 @@
         <field name="project_id" ref="project.project_project_1"/>
         <field name="task_id" ref="project.project_1_task_8"/>
         <field name="amount">-60.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_1_task_8_account_analytic_line_23" model="account.analytic.line">
@@ -1583,6 +1739,7 @@
         <field name="project_id" ref="project.project_project_1"/>
         <field name="task_id" ref="project.project_1_task_8"/>
         <field name="amount">-60.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_1_task_8_account_analytic_line_24" model="account.analytic.line">
@@ -1593,6 +1750,7 @@
         <field name="project_id" ref="project.project_project_1"/>
         <field name="task_id" ref="project.project_1_task_8"/>
         <field name="amount">-30.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_1_task_8_account_analytic_line_25" model="account.analytic.line">
@@ -1603,6 +1761,7 @@
         <field name="project_id" ref="project.project_project_1"/>
         <field name="task_id" ref="project.project_1_task_8"/>
         <field name="amount">-30.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_1_task_8_account_analytic_line_26" model="account.analytic.line">
@@ -1613,6 +1772,7 @@
         <field name="project_id" ref="project.project_project_1"/>
         <field name="task_id" ref="project.project_1_task_8"/>
         <field name="amount">-30.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_1_task_8_account_analytic_line_27" model="account.analytic.line">
@@ -1623,6 +1783,7 @@
         <field name="project_id" ref="project.project_project_1"/>
         <field name="task_id" ref="project.project_1_task_8"/>
         <field name="amount">-30.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_1_task_8_account_analytic_line_28" model="account.analytic.line">
@@ -1633,6 +1794,7 @@
         <field name="project_id" ref="project.project_project_1"/>
         <field name="task_id" ref="project.project_1_task_8"/>
         <field name="amount">-90.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_1_task_8_account_analytic_line_29" model="account.analytic.line">
@@ -1643,6 +1805,7 @@
         <field name="project_id" ref="project.project_project_1"/>
         <field name="task_id" ref="project.project_1_task_8"/>
         <field name="amount">-30.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_1_task_8_account_analytic_line_30" model="account.analytic.line">
@@ -1653,6 +1816,7 @@
         <field name="project_id" ref="project.project_project_1"/>
         <field name="task_id" ref="project.project_1_task_8"/>
         <field name="amount">-60.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_1_task_8_account_analytic_line_31" model="account.analytic.line">
@@ -1663,6 +1827,7 @@
         <field name="project_id" ref="project.project_project_1"/>
         <field name="task_id" ref="project.project_1_task_8"/>
         <field name="amount">-60.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_1_task_8_account_analytic_line_32" model="account.analytic.line">
@@ -1673,6 +1838,7 @@
         <field name="project_id" ref="project.project_project_1"/>
         <field name="task_id" ref="project.project_1_task_8"/>
         <field name="amount">-30.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_1_task_9_account_analytic_line_1" model="account.analytic.line">
@@ -1683,6 +1849,7 @@
         <field name="project_id" ref="project.project_project_1"/>
         <field name="task_id" ref="project.project_1_task_9"/>
         <field name="amount">-30.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_1_task_9_account_analytic_line_2" model="account.analytic.line">
@@ -1693,6 +1860,7 @@
         <field name="project_id" ref="project.project_project_1"/>
         <field name="task_id" ref="project.project_1_task_9"/>
         <field name="amount">-30.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_1_task_9_account_analytic_line_3" model="account.analytic.line">
@@ -1703,6 +1871,7 @@
         <field name="project_id" ref="project.project_project_1"/>
         <field name="task_id" ref="project.project_1_task_9"/>
         <field name="amount">-30.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_1_task_9_account_analytic_line_4" model="account.analytic.line">
@@ -1713,6 +1882,7 @@
         <field name="project_id" ref="project.project_project_1"/>
         <field name="task_id" ref="project.project_1_task_9"/>
         <field name="amount">-90.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_1_task_9_account_analytic_line_5" model="account.analytic.line">
@@ -1723,6 +1893,7 @@
         <field name="project_id" ref="project.project_project_1"/>
         <field name="task_id" ref="project.project_1_task_9"/>
         <field name="amount">-60.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_1_task_9_account_analytic_line_6" model="account.analytic.line">
@@ -1733,6 +1904,7 @@
         <field name="project_id" ref="project.project_project_1"/>
         <field name="task_id" ref="project.project_1_task_9"/>
         <field name="amount">-30.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_1_task_9_account_analytic_line_7" model="account.analytic.line">
@@ -1743,6 +1915,7 @@
         <field name="project_id" ref="project.project_project_1"/>
         <field name="task_id" ref="project.project_1_task_9"/>
         <field name="amount">-30.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_1_task_9_account_analytic_line_8" model="account.analytic.line">
@@ -1753,6 +1926,7 @@
         <field name="project_id" ref="project.project_project_1"/>
         <field name="task_id" ref="project.project_1_task_9"/>
         <field name="amount">-30.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_1_task_9_account_analytic_line_9" model="account.analytic.line">
@@ -1763,6 +1937,7 @@
         <field name="project_id" ref="project.project_project_1"/>
         <field name="task_id" ref="project.project_1_task_9"/>
         <field name="amount">-30.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_1_task_9_account_analytic_line_10" model="account.analytic.line">
@@ -1773,6 +1948,7 @@
         <field name="project_id" ref="project.project_project_1"/>
         <field name="task_id" ref="project.project_1_task_9"/>
         <field name="amount">-30.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_1_task_9_account_analytic_line_11" model="account.analytic.line">
@@ -1783,6 +1959,7 @@
         <field name="project_id" ref="project.project_project_1"/>
         <field name="task_id" ref="project.project_1_task_9"/>
         <field name="amount">-30.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_1_task_9_account_analytic_line_12" model="account.analytic.line">
@@ -1793,6 +1970,7 @@
         <field name="project_id" ref="project.project_project_1"/>
         <field name="task_id" ref="project.project_1_task_9"/>
         <field name="amount">-30.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_1_task_9_account_analytic_line_13" model="account.analytic.line">
@@ -1803,6 +1981,7 @@
         <field name="project_id" ref="project.project_project_1"/>
         <field name="task_id" ref="project.project_1_task_9"/>
         <field name="amount">-90.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_1_task_9_account_analytic_line_14" model="account.analytic.line">
@@ -1813,6 +1992,7 @@
         <field name="project_id" ref="project.project_project_1"/>
         <field name="task_id" ref="project.project_1_task_9"/>
         <field name="amount">-30.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_1_task_9_account_analytic_line_15" model="account.analytic.line">
@@ -1823,6 +2003,7 @@
         <field name="project_id" ref="project.project_project_1"/>
         <field name="task_id" ref="project.project_1_task_9"/>
         <field name="amount">-30.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_1_task_9_account_analytic_line_16" model="account.analytic.line">
@@ -1833,6 +2014,7 @@
         <field name="project_id" ref="project.project_project_1"/>
         <field name="task_id" ref="project.project_1_task_9"/>
         <field name="amount">-60.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_1_task_9_account_analytic_line_17" model="account.analytic.line">
@@ -1843,6 +2025,7 @@
         <field name="project_id" ref="project.project_project_1"/>
         <field name="task_id" ref="project.project_1_task_9"/>
         <field name="amount">-60.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_1_task_9_account_analytic_line_18" model="account.analytic.line">
@@ -1853,6 +2036,7 @@
         <field name="project_id" ref="project.project_project_1"/>
         <field name="task_id" ref="project.project_1_task_9"/>
         <field name="amount">-30.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_1_task_9_account_analytic_line_19" model="account.analytic.line">
@@ -1863,6 +2047,7 @@
         <field name="project_id" ref="project.project_project_1"/>
         <field name="task_id" ref="project.project_1_task_9"/>
         <field name="amount">-30.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_1_task_10_account_analytic_line_1" model="account.analytic.line">
@@ -1873,6 +2058,7 @@
         <field name="project_id" ref="project.project_project_1"/>
         <field name="task_id" ref="project.project_1_task_10"/>
         <field name="amount">-30.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_1_task_10_account_analytic_line_2" model="account.analytic.line">
@@ -1883,6 +2069,7 @@
         <field name="project_id" ref="project.project_project_1"/>
         <field name="task_id" ref="project.project_1_task_10"/>
         <field name="amount">-30.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_1_task_12_account_analytic_line_1" model="account.analytic.line">
@@ -1893,6 +2080,7 @@
         <field name="project_id" ref="project.project_project_1"/>
         <field name="task_id" ref="project.project_1_task_12"/>
         <field name="amount">-60.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_1_task_13_account_analytic_line_1" model="account.analytic.line">
@@ -1903,6 +2091,7 @@
         <field name="project_id" ref="project.project_project_1"/>
         <field name="task_id" ref="project.project_1_task_13"/>
         <field name="amount">-60.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_1_task_14_account_analytic_line_1" model="account.analytic.line">
@@ -1913,6 +2102,7 @@
         <field name="project_id" ref="project.project_project_1"/>
         <field name="task_id" ref="project.project_1_task_14"/>
         <field name="amount">-60.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_2_task_1_account_analytic_line_1" model="account.analytic.line">
@@ -1923,6 +2113,7 @@
         <field name="project_id" ref="project.project_project_2"/>
         <field name="task_id" ref="project.project_2_task_1"/>
         <field name="amount">-30.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_2_task_1_account_analytic_line_2" model="account.analytic.line">
@@ -1933,6 +2124,7 @@
         <field name="project_id" ref="project.project_project_2"/>
         <field name="task_id" ref="project.project_2_task_1"/>
         <field name="amount">-60.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_2_task_1_account_analytic_line_3" model="account.analytic.line">
@@ -1943,6 +2135,7 @@
         <field name="project_id" ref="project.project_project_2"/>
         <field name="task_id" ref="project.project_2_task_1"/>
         <field name="amount">-60.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_2_task_1_account_analytic_line_4" model="account.analytic.line">
@@ -1953,6 +2146,7 @@
         <field name="project_id" ref="project.project_project_2"/>
         <field name="task_id" ref="project.project_2_task_1"/>
         <field name="amount">-60.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_2_task_1_account_analytic_line_5" model="account.analytic.line">
@@ -1963,6 +2157,7 @@
         <field name="project_id" ref="project.project_project_2"/>
         <field name="task_id" ref="project.project_2_task_1"/>
         <field name="amount">-90.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_2_task_1_account_analytic_line_6" model="account.analytic.line">
@@ -1973,6 +2168,7 @@
         <field name="project_id" ref="project.project_project_2"/>
         <field name="task_id" ref="project.project_2_task_1"/>
         <field name="amount">-30.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_2_task_1_account_analytic_line_7" model="account.analytic.line">
@@ -1983,6 +2179,7 @@
         <field name="project_id" ref="project.project_project_2"/>
         <field name="task_id" ref="project.project_2_task_1"/>
         <field name="amount">-90.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_2_task_1_account_analytic_line_8" model="account.analytic.line">
@@ -1993,6 +2190,7 @@
         <field name="project_id" ref="project.project_project_2"/>
         <field name="task_id" ref="project.project_2_task_1"/>
         <field name="amount">-60.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_2_task_1_account_analytic_line_9" model="account.analytic.line">
@@ -2003,6 +2201,7 @@
         <field name="project_id" ref="project.project_project_2"/>
         <field name="task_id" ref="project.project_2_task_1"/>
         <field name="amount">-60.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_2_task_1_account_analytic_line_10" model="account.analytic.line">
@@ -2013,6 +2212,7 @@
         <field name="project_id" ref="project.project_project_2"/>
         <field name="task_id" ref="project.project_2_task_1"/>
         <field name="amount">-30.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_2_task_1_account_analytic_line_11" model="account.analytic.line">
@@ -2023,6 +2223,7 @@
         <field name="project_id" ref="project.project_project_2"/>
         <field name="task_id" ref="project.project_2_task_1"/>
         <field name="amount">-90.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_2_task_1_account_analytic_line_12" model="account.analytic.line">
@@ -2033,6 +2234,7 @@
         <field name="project_id" ref="project.project_project_2"/>
         <field name="task_id" ref="project.project_2_task_1"/>
         <field name="amount">-60.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_2_task_1_account_analytic_line_13" model="account.analytic.line">
@@ -2043,6 +2245,7 @@
         <field name="project_id" ref="project.project_project_2"/>
         <field name="task_id" ref="project.project_2_task_1"/>
         <field name="amount">-30.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_2_task_1_account_analytic_line_14" model="account.analytic.line">
@@ -2053,6 +2256,7 @@
         <field name="project_id" ref="project.project_project_2"/>
         <field name="task_id" ref="project.project_2_task_1"/>
         <field name="amount">-30.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_2_task_1_account_analytic_line_15" model="account.analytic.line">
@@ -2063,6 +2267,7 @@
         <field name="project_id" ref="project.project_project_2"/>
         <field name="task_id" ref="project.project_2_task_1"/>
         <field name="amount">-30.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_2_task_1_account_analytic_line_16" model="account.analytic.line">
@@ -2073,6 +2278,7 @@
         <field name="project_id" ref="project.project_project_2"/>
         <field name="task_id" ref="project.project_2_task_1"/>
         <field name="amount">-30.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_2_task_1_account_analytic_line_17" model="account.analytic.line">
@@ -2083,6 +2289,7 @@
         <field name="project_id" ref="project.project_project_2"/>
         <field name="task_id" ref="project.project_2_task_1"/>
         <field name="amount">-90.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_2_task_1_account_analytic_line_18" model="account.analytic.line">
@@ -2093,6 +2300,7 @@
         <field name="project_id" ref="project.project_project_2"/>
         <field name="task_id" ref="project.project_2_task_1"/>
         <field name="amount">-30.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_2_task_1_account_analytic_line_19" model="account.analytic.line">
@@ -2103,6 +2311,7 @@
         <field name="project_id" ref="project.project_project_2"/>
         <field name="task_id" ref="project.project_2_task_1"/>
         <field name="amount">-30.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_2_task_1_account_analytic_line_20" model="account.analytic.line">
@@ -2113,6 +2322,7 @@
         <field name="project_id" ref="project.project_project_2"/>
         <field name="task_id" ref="project.project_2_task_1"/>
         <field name="amount">-30.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_2_task_1_account_analytic_line_21" model="account.analytic.line">
@@ -2123,6 +2333,7 @@
         <field name="project_id" ref="project.project_project_2"/>
         <field name="task_id" ref="project.project_2_task_1"/>
         <field name="amount">-90.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_2_task_1_account_analytic_line_22" model="account.analytic.line">
@@ -2133,6 +2344,7 @@
         <field name="project_id" ref="project.project_project_2"/>
         <field name="task_id" ref="project.project_2_task_1"/>
         <field name="amount">-90.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_2_task_1_account_analytic_line_23" model="account.analytic.line">
@@ -2143,6 +2355,7 @@
         <field name="project_id" ref="project.project_project_2"/>
         <field name="task_id" ref="project.project_2_task_1"/>
         <field name="amount">-30.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_2_task_2_account_analytic_line_1" model="account.analytic.line">
@@ -2153,6 +2366,7 @@
         <field name="project_id" ref="project.project_project_2"/>
         <field name="task_id" ref="project.project_2_task_2"/>
         <field name="amount">-90.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_2_task_2_account_analytic_line_2" model="account.analytic.line">
@@ -2163,6 +2377,7 @@
         <field name="project_id" ref="project.project_project_2"/>
         <field name="task_id" ref="project.project_2_task_2"/>
         <field name="amount">-90.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_2_task_2_account_analytic_line_3" model="account.analytic.line">
@@ -2173,6 +2388,7 @@
         <field name="project_id" ref="project.project_project_2"/>
         <field name="task_id" ref="project.project_2_task_2"/>
         <field name="amount">-30.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_2_task_2_account_analytic_line_4" model="account.analytic.line">
@@ -2183,6 +2399,7 @@
         <field name="project_id" ref="project.project_project_2"/>
         <field name="task_id" ref="project.project_2_task_2"/>
         <field name="amount">-30.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_2_task_2_account_analytic_line_5" model="account.analytic.line">
@@ -2193,6 +2410,7 @@
         <field name="project_id" ref="project.project_project_2"/>
         <field name="task_id" ref="project.project_2_task_2"/>
         <field name="amount">-60.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_2_task_2_account_analytic_line_6" model="account.analytic.line">
@@ -2203,6 +2421,7 @@
         <field name="project_id" ref="project.project_project_2"/>
         <field name="task_id" ref="project.project_2_task_2"/>
         <field name="amount">-60.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_2_task_2_account_analytic_line_7" model="account.analytic.line">
@@ -2213,6 +2432,7 @@
         <field name="project_id" ref="project.project_project_2"/>
         <field name="task_id" ref="project.project_2_task_2"/>
         <field name="amount">-30.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_2_task_2_account_analytic_line_8" model="account.analytic.line">
@@ -2223,6 +2443,7 @@
         <field name="project_id" ref="project.project_project_2"/>
         <field name="task_id" ref="project.project_2_task_2"/>
         <field name="amount">-60.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_2_task_2_account_analytic_line_9" model="account.analytic.line">
@@ -2233,6 +2454,7 @@
         <field name="project_id" ref="project.project_project_2"/>
         <field name="task_id" ref="project.project_2_task_2"/>
         <field name="amount">-30.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_2_task_2_account_analytic_line_10" model="account.analytic.line">
@@ -2243,6 +2465,7 @@
         <field name="project_id" ref="project.project_project_2"/>
         <field name="task_id" ref="project.project_2_task_2"/>
         <field name="amount">-60.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_2_task_2_account_analytic_line_11" model="account.analytic.line">
@@ -2253,6 +2476,7 @@
         <field name="project_id" ref="project.project_project_2"/>
         <field name="task_id" ref="project.project_2_task_2"/>
         <field name="amount">-60.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_2_task_2_account_analytic_line_12" model="account.analytic.line">
@@ -2263,6 +2487,7 @@
         <field name="project_id" ref="project.project_project_2"/>
         <field name="task_id" ref="project.project_2_task_2"/>
         <field name="amount">-60.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_2_task_2_account_analytic_line_13" model="account.analytic.line">
@@ -2273,6 +2498,7 @@
         <field name="project_id" ref="project.project_project_2"/>
         <field name="task_id" ref="project.project_2_task_2"/>
         <field name="amount">-30.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_2_task_2_account_analytic_line_14" model="account.analytic.line">
@@ -2283,6 +2509,7 @@
         <field name="project_id" ref="project.project_project_2"/>
         <field name="task_id" ref="project.project_2_task_2"/>
         <field name="amount">-30.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_2_task_2_account_analytic_line_15" model="account.analytic.line">
@@ -2293,6 +2520,7 @@
         <field name="project_id" ref="project.project_project_2"/>
         <field name="task_id" ref="project.project_2_task_2"/>
         <field name="amount">-30.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_2_task_3_account_analytic_line_1" model="account.analytic.line">
@@ -2303,6 +2531,7 @@
         <field name="project_id" ref="project.project_project_2"/>
         <field name="task_id" ref="project.project_2_task_3"/>
         <field name="amount">-30.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_2_task_3_account_analytic_line_2" model="account.analytic.line">
@@ -2313,6 +2542,7 @@
         <field name="project_id" ref="project.project_project_2"/>
         <field name="task_id" ref="project.project_2_task_3"/>
         <field name="amount">-30.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_2_task_3_account_analytic_line_3" model="account.analytic.line">
@@ -2323,6 +2553,7 @@
         <field name="project_id" ref="project.project_project_2"/>
         <field name="task_id" ref="project.project_2_task_3"/>
         <field name="amount">-60.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_2_task_3_account_analytic_line_4" model="account.analytic.line">
@@ -2333,6 +2564,7 @@
         <field name="project_id" ref="project.project_project_2"/>
         <field name="task_id" ref="project.project_2_task_3"/>
         <field name="amount">-60.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_2_task_3_account_analytic_line_5" model="account.analytic.line">
@@ -2343,6 +2575,7 @@
         <field name="project_id" ref="project.project_project_2"/>
         <field name="task_id" ref="project.project_2_task_3"/>
         <field name="amount">-30.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_2_task_3_account_analytic_line_6" model="account.analytic.line">
@@ -2353,6 +2586,7 @@
         <field name="project_id" ref="project.project_project_2"/>
         <field name="task_id" ref="project.project_2_task_3"/>
         <field name="amount">-60.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_2_task_3_account_analytic_line_7" model="account.analytic.line">
@@ -2363,6 +2597,7 @@
         <field name="project_id" ref="project.project_project_2"/>
         <field name="task_id" ref="project.project_2_task_3"/>
         <field name="amount">-30.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_2_task_3_account_analytic_line_8" model="account.analytic.line">
@@ -2373,6 +2608,7 @@
         <field name="project_id" ref="project.project_project_2"/>
         <field name="task_id" ref="project.project_2_task_3"/>
         <field name="amount">-30.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_2_task_3_account_analytic_line_9" model="account.analytic.line">
@@ -2383,6 +2619,7 @@
         <field name="project_id" ref="project.project_project_2"/>
         <field name="task_id" ref="project.project_2_task_3"/>
         <field name="amount">-30.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_2_task_3_account_analytic_line_10" model="account.analytic.line">
@@ -2393,6 +2630,7 @@
         <field name="project_id" ref="project.project_project_2"/>
         <field name="task_id" ref="project.project_2_task_3"/>
         <field name="amount">-60.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_2_task_3_account_analytic_line_11" model="account.analytic.line">
@@ -2403,6 +2641,7 @@
         <field name="project_id" ref="project.project_project_2"/>
         <field name="task_id" ref="project.project_2_task_3"/>
         <field name="amount">-30.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_2_task_3_account_analytic_line_12" model="account.analytic.line">
@@ -2413,6 +2652,7 @@
         <field name="project_id" ref="project.project_project_2"/>
         <field name="task_id" ref="project.project_2_task_3"/>
         <field name="amount">-60.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_2_task_3_account_analytic_line_13" model="account.analytic.line">
@@ -2423,6 +2663,7 @@
         <field name="project_id" ref="project.project_project_2"/>
         <field name="task_id" ref="project.project_2_task_3"/>
         <field name="amount">-90.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_2_task_3_account_analytic_line_14" model="account.analytic.line">
@@ -2433,6 +2674,7 @@
         <field name="project_id" ref="project.project_project_2"/>
         <field name="task_id" ref="project.project_2_task_3"/>
         <field name="amount">-90.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_2_task_3_account_analytic_line_15" model="account.analytic.line">
@@ -2443,6 +2685,7 @@
         <field name="project_id" ref="project.project_project_2"/>
         <field name="task_id" ref="project.project_2_task_3"/>
         <field name="amount">-30.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_2_task_3_account_analytic_line_16" model="account.analytic.line">
@@ -2453,6 +2696,7 @@
         <field name="project_id" ref="project.project_project_2"/>
         <field name="task_id" ref="project.project_2_task_3"/>
         <field name="amount">-30.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_2_task_3_account_analytic_line_17" model="account.analytic.line">
@@ -2463,6 +2707,7 @@
         <field name="project_id" ref="project.project_project_2"/>
         <field name="task_id" ref="project.project_2_task_3"/>
         <field name="amount">-30.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_2_task_3_account_analytic_line_18" model="account.analytic.line">
@@ -2473,6 +2718,7 @@
         <field name="project_id" ref="project.project_project_2"/>
         <field name="task_id" ref="project.project_2_task_3"/>
         <field name="amount">-60.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_2_task_3_account_analytic_line_19" model="account.analytic.line">
@@ -2483,6 +2729,7 @@
         <field name="project_id" ref="project.project_project_2"/>
         <field name="task_id" ref="project.project_2_task_3"/>
         <field name="amount">-90.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_2_task_3_account_analytic_line_20" model="account.analytic.line">
@@ -2493,6 +2740,7 @@
         <field name="project_id" ref="project.project_project_2"/>
         <field name="task_id" ref="project.project_2_task_3"/>
         <field name="amount">-30.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_2_task_3_account_analytic_line_21" model="account.analytic.line">
@@ -2503,6 +2751,7 @@
         <field name="project_id" ref="project.project_project_2"/>
         <field name="task_id" ref="project.project_2_task_3"/>
         <field name="amount">-30.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_2_task_3_account_analytic_line_22" model="account.analytic.line">
@@ -2513,6 +2762,7 @@
         <field name="project_id" ref="project.project_project_2"/>
         <field name="task_id" ref="project.project_2_task_3"/>
         <field name="amount">-60.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_2_task_3_account_analytic_line_23" model="account.analytic.line">
@@ -2523,6 +2773,7 @@
         <field name="project_id" ref="project.project_project_2"/>
         <field name="task_id" ref="project.project_2_task_3"/>
         <field name="amount">-30.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_2_task_3_account_analytic_line_24" model="account.analytic.line">
@@ -2533,6 +2784,7 @@
         <field name="project_id" ref="project.project_project_2"/>
         <field name="task_id" ref="project.project_2_task_3"/>
         <field name="amount">-90.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_2_task_3_account_analytic_line_25" model="account.analytic.line">
@@ -2543,6 +2795,7 @@
         <field name="project_id" ref="project.project_project_2"/>
         <field name="task_id" ref="project.project_2_task_3"/>
         <field name="amount">-90.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_2_task_3_account_analytic_line_26" model="account.analytic.line">
@@ -2553,6 +2806,7 @@
         <field name="project_id" ref="project.project_project_2"/>
         <field name="task_id" ref="project.project_2_task_3"/>
         <field name="amount">-30.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_2_task_3_account_analytic_line_27" model="account.analytic.line">
@@ -2563,6 +2817,7 @@
         <field name="project_id" ref="project.project_project_2"/>
         <field name="task_id" ref="project.project_2_task_3"/>
         <field name="amount">-30.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_2_task_4_account_analytic_line_1" model="account.analytic.line">
@@ -2573,6 +2828,7 @@
         <field name="project_id" ref="project.project_project_2"/>
         <field name="task_id" ref="project.project_2_task_4"/>
         <field name="amount">-30.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_2_task_4_account_analytic_line_2" model="account.analytic.line">
@@ -2583,6 +2839,7 @@
         <field name="project_id" ref="project.project_project_2"/>
         <field name="task_id" ref="project.project_2_task_4"/>
         <field name="amount">-90.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_2_task_4_account_analytic_line_3" model="account.analytic.line">
@@ -2593,6 +2850,7 @@
         <field name="project_id" ref="project.project_project_2"/>
         <field name="task_id" ref="project.project_2_task_4"/>
         <field name="amount">-30.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_2_task_4_account_analytic_line_4" model="account.analytic.line">
@@ -2603,6 +2861,7 @@
         <field name="project_id" ref="project.project_project_2"/>
         <field name="task_id" ref="project.project_2_task_4"/>
         <field name="amount">-30.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_2_task_4_account_analytic_line_5" model="account.analytic.line">
@@ -2613,6 +2872,7 @@
         <field name="project_id" ref="project.project_project_2"/>
         <field name="task_id" ref="project.project_2_task_4"/>
         <field name="amount">-90.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_2_task_4_account_analytic_line_6" model="account.analytic.line">
@@ -2623,6 +2883,7 @@
         <field name="project_id" ref="project.project_project_2"/>
         <field name="task_id" ref="project.project_2_task_4"/>
         <field name="amount">-90.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_2_task_4_account_analytic_line_7" model="account.analytic.line">
@@ -2633,6 +2894,7 @@
         <field name="project_id" ref="project.project_project_2"/>
         <field name="task_id" ref="project.project_2_task_4"/>
         <field name="amount">-30.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_2_task_4_account_analytic_line_8" model="account.analytic.line">
@@ -2643,6 +2905,7 @@
         <field name="project_id" ref="project.project_project_2"/>
         <field name="task_id" ref="project.project_2_task_4"/>
         <field name="amount">-30.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_2_task_4_account_analytic_line_9" model="account.analytic.line">
@@ -2653,6 +2916,7 @@
         <field name="project_id" ref="project.project_project_2"/>
         <field name="task_id" ref="project.project_2_task_4"/>
         <field name="amount">-60.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_2_task_4_account_analytic_line_10" model="account.analytic.line">
@@ -2663,6 +2927,7 @@
         <field name="project_id" ref="project.project_project_2"/>
         <field name="task_id" ref="project.project_2_task_4"/>
         <field name="amount">-60.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_2_task_4_account_analytic_line_11" model="account.analytic.line">
@@ -2673,6 +2938,7 @@
         <field name="project_id" ref="project.project_project_2"/>
         <field name="task_id" ref="project.project_2_task_4"/>
         <field name="amount">-60.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_2_task_4_account_analytic_line_12" model="account.analytic.line">
@@ -2683,6 +2949,7 @@
         <field name="project_id" ref="project.project_project_2"/>
         <field name="task_id" ref="project.project_2_task_4"/>
         <field name="amount">-30.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_2_task_4_account_analytic_line_13" model="account.analytic.line">
@@ -2693,6 +2960,7 @@
         <field name="project_id" ref="project.project_project_2"/>
         <field name="task_id" ref="project.project_2_task_4"/>
         <field name="amount">-90.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_2_task_4_account_analytic_line_14" model="account.analytic.line">
@@ -2703,6 +2971,7 @@
         <field name="project_id" ref="project.project_project_2"/>
         <field name="task_id" ref="project.project_2_task_4"/>
         <field name="amount">-90.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_2_task_4_account_analytic_line_15" model="account.analytic.line">
@@ -2713,6 +2982,7 @@
         <field name="project_id" ref="project.project_project_2"/>
         <field name="task_id" ref="project.project_2_task_4"/>
         <field name="amount">-30.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_2_task_4_account_analytic_line_16" model="account.analytic.line">
@@ -2723,6 +2993,7 @@
         <field name="project_id" ref="project.project_project_2"/>
         <field name="task_id" ref="project.project_2_task_4"/>
         <field name="amount">-60.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_2_task_4_account_analytic_line_17" model="account.analytic.line">
@@ -2733,6 +3004,7 @@
         <field name="project_id" ref="project.project_project_2"/>
         <field name="task_id" ref="project.project_2_task_4"/>
         <field name="amount">-30.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_2_task_4_account_analytic_line_18" model="account.analytic.line">
@@ -2743,6 +3015,7 @@
         <field name="project_id" ref="project.project_project_2"/>
         <field name="task_id" ref="project.project_2_task_4"/>
         <field name="amount">-30.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_2_task_4_account_analytic_line_19" model="account.analytic.line">
@@ -2753,6 +3026,7 @@
         <field name="project_id" ref="project.project_project_2"/>
         <field name="task_id" ref="project.project_2_task_4"/>
         <field name="amount">-60.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_2_task_4_account_analytic_line_20" model="account.analytic.line">
@@ -2763,6 +3037,7 @@
         <field name="project_id" ref="project.project_project_2"/>
         <field name="task_id" ref="project.project_2_task_4"/>
         <field name="amount">-90.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_2_task_5_account_analytic_line_1" model="account.analytic.line">
@@ -2773,6 +3048,7 @@
         <field name="project_id" ref="project.project_project_2"/>
         <field name="task_id" ref="project.project_2_task_5"/>
         <field name="amount">-30.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_2_task_5_account_analytic_line_2" model="account.analytic.line">
@@ -2783,6 +3059,7 @@
         <field name="project_id" ref="project.project_project_2"/>
         <field name="task_id" ref="project.project_2_task_5"/>
         <field name="amount">-30.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_2_task_5_account_analytic_line_3" model="account.analytic.line">
@@ -2793,6 +3070,7 @@
         <field name="project_id" ref="project.project_project_2"/>
         <field name="task_id" ref="project.project_2_task_5"/>
         <field name="amount">-30.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_2_task_5_account_analytic_line_4" model="account.analytic.line">
@@ -2803,6 +3081,7 @@
         <field name="project_id" ref="project.project_project_2"/>
         <field name="task_id" ref="project.project_2_task_5"/>
         <field name="amount">-60.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_2_task_5_account_analytic_line_5" model="account.analytic.line">
@@ -2813,6 +3092,7 @@
         <field name="project_id" ref="project.project_project_2"/>
         <field name="task_id" ref="project.project_2_task_5"/>
         <field name="amount">-30.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_2_task_5_account_analytic_line_6" model="account.analytic.line">
@@ -2823,6 +3103,7 @@
         <field name="project_id" ref="project.project_project_2"/>
         <field name="task_id" ref="project.project_2_task_5"/>
         <field name="amount">-60.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_2_task_5_account_analytic_line_7" model="account.analytic.line">
@@ -2833,6 +3114,7 @@
         <field name="project_id" ref="project.project_project_2"/>
         <field name="task_id" ref="project.project_2_task_5"/>
         <field name="amount">-90.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_2_task_5_account_analytic_line_8" model="account.analytic.line">
@@ -2843,6 +3125,7 @@
         <field name="project_id" ref="project.project_project_2"/>
         <field name="task_id" ref="project.project_2_task_5"/>
         <field name="amount">-30.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_2_task_5_account_analytic_line_9" model="account.analytic.line">
@@ -2853,6 +3136,7 @@
         <field name="project_id" ref="project.project_project_2"/>
         <field name="task_id" ref="project.project_2_task_5"/>
         <field name="amount">-30.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_2_task_5_account_analytic_line_10" model="account.analytic.line">
@@ -2863,6 +3147,7 @@
         <field name="project_id" ref="project.project_project_2"/>
         <field name="task_id" ref="project.project_2_task_5"/>
         <field name="amount">-30.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_2_task_5_account_analytic_line_11" model="account.analytic.line">
@@ -2873,6 +3158,7 @@
         <field name="project_id" ref="project.project_project_2"/>
         <field name="task_id" ref="project.project_2_task_5"/>
         <field name="amount">-60.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_2_task_5_account_analytic_line_12" model="account.analytic.line">
@@ -2883,6 +3169,7 @@
         <field name="project_id" ref="project.project_project_2"/>
         <field name="task_id" ref="project.project_2_task_5"/>
         <field name="amount">-30.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_2_task_5_account_analytic_line_13" model="account.analytic.line">
@@ -2893,6 +3180,7 @@
         <field name="project_id" ref="project.project_project_2"/>
         <field name="task_id" ref="project.project_2_task_5"/>
         <field name="amount">-30.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_2_task_5_account_analytic_line_14" model="account.analytic.line">
@@ -2903,6 +3191,7 @@
         <field name="project_id" ref="project.project_project_2"/>
         <field name="task_id" ref="project.project_2_task_5"/>
         <field name="amount">-90.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_2_task_5_account_analytic_line_15" model="account.analytic.line">
@@ -2913,6 +3202,7 @@
         <field name="project_id" ref="project.project_project_2"/>
         <field name="task_id" ref="project.project_2_task_5"/>
         <field name="amount">-30.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_2_task_5_account_analytic_line_16" model="account.analytic.line">
@@ -2923,6 +3213,7 @@
         <field name="project_id" ref="project.project_project_2"/>
         <field name="task_id" ref="project.project_2_task_5"/>
         <field name="amount">-30.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_2_task_5_account_analytic_line_17" model="account.analytic.line">
@@ -2933,6 +3224,7 @@
         <field name="project_id" ref="project.project_project_2"/>
         <field name="task_id" ref="project.project_2_task_5"/>
         <field name="amount">-30.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_2_task_5_account_analytic_line_18" model="account.analytic.line">
@@ -2943,6 +3235,7 @@
         <field name="project_id" ref="project.project_project_2"/>
         <field name="task_id" ref="project.project_2_task_5"/>
         <field name="amount">-30.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_2_task_5_account_analytic_line_19" model="account.analytic.line">
@@ -2953,6 +3246,7 @@
         <field name="project_id" ref="project.project_project_2"/>
         <field name="task_id" ref="project.project_2_task_5"/>
         <field name="amount">-30.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_2_task_5_account_analytic_line_20" model="account.analytic.line">
@@ -2963,6 +3257,7 @@
         <field name="project_id" ref="project.project_project_2"/>
         <field name="task_id" ref="project.project_2_task_5"/>
         <field name="amount">-90.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_2_task_5_account_analytic_line_21" model="account.analytic.line">
@@ -2973,6 +3268,7 @@
         <field name="project_id" ref="project.project_project_2"/>
         <field name="task_id" ref="project.project_2_task_5"/>
         <field name="amount">-30.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_2_task_5_account_analytic_line_22" model="account.analytic.line">
@@ -2983,6 +3279,7 @@
         <field name="project_id" ref="project.project_project_2"/>
         <field name="task_id" ref="project.project_2_task_5"/>
         <field name="amount">-30.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_2_task_6_account_analytic_line_1" model="account.analytic.line">
@@ -2993,6 +3290,7 @@
         <field name="project_id" ref="project.project_project_2"/>
         <field name="task_id" ref="project.project_2_task_6"/>
         <field name="amount">-60.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_2_task_6_account_analytic_line_2" model="account.analytic.line">
@@ -3003,6 +3301,7 @@
         <field name="project_id" ref="project.project_project_2"/>
         <field name="task_id" ref="project.project_2_task_6"/>
         <field name="amount">-30.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_2_task_6_account_analytic_line_3" model="account.analytic.line">
@@ -3013,6 +3312,7 @@
         <field name="project_id" ref="project.project_project_2"/>
         <field name="task_id" ref="project.project_2_task_6"/>
         <field name="amount">-30.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_2_task_6_account_analytic_line_4" model="account.analytic.line">
@@ -3023,6 +3323,7 @@
         <field name="project_id" ref="project.project_project_2"/>
         <field name="task_id" ref="project.project_2_task_6"/>
         <field name="amount">-30.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_2_task_6_account_analytic_line_5" model="account.analytic.line">
@@ -3033,6 +3334,7 @@
         <field name="project_id" ref="project.project_project_2"/>
         <field name="task_id" ref="project.project_2_task_6"/>
         <field name="amount">-30.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_2_task_6_account_analytic_line_6" model="account.analytic.line">
@@ -3043,6 +3345,7 @@
         <field name="project_id" ref="project.project_project_2"/>
         <field name="task_id" ref="project.project_2_task_6"/>
         <field name="amount">-30.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_2_task_6_account_analytic_line_7" model="account.analytic.line">
@@ -3053,6 +3356,7 @@
         <field name="project_id" ref="project.project_project_2"/>
         <field name="task_id" ref="project.project_2_task_6"/>
         <field name="amount">-90.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_2_task_6_account_analytic_line_8" model="account.analytic.line">
@@ -3063,6 +3367,7 @@
         <field name="project_id" ref="project.project_project_2"/>
         <field name="task_id" ref="project.project_2_task_6"/>
         <field name="amount">-30.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_2_task_6_account_analytic_line_9" model="account.analytic.line">
@@ -3073,6 +3378,7 @@
         <field name="project_id" ref="project.project_project_2"/>
         <field name="task_id" ref="project.project_2_task_6"/>
         <field name="amount">-90.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_2_task_6_account_analytic_line_10" model="account.analytic.line">
@@ -3083,6 +3389,7 @@
         <field name="project_id" ref="project.project_project_2"/>
         <field name="task_id" ref="project.project_2_task_6"/>
         <field name="amount">-30.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_2_task_6_account_analytic_line_11" model="account.analytic.line">
@@ -3093,6 +3400,7 @@
         <field name="project_id" ref="project.project_project_2"/>
         <field name="task_id" ref="project.project_2_task_6"/>
         <field name="amount">-90.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_2_task_6_account_analytic_line_12" model="account.analytic.line">
@@ -3103,6 +3411,7 @@
         <field name="project_id" ref="project.project_project_2"/>
         <field name="task_id" ref="project.project_2_task_6"/>
         <field name="amount">-60.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_2_task_6_account_analytic_line_13" model="account.analytic.line">
@@ -3113,6 +3422,7 @@
         <field name="project_id" ref="project.project_project_2"/>
         <field name="task_id" ref="project.project_2_task_6"/>
         <field name="amount">-30.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_2_task_6_account_analytic_line_14" model="account.analytic.line">
@@ -3123,6 +3433,7 @@
         <field name="project_id" ref="project.project_project_2"/>
         <field name="task_id" ref="project.project_2_task_6"/>
         <field name="amount">-60.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_2_task_6_account_analytic_line_15" model="account.analytic.line">
@@ -3133,6 +3444,7 @@
         <field name="project_id" ref="project.project_project_2"/>
         <field name="task_id" ref="project.project_2_task_6"/>
         <field name="amount">-30.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_2_task_6_account_analytic_line_16" model="account.analytic.line">
@@ -3143,6 +3455,7 @@
         <field name="project_id" ref="project.project_project_2"/>
         <field name="task_id" ref="project.project_2_task_6"/>
         <field name="amount">-60.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_2_task_6_account_analytic_line_17" model="account.analytic.line">
@@ -3153,6 +3466,7 @@
         <field name="project_id" ref="project.project_project_2"/>
         <field name="task_id" ref="project.project_2_task_6"/>
         <field name="amount">-30.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_2_task_6_account_analytic_line_18" model="account.analytic.line">
@@ -3163,6 +3477,7 @@
         <field name="project_id" ref="project.project_project_2"/>
         <field name="task_id" ref="project.project_2_task_6"/>
         <field name="amount">-30.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_2_task_6_account_analytic_line_19" model="account.analytic.line">
@@ -3173,6 +3488,7 @@
         <field name="project_id" ref="project.project_project_2"/>
         <field name="task_id" ref="project.project_2_task_6"/>
         <field name="amount">-30.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_2_task_6_account_analytic_line_20" model="account.analytic.line">
@@ -3183,6 +3499,7 @@
         <field name="project_id" ref="project.project_project_2"/>
         <field name="task_id" ref="project.project_2_task_6"/>
         <field name="amount">-90.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_2_task_6_account_analytic_line_21" model="account.analytic.line">
@@ -3193,6 +3510,7 @@
         <field name="project_id" ref="project.project_project_2"/>
         <field name="task_id" ref="project.project_2_task_6"/>
         <field name="amount">-30.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_2_task_6_account_analytic_line_22" model="account.analytic.line">
@@ -3203,6 +3521,7 @@
         <field name="project_id" ref="project.project_project_2"/>
         <field name="task_id" ref="project.project_2_task_6"/>
         <field name="amount">-30.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_2_task_6_account_analytic_line_23" model="account.analytic.line">
@@ -3213,6 +3532,7 @@
         <field name="project_id" ref="project.project_project_2"/>
         <field name="task_id" ref="project.project_2_task_6"/>
         <field name="amount">-30.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_2_task_6_account_analytic_line_24" model="account.analytic.line">
@@ -3223,6 +3543,7 @@
         <field name="project_id" ref="project.project_project_2"/>
         <field name="task_id" ref="project.project_2_task_6"/>
         <field name="amount">-30.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_2_task_6_account_analytic_line_25" model="account.analytic.line">
@@ -3233,6 +3554,7 @@
         <field name="project_id" ref="project.project_project_2"/>
         <field name="task_id" ref="project.project_2_task_6"/>
         <field name="amount">-60.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_2_task_7_account_analytic_line_1" model="account.analytic.line">
@@ -3243,6 +3565,7 @@
         <field name="project_id" ref="project.project_project_2"/>
         <field name="task_id" ref="project.project_2_task_7"/>
         <field name="amount">-60.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_2_task_7_account_analytic_line_2" model="account.analytic.line">
@@ -3253,6 +3576,7 @@
         <field name="project_id" ref="project.project_project_2"/>
         <field name="task_id" ref="project.project_2_task_7"/>
         <field name="amount">-60.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_2_task_7_account_analytic_line_3" model="account.analytic.line">
@@ -3263,6 +3587,7 @@
         <field name="project_id" ref="project.project_project_2"/>
         <field name="task_id" ref="project.project_2_task_7"/>
         <field name="amount">-30.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_2_task_7_account_analytic_line_4" model="account.analytic.line">
@@ -3273,6 +3598,7 @@
         <field name="project_id" ref="project.project_project_2"/>
         <field name="task_id" ref="project.project_2_task_7"/>
         <field name="amount">-90.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_2_task_7_account_analytic_line_5" model="account.analytic.line">
@@ -3283,6 +3609,7 @@
         <field name="project_id" ref="project.project_project_2"/>
         <field name="task_id" ref="project.project_2_task_7"/>
         <field name="amount">-90.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_2_task_7_account_analytic_line_6" model="account.analytic.line">
@@ -3293,6 +3620,7 @@
         <field name="project_id" ref="project.project_project_2"/>
         <field name="task_id" ref="project.project_2_task_7"/>
         <field name="amount">-30.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_2_task_7_account_analytic_line_7" model="account.analytic.line">
@@ -3303,6 +3631,7 @@
         <field name="project_id" ref="project.project_project_2"/>
         <field name="task_id" ref="project.project_2_task_7"/>
         <field name="amount">-30.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_2_task_7_account_analytic_line_8" model="account.analytic.line">
@@ -3313,6 +3642,7 @@
         <field name="project_id" ref="project.project_project_2"/>
         <field name="task_id" ref="project.project_2_task_7"/>
         <field name="amount">-30.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_2_task_7_account_analytic_line_9" model="account.analytic.line">
@@ -3323,6 +3653,7 @@
         <field name="project_id" ref="project.project_project_2"/>
         <field name="task_id" ref="project.project_2_task_7"/>
         <field name="amount">-30.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_2_task_7_account_analytic_line_10" model="account.analytic.line">
@@ -3333,6 +3664,7 @@
         <field name="project_id" ref="project.project_project_2"/>
         <field name="task_id" ref="project.project_2_task_7"/>
         <field name="amount">-30.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_2_task_7_account_analytic_line_11" model="account.analytic.line">
@@ -3343,6 +3675,7 @@
         <field name="project_id" ref="project.project_project_2"/>
         <field name="task_id" ref="project.project_2_task_7"/>
         <field name="amount">-60.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_2_task_7_account_analytic_line_12" model="account.analytic.line">
@@ -3353,6 +3686,7 @@
         <field name="project_id" ref="project.project_project_2"/>
         <field name="task_id" ref="project.project_2_task_7"/>
         <field name="amount">-90.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_2_task_7_account_analytic_line_13" model="account.analytic.line">
@@ -3363,6 +3697,7 @@
         <field name="project_id" ref="project.project_project_2"/>
         <field name="task_id" ref="project.project_2_task_7"/>
         <field name="amount">-30.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_2_task_7_account_analytic_line_14" model="account.analytic.line">
@@ -3373,6 +3708,7 @@
         <field name="project_id" ref="project.project_project_2"/>
         <field name="task_id" ref="project.project_2_task_7"/>
         <field name="amount">-30.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_2_task_7_account_analytic_line_15" model="account.analytic.line">
@@ -3383,6 +3719,7 @@
         <field name="project_id" ref="project.project_project_2"/>
         <field name="task_id" ref="project.project_2_task_7"/>
         <field name="amount">-90.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_2_task_7_account_analytic_line_16" model="account.analytic.line">
@@ -3393,6 +3730,7 @@
         <field name="project_id" ref="project.project_project_2"/>
         <field name="task_id" ref="project.project_2_task_7"/>
         <field name="amount">-30.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_2_task_7_account_analytic_line_17" model="account.analytic.line">
@@ -3403,6 +3741,7 @@
         <field name="project_id" ref="project.project_project_2"/>
         <field name="task_id" ref="project.project_2_task_7"/>
         <field name="amount">-30.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_2_task_7_account_analytic_line_18" model="account.analytic.line">
@@ -3413,6 +3752,7 @@
         <field name="project_id" ref="project.project_project_2"/>
         <field name="task_id" ref="project.project_2_task_7"/>
         <field name="amount">-30.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_2_task_7_account_analytic_line_19" model="account.analytic.line">
@@ -3423,6 +3763,7 @@
         <field name="project_id" ref="project.project_project_2"/>
         <field name="task_id" ref="project.project_2_task_7"/>
         <field name="amount">-30.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_2_task_7_account_analytic_line_20" model="account.analytic.line">
@@ -3433,6 +3774,7 @@
         <field name="project_id" ref="project.project_project_2"/>
         <field name="task_id" ref="project.project_2_task_7"/>
         <field name="amount">-30.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <record id="project_2_task_7_account_analytic_line_21" model="account.analytic.line">
@@ -3443,6 +3785,7 @@
         <field name="project_id" ref="project.project_project_2"/>
         <field name="task_id" ref="project.project_2_task_7"/>
         <field name="amount">-60.0</field>
+        <field name="company_id" ref="base.main_company"/>
     </record>
 
     <!-- Projects -->
@@ -3461,6 +3804,21 @@
         <field name="user_id" eval="ref('base.user_admin')"/>
         <field name="progress" eval="30"/>
         <field name="status">off_track</field>
+    </record>
+    <record id="project.project_update_1" model="project.update">
+        <field name="uom_id" ref="uom.product_uom_hour"/>
+    </record>
+    <record id="project.project_update_3" model="project.update">
+        <field name="uom_id" ref="uom.product_uom_hour"/>
+    </record>
+    <record id="project.project_update_construction_1" model="project.update">
+        <field name="uom_id" ref="uom.product_uom_hour"/>
+    </record>
+    <record id="project.project_update_construction_2" model="project.update">
+        <field name="uom_id" ref="uom.product_uom_hour"/>
+    </record>
+    <record id="project.project_update_2" model="project.update">
+        <field name="uom_id" ref="uom.product_uom_hour"/>
     </record>
 
 </odoo>

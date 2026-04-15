@@ -1,46 +1,9 @@
-/* @odoo-module */
-
 import { registry } from "@web/core/registry";
-import { patch } from "@web/core/utils/patch";
-import {
-    useX2ManyCrud,
-    useOpenX2ManyRecord,
-    X2ManyFieldDialog,
-} from "@web/views/fields/relational_utils";
+import { useX2ManyCrud, useOpenX2ManyRecord } from "@web/views/fields/relational_utils";
 import { X2ManyField, x2ManyField } from "@web/views/fields/x2many/x2many_field";
 import { ListRenderer } from "@web/views/list/list_renderer";
 
 const fieldRegistry = registry.category("fields");
-
-patch(X2ManyFieldDialog.prototype, "chatbot_script_step_sequence", {
-    /**
-     * Dirty patching of the 'X2ManyFieldDialog'.
-     * It is done to force the "save and new" to close the dialog first, and then click again on
-     * the "Add a line" link.
-     *
-     * This is the only way (or at least the least complicated) to correctly compute the sequence
-     * field, which is crucial when creating chatbot.steps, as they depend on each other.
-     *
-     */
-    async save({ saveAndNew }) {
-        if (this.record.resModel !== "chatbot.script.step") {
-            return this._super(...arguments);
-        }
-
-        if (await this.record.checkValidity()) {
-            this.record = (await this.props.save(this.record, { saveAndNew })) || this.record;
-        } else {
-            return false;
-        }
-
-        if (saveAndNew) {
-            document.querySelector(".o_field_x2many_list_row_add a").click();
-        }
-        this.props.close();
-
-        return true;
-    },
-});
 
 export class ChatbotStepsOne2manyRenderer extends ListRenderer {
     /**
@@ -57,6 +20,10 @@ export class ChatbotStepsOne2manyRenderer extends ListRenderer {
 }
 
 export class ChatbotStepsOne2many extends X2ManyField {
+    static components = {
+        ...X2ManyField.components,
+        ListRenderer: ChatbotStepsOne2manyRenderer,
+    };
     /**
      * Overrides the "openRecord" method to overload the save.
      *
@@ -78,7 +45,7 @@ export class ChatbotStepsOne2many extends X2ManyField {
             getList: () => this.list,
             saveRecord: async (record) => {
                 await saveRecord(record);
-                await this.props.record.save({ stayInEdition: true });
+                await this.props.record.save();
             },
             updateRecord: updateRecord,
         });
@@ -103,8 +70,3 @@ export const chatbotStepsOne2many = {
 };
 
 fieldRegistry.add("chatbot_steps_one2many", chatbotStepsOne2many);
-
-ChatbotStepsOne2many.components = {
-    ...X2ManyField.components,
-    ListRenderer: ChatbotStepsOne2manyRenderer,
-};

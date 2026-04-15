@@ -5,7 +5,7 @@ from odoo import api, models, _
 from odoo.exceptions import UserError
 
 
-class ReportStockRule(models.AbstractModel):
+class ReportStockReport_Stock_Rule(models.AbstractModel):
     _name = 'report.stock.report_stock_rule'
     _description = 'Stock rule report'
 
@@ -54,9 +54,7 @@ class ReportStockRule(models.AbstractModel):
                 color_index = color_index + 1
                 for rule in rules_to_display:
                     rule_loc = [r for r in rules_and_loc if r['rule'] == rule][0]
-                    res = []
-                    for x in range(len(locations_names)):
-                        res.append([])
+                    res = [[] for _loc in locations_names]
                     idx = locations_names.index(rule_loc['destination'].display_name)
                     tpl = (rule, 'destination', route_color, )
                     res[idx] = tpl
@@ -69,6 +67,7 @@ class ReportStockRule(models.AbstractModel):
             'locations': locations,
             'header_lines': header_lines,
             'route_lines': route_lines,
+            'is_rtl': self.env['res.lang']._lang_get(self.env.user.lang).direction == 'rtl',
         }
 
     @api.model
@@ -86,7 +85,8 @@ class ReportStockRule(models.AbstractModel):
     @api.model
     def _get_rule_loc(self, rule, product):
         rule.ensure_one()
-        return {'rule': rule, 'source': rule.location_src_id, 'destination': rule.location_dest_id}
+        destination = rule.location_dest_id if rule.action != "pull" else rule.picking_type_id.default_location_dest_id
+        return {'rule': rule, 'source': rule.location_src_id, 'destination': destination}
 
     @api.model
     def _sort_locations(self, rules_and_loc, warehouses):
@@ -94,8 +94,8 @@ class ReportStockRule(models.AbstractModel):
             then we add the locations grouped by warehouse and we finish by the locations of type
             customer and the ones that were not added by the sort.
         """
-        all_src = self.env['stock.location'].concat(*([r['source'] for r in rules_and_loc]))
-        all_dest = self.env['stock.location'].concat(*([r['destination'] for r in rules_and_loc]))
+        all_src = self.env['stock.location'].concat(r['source'] for r in rules_and_loc)
+        all_dest = self.env['stock.location'].concat(r['destination'] for r in rules_and_loc)
         all_locations = all_src | all_dest
         ordered_locations = self.env['stock.location']
         locations = all_locations.filtered(lambda l: l.usage in ('supplier', 'production'))
@@ -103,14 +103,14 @@ class ReportStockRule(models.AbstractModel):
             all_warehouse_locations = all_locations.filtered(lambda l: l.warehouse_id == warehouse_id)
             starting_rules = [d for d in rules_and_loc if d['source'] not in all_warehouse_locations]
             if starting_rules:
-                start_locations = self.env['stock.location'].concat(*([r['destination'] for r in starting_rules]))
+                start_locations = self.env['stock.location'].concat(r['destination'] for r in starting_rules)
             else:
                 starting_rules = [d for d in rules_and_loc if d['source'] not in all_dest]
-                start_locations = self.env['stock.location'].concat(*([r['source'] for r in starting_rules]))
+                start_locations = self.env['stock.location'].concat(r['source'] for r in starting_rules)
             used_rules = self.env['stock.rule']
             locations |= self._sort_locations_by_warehouse(rules_and_loc, used_rules, start_locations, ordered_locations, warehouse_id)
             if any(location not in locations for location in all_warehouse_locations):
-                remaining_locations = self.env['stock.location'].concat(*([r['source'] for r in rules_and_loc])).filtered(lambda l: l not in locations)
+                remaining_locations = self.env['stock.location'].concat(r['source'] for r in rules_and_loc).filtered(lambda l: l not in locations)
                 locations |= self._sort_locations_by_warehouse(rules_and_loc, used_rules, remaining_locations, ordered_locations, warehouse_id)
         locations |= all_locations.filtered(lambda l: l.usage in ('customer'))
         locations |= all_locations.filtered(lambda l: l not in locations)
@@ -128,8 +128,8 @@ class ReportStockRule(models.AbstractModel):
                 rules_start.append(rule)
                 used_rules |= rule['rule']
         if rules_start:
-            rules_start_dest_locations = self.env['stock.location'].concat(*([r['destination'] for r in rules_start]))
-            remaining_rules = self.env['stock.rule'].concat(*([r['rule'] for r in rules_and_loc])) - used_rules
+            rules_start_dest_locations = self.env['stock.location'].concat(r['destination'] for r in rules_start)
+            remaining_rules = self.env['stock.rule'].concat(r['rule'] for r in rules_and_loc) - used_rules
             remaining_rules_location = self.env['stock.location']
             for r in rules_and_loc:
                 if r['rule'] in remaining_rules:

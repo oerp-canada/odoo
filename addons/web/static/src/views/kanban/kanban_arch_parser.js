@@ -1,53 +1,33 @@
-/** @odoo-module **/
-
-import { extractAttributes, XMLParser } from "@web/core/utils/xml";
+import { exprToBoolean } from "@web/core/utils/strings";
+import { extractAttributes, visitXML } from "@web/core/utils/xml";
+import { stringToOrderBy } from "@web/search/utils/order_by";
 import { Field } from "@web/views/fields/field";
+import { getActiveActions, processButton } from "@web/views/utils";
 import { Widget } from "@web/views/widgets/widget";
-import {
-    addFieldDependencies,
-    archParseBoolean,
-    getActiveActions,
-    processButton,
-    stringToOrderBy,
-} from "@web/views/utils";
 
-/**
- * NOTE ON 't-name="kanban-box"':
- *
- * Multiple roots are supported in kanban box template definitions, however there
- * are a few things to keep in mind when doing so:
- *
- * - each root will generate its own card, so it would be preferable to make the
- * roots mutually exclusive to avoid rendering multiple cards for the same record;
- *
- * - certain fields such as the kanban 'color' or the 'handle' field are based on
- * the last encountered node, so it is advised to keep the same values for those
- * fields within all roots to avoid inconsistencies.
- */
+export const KANBAN_CARD_ATTRIBUTE = "card";
+export const KANBAN_MENU_ATTRIBUTE = "menu";
 
-export const KANBAN_BOX_ATTRIBUTE = "kanban-box";
-export const KANBAN_MENU_ATTRIBUTE = "kanban-menu";
-export const KANBAN_TOOLTIP_ATTRIBUTE = "kanban-tooltip";
-
-export class KanbanArchParser extends XMLParser {
-    parse(arch, models, modelName) {
-        const fields = models[modelName];
-        const xmlDoc = this.parseXML(arch);
+export class KanbanArchParser {
+    parse(xmlDoc, models, modelName) {
+        const fields = models[modelName].fields;
         const className = xmlDoc.getAttribute("class") || null;
+        const canOpenRecords = exprToBoolean(xmlDoc.getAttribute("can_open"), true);
         let defaultOrder = stringToOrderBy(xmlDoc.getAttribute("default_order") || null);
-        const defaultGroupBy = xmlDoc.getAttribute("default_group_by");
         const limit = xmlDoc.getAttribute("limit");
         const countLimit = xmlDoc.getAttribute("count_limit");
-        const recordsDraggable = archParseBoolean(xmlDoc.getAttribute("records_draggable"), true);
-        const groupsDraggable = archParseBoolean(xmlDoc.getAttribute("groups_draggable"), true);
-        const activeActions = {
-            ...getActiveActions(xmlDoc),
-            archiveGroup: archParseBoolean(xmlDoc.getAttribute("archivable"), true),
-            createGroup: archParseBoolean(xmlDoc.getAttribute("group_create"), true),
-            deleteGroup: archParseBoolean(xmlDoc.getAttribute("group_delete"), true),
-            editGroup: archParseBoolean(xmlDoc.getAttribute("group_edit"), true),
-            quickCreate: archParseBoolean(xmlDoc.getAttribute("quick_create"), true),
-        };
+        const recordsDraggable = exprToBoolean(xmlDoc.getAttribute("records_draggable"), true);
+        const groupsDraggable = exprToBoolean(xmlDoc.getAttribute("groups_draggable"), true);
+        const activeActions = getActiveActions(xmlDoc);
+        activeActions.archiveGroup = exprToBoolean(xmlDoc.getAttribute("archivable"), true);
+        activeActions.createGroup = exprToBoolean(xmlDoc.getAttribute("group_create"), true);
+        activeActions.deleteGroup = exprToBoolean(xmlDoc.getAttribute("group_delete"), true);
+        activeActions.editGroup = exprToBoolean(xmlDoc.getAttribute("group_edit"), true);
+        activeActions.quickCreate =
+            activeActions.create && exprToBoolean(xmlDoc.getAttribute("quick_create"), true);
+        const defaultGroupBy = xmlDoc.hasAttribute("default_group_by")
+            ? xmlDoc.getAttribute("default_group_by").split(",")
+            : null;
         const onCreate = xmlDoc.getAttribute("on_create");
         const quickCreateView = xmlDoc.getAttribute("quick_create_view");
         const tooltipInfo = {};
@@ -61,12 +41,11 @@ export class KanbanArchParser extends XMLParser {
         const type = xmlDoc.getAttribute("type");
         const openAction = action && type ? { action, type } : null;
         const templateDocs = {};
-        const activeFields = {};
         let headerButtons = [];
-        const creates = [];
-        let buttonId = 0;
+        const controls = [];
+        let button_id = 0;
         // Root level of the template
-        this.visitXML(xmlDoc, (node) => {
+        visitXML(xmlDoc, (node) => {
             if (node.hasAttribute("t-name")) {
                 templateDocs[node.getAttribute("t-name")] = node;
                 return;
@@ -75,24 +54,30 @@ export class KanbanArchParser extends XMLParser {
                 headerButtons = [...node.children]
                     .filter((node) => node.tagName === "button")
                     .map((node) => ({
-                        ...processButton(node),
+                        ...this.processButton(node),
                         type: "button",
-                        id: buttonId++,
-                    }))
-                    .filter((button) => button.modifiers.invisible !== true);
+                        id: button_id++,
+                    }));
                 return false;
             } else if (node.tagName === "control") {
                 for (const childNode of node.children) {
                     if (childNode.tagName === "button") {
-                        creates.push({
+                        controls.push({
                             type: "button",
                             ...processButton(childNode),
                         });
                     } else if (childNode.tagName === "create") {
-                        creates.push({
+                        controls.push({
                             type: "create",
                             context: childNode.getAttribute("context"),
                             string: childNode.getAttribute("string"),
+                            invisible: childNode.getAttribute("invisible"),
+                            class: childNode.getAttribute("class"),
+                        });
+                    } else if (childNode.tagName === "delete") {
+                        controls.push({
+                            type: "delete",
+                            invisible: childNode.getAttribute("invisible"),
                         });
                     }
                 }
@@ -102,15 +87,13 @@ export class KanbanArchParser extends XMLParser {
             if (node.tagName === "field") {
                 // In kanban, we display many2many fields as tags by default
                 const widget = node.getAttribute("widget");
-                if (!widget && models[modelName][node.getAttribute("name")].type === "many2many") {
+                if (
+                    !widget &&
+                    models[modelName].fields[node.getAttribute("name")].type === "many2many"
+                ) {
                     node.setAttribute("widget", "many2many_tags");
                 }
                 const fieldInfo = Field.parseFieldNode(node, models, modelName, "kanban", jsClass);
-                if (!node.hasAttribute("force_save")) {
-                    // Force save is true by default on kanban views:
-                    // this allows to write on any field regardless of its modifiers.
-                    fieldInfo.forceSave = true;
-                }
                 const name = fieldInfo.name;
                 if (!(fieldInfo.name in fieldNextIds)) {
                     fieldNextIds[fieldInfo.name] = 0;
@@ -121,17 +104,15 @@ export class KanbanArchParser extends XMLParser {
                 if (fieldInfo.options.group_by_tooltip) {
                     tooltipInfo[name] = fieldInfo.options.group_by_tooltip;
                 }
-                if (fieldInfo.widget === "handle") {
+                if (fieldInfo.isHandle) {
                     handleField = name;
                 }
-                addFieldDependencies(fieldInfo, activeFields, models[modelName]);
             }
             if (node.tagName === "widget") {
                 const widgetInfo = Widget.parseWidgetNode(node);
                 const widgetId = `widget_${++widgetNextId}`;
                 widgetNodes[widgetId] = widgetInfo;
                 node.setAttribute("widget_id", widgetId);
-                addFieldDependencies(widgetInfo, activeFields, models[modelName]);
             }
 
             // Keep track of last update so images can be reloaded when they may have changed.
@@ -155,49 +136,29 @@ export class KanbanArchParser extends XMLParser {
         }
 
         // Concrete kanban box elements in the template
-        const cardDoc = templateDocs[KANBAN_BOX_ATTRIBUTE];
+        const cardDoc = templateDocs[KANBAN_CARD_ATTRIBUTE];
         if (!cardDoc) {
-            throw new Error(`Missing '${KANBAN_BOX_ATTRIBUTE}' template.`);
+            throw new Error(`Missing '${KANBAN_CARD_ATTRIBUTE}' template.`);
         }
-
-        // Color and color picker (first node found is taken for each)
-        const cardColorEl = cardDoc.querySelector("[color]");
-        const cardColorField = cardColorEl && cardColorEl.getAttribute("color");
-
-        const colorEl = cardDoc.querySelector(".oe_kanban_colorpicker[data-field]");
-        const colorField = (colorEl && colorEl.getAttribute("data-field")) || "color";
+        const cardClassName = cardDoc.getAttribute("class") || "";
 
         if (!defaultOrder.length && handleField) {
-            defaultOrder = stringToOrderBy(handleField);
-        }
-
-        for (const fieldNode of Object.values(fieldNodes)) {
-            const fieldName = fieldNode.name;
-            if (activeFields[fieldName]) {
-                const { alwaysInvisible } = fieldNode;
-                activeFields[fieldName] = {
-                    ...fieldNode,
-                    // a field can only be considered to be always invisible
-                    // if all its nodes are always invisible
-                    alwaysInvisible: activeFields[fieldName].alwaysInvisible && alwaysInvisible,
-                };
-            } else {
-                activeFields[fieldName] = fieldNode;
-            }
+            const handleFieldSort = `${handleField}, id`;
+            defaultOrder = stringToOrderBy(handleFieldSort);
         }
 
         return {
-            arch,
             activeActions,
-            activeFields,
+            canOpenRecords,
+            cardClassName,
+            cardColorField: xmlDoc.getAttribute("highlight_color"),
             className,
-            creates,
+            controls,
             defaultGroupBy,
             fieldNodes,
             widgetNodes,
             handleField,
             headerButtons,
-            colorField,
             defaultOrder,
             onCreate,
             openAction,
@@ -207,12 +168,10 @@ export class KanbanArchParser extends XMLParser {
             limit: limit && parseInt(limit, 10),
             countLimit: countLimit && parseInt(countLimit, 10),
             progressAttributes,
-            cardColorField,
             templateDocs,
             tooltipInfo,
             examples: xmlDoc.getAttribute("examples"),
             xmlDoc,
-            __rawArch: arch,
         };
     }
 
@@ -224,5 +183,9 @@ export class KanbanArchParser extends XMLParser {
             sumField: fields[attrs.sum_field] || false,
             help: attrs.help,
         };
+    }
+
+    processButton(node) {
+        return processButton(node);
     }
 }

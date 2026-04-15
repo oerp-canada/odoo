@@ -1,13 +1,10 @@
-# -*- coding: utf-8 -*-
-import base64
-from collections import defaultdict
-from markupsafe import escape
-
 import werkzeug
 import werkzeug.exceptions
-from odoo import _, api, fields, models
+from odoo import _, api, fields, models, SUPERUSER_ID, tools
 from odoo.exceptions import UserError, ValidationError
+from odoo.tools import SQL
 from odoo.tools.image import image_data_uri
+from odoo.addons.account.tools import format_account_number, validate_iban, validate_clabe
 
 
 class ResPartnerBank(models.Model):
@@ -16,28 +13,24 @@ class ResPartnerBank(models.Model):
 
     journal_id = fields.One2many(
         'account.journal', 'bank_account_id', domain=[('type', '=', 'bank')], string='Account Journal', readonly=True,
+        check_company=True,
         help="The accounting journal corresponding to this bank account.")
-    has_iban_warning = fields.Boolean(
-        compute='_compute_display_account_warning',
-        help='Technical field used to display a warning if the IBAN country is different than the holder country.',
-        store=True,
+    has_phishing_warnings = fields.Boolean(compute='_compute_has_phishing_warnings', store=True)
+    phishing_warnings = fields.Json(
+        compute='_compute_phishing_warnings',
+        help="Technical field used to display warnings if there's a potential phishing risk",
     )
-    partner_country_name = fields.Char(related='partner_id.country_id.name')
-    has_money_transfer_warning = fields.Boolean(
-        compute='_compute_display_account_warning',
-        help='Technical field used to display a warning if the account is a transfer service account.',
-        store=True,
-    )
-    money_transfer_service = fields.Char(compute='_compute_money_transfer_service_name')
     partner_supplier_rank = fields.Integer(related='partner_id.supplier_rank')
     partner_customer_rank = fields.Integer(related='partner_id.customer_rank')
     related_moves = fields.One2many('account.move', inverse_name='partner_bank_id')
+    account_type = fields.Selection(selection_add=[('iban', 'IBAN'), ('clabe', 'CLABE')])
 
     # Add tracking to the base fields
-    bank_id = fields.Many2one(tracking=True)
+    bank_bic = fields.Char(tracking=True)
     active = fields.Boolean(tracking=True)
-    acc_number = fields.Char(tracking=True)
-    acc_holder_name = fields.Char(tracking=True)
+    account_number = fields.Char(tracking=True)
+    holder_name = fields.Char(tracking=True)
+    clearing_number = fields.Char(tracking=True)
     partner_id = fields.Many2one(tracking=True)
     user_has_group_validate_bank_account = fields.Boolean(compute='_compute_user_has_group_validate_bank_account')
     allow_out_payment = fields.Boolean(
@@ -46,8 +39,21 @@ class ResPartnerBank(models.Model):
              'To protect yourself, always verify new bank account numbers, preferably by calling the vendor, as phishing '
              'usually happens when their emails are compromised. Once verified, you can activate the ability to send money.'
     )
-    currency_id = fields.Many2one(tracking=True)
     lock_trust_fields = fields.Boolean(compute='_compute_lock_trust_fields')
+    duplicate_bank_partner_ids = fields.Many2many('res.partner', compute="_compute_duplicate_bank_partner_ids")
+
+    @api.model
+    def retrieve_account_type(self, account_number):
+        for validator, account_type in (
+            (validate_iban, 'iban'),
+            (validate_clabe, 'clabe'),
+        ):
+            try:
+                validator(self.env, account_number)
+                return account_type
+            except ValidationError:
+                pass
+        return super().retrieve_account_type(account_number)
 
     @api.constrains('journal_id')
     def _check_journal_id(self):
@@ -55,35 +61,96 @@ class ResPartnerBank(models.Model):
             if len(bank.journal_id) > 1:
                 raise ValidationError(_('A bank account can belong to only one journal.'))
 
-    @api.constrains('allow_out_payment')
     def _check_allow_out_payment(self):
         """ Block enabling the setting, but it can be set to false without the group. (For example, at creation) """
         for bank in self:
-            if bank.allow_out_payment:
-                if not self.user_has_groups('account.group_validate_bank_account'):
-                    raise ValidationError(_('You do not have the right to trust or un-trust a bank account.'))
+            if bank.allow_out_payment and not bank._user_can_trust():
+                raise ValidationError(_('You do not have the right to trust or un-trust a bank account.'))
 
-    @api.depends('partner_id.country_id', 'sanitized_acc_number', 'allow_out_payment', 'acc_type')
-    def _compute_display_account_warning(self):
+    @api.depends('account_number')
+    def _compute_duplicate_bank_partner_ids(self):
+        id2duplicates = dict(self.env.execute_query(SQL(
+            """
+                SELECT this.id,
+                       ARRAY_AGG(other.partner_id)
+                  FROM res_partner_bank this
+             LEFT JOIN res_partner_bank other ON this.account_number = other.account_number
+                                             AND this.id != other.id
+                                             AND other.active = TRUE
+                 WHERE this.id = ANY(%(ids)s)
+                 AND other.partner_id IS NOT NULL
+                   AND this.active = TRUE
+                   AND (
+                        ((this.company_id = other.company_id) OR (this.company_id IS NULL AND other.company_id IS NULL))
+                        OR
+                        other.company_id IS NULL
+                        )
+              GROUP BY this.id
+            """,
+            ids=self.ids,
+        )))
         for bank in self:
-            if bank.allow_out_payment or not bank.sanitized_acc_number or bank.acc_type != 'iban':
-                bank.has_iban_warning = False
-                bank.has_money_transfer_warning = False
-                continue
-            bank_country = bank.sanitized_acc_number[:2]
-            bank.has_iban_warning = bank.partner_id.country_id and bank_country != bank.partner_id.country_id.code
+            duplicate_record = id2duplicates.get(bank._origin.id) or []
+            duplicate_record = [x for x in duplicate_record if x]
+            bank.duplicate_bank_partner_ids = self.env['res.partner'].browse(duplicate_record) if duplicate_record else False
 
-            bank_institution_code = bank.sanitized_acc_number[4:7]
-            bank.has_money_transfer_warning = bank_institution_code in bank._get_money_transfer_services()
+    @api.depends('allow_out_payment', 'account_type', 'sanitized_account_number', 'partner_id.country_id', 'country_id')
+    def _compute_phishing_warnings(self):
+        warnings_common_data = {
+            'level': 'danger',
+            'action_text': self.env._("Learn more"),
+            'action': {
+                'type': 'ir.actions.act_url',
+                'url': 'https://www.odoo.com/documentation/latest/applications/finance/accounting/payables/pay/trusted_accounts.html',
+                'target': 'new',
+            },
+        }
+        code_to_country_id = dict(self.env['res.country']._read_group(
+            domain=[('code', 'in', iban_accounts.mapped(lambda account: account.sanitized_account_number[:2]))],
+            groupby=['code'],
+            aggregates=['id:recordset'],
+        )) if (iban_accounts := self.filtered(lambda account: account.account_type == 'iban')) else {}
+        for account in self:
+            warnings = {}
+            if not account.allow_out_payment and account.sanitized_account_number:
+                if account.account_type == 'iban' and (bank_institution_code := account.sanitized_account_number[4:7]) and (money_transfer_service := account._get_money_transfer_services().get(bank_institution_code)):
+                    warnings['service_not_bank'] = {
+                        'message': self.env._(
+                            "Phishing risk: %(money_transfer_service)s is a money transfer service and not a bank. Double check if the account can be trusted by calling the vendor.",
+                            money_transfer_service=money_transfer_service,
+                        ),
+                        **warnings_common_data,
+                    }
 
-    @api.depends('sanitized_acc_number', 'allow_out_payment')
-    def _compute_money_transfer_service_name(self):
-        for bank in self:
-            if bank.sanitized_acc_number:
-                bank_institution_code = bank.sanitized_acc_number[4:7]
-                bank.money_transfer_service = bank._get_money_transfer_services().get(bank_institution_code, False)
-            else:
-                bank.money_transfer_service = False
+                labels_and_countries = [
+                    (self.env._("IBAN"), account.account_type == 'iban' and code_to_country_id.get(account.sanitized_account_number[:2])),
+                    (self.env._("CLABE"), account.account_type == 'clabe' and self.env.ref('base.mx')),
+                    (self.env._("Account Holder"), account.partner_id.country_id),
+                    (self.env._("Bank Account"), account.country_id),
+                ]
+                for idx, (label1, country1) in enumerate(labels_and_countries, 1):
+                    if 'countries_mismatch' in warnings:
+                        break
+                    for label2, country2 in labels_and_countries[idx:]:
+                        if country1 and country2 and country1 != country2:
+                            warnings['countries_mismatch'] = {
+                                'message': self.env._(
+                                    "Phishing risk: %(label1)s is in %(country1)s but %(label2)s is in %(country2)s",
+                                    label1=label1,
+                                    country1=country1.name,
+                                    label2=label2,
+                                    country2=country2.name,
+                                ),
+                                **warnings_common_data,
+                            }
+                            break
+
+            account.phishing_warnings = warnings
+
+    @api.depends('phishing_warnings')
+    def _compute_has_phishing_warnings(self):
+        for account in self:
+            account.has_phishing_warnings = bool(account.phishing_warnings)
 
     def _get_money_transfer_services(self):
         return {
@@ -92,11 +159,11 @@ class ResPartnerBank(models.Model):
             '974': 'PPS EU SA',
         }
 
-    @api.depends('acc_number')
+    @api.depends('account_number')
+    @api.depends_context('uid')
     def _compute_user_has_group_validate_bank_account(self):
-        user_has_group_validate_bank_account = self.user_has_groups('account.group_validate_bank_account')
         for bank in self:
-            bank.user_has_group_validate_bank_account = user_has_group_validate_bank_account
+            bank.user_has_group_validate_bank_account = bank._user_can_trust()
 
     @api.depends('allow_out_payment')
     def _compute_lock_trust_fields(self):
@@ -128,8 +195,8 @@ class ResPartnerBank(models.Model):
         available_qr_methods = self.get_available_qr_methods_in_sequence()
         candidate_methods = qr_method and [(qr_method, dict(available_qr_methods)[qr_method])] or available_qr_methods
         for candidate_method, candidate_name in candidate_methods:
-            error_msg = self._get_error_messages_for_qr(candidate_method, debtor_partner, currency)
-            if not error_msg:
+            error_message = self._get_error_messages_for_qr(candidate_method, debtor_partner, currency)
+            if not error_message:
                 error_message = self._check_for_qr_code_errors(candidate_method, amount, currency, debtor_partner, free_communication, structured_communication)
 
                 if not error_message:
@@ -142,9 +209,8 @@ class ResPartnerBank(models.Model):
                         'structured_communication': structured_communication,
                     }
 
-                elif not silent_errors:
-                    error_header = _("The following error prevented '%s' QR-code to be generated though it was detected as eligible: ", candidate_name)
-                    raise UserError(error_header + error_message)
+            if not silent_errors:
+                raise UserError(self.env._("The following error prevented '%(candidate)s' QR-code to be generated though it was detected as eligible: ", candidate=candidate_name) + error_message)
 
         return None
 
@@ -180,10 +246,7 @@ class ResPartnerBank(models.Model):
         :param structured_communication: Structured communication to add to the payment when generating one with the QR-code
         """
         params = self._get_qr_code_generation_params(qr_method, amount, currency, debtor_partner, free_communication, structured_communication)
-        if params:
-            params['type'] = params.pop('barcode_type')
-            return '/report/barcode/?' + werkzeug.urls.url_encode(params)
-        return None
+        return '/report/barcode/?' + werkzeug.urls.url_encode(params) if params else None
 
     def _get_qr_code_base64(self, qr_method, amount, currency, debtor_partner, free_communication, structured_communication):
         """ Hook for extension, to support the different QR generation methods.
@@ -203,7 +266,7 @@ class ResPartnerBank(models.Model):
                 barcode = self.env['ir.actions.report'].barcode(**params)
             except (ValueError, AttributeError):
                 raise werkzeug.exceptions.HTTPException(description='Cannot convert into barcode.')
-            return image_data_uri(base64.b64encode(barcode))
+            return image_data_uri(barcode)
         return None
 
     @api.model
@@ -246,76 +309,99 @@ class ResPartnerBank(models.Model):
         """
         return None
 
+    def _user_can_trust(self):
+        return super()._user_can_trust() and (
+            self.env.su
+            or self.env.user.has_group('account.group_validate_bank_account')
+            or self.env.user.has_group('base.group_system')
+        ) and (
+            # Prevent crons from trusting bank accounts (OdooBot), except when loading demo data
+            self.env.user.id != SUPERUSER_ID
+            or self.env.context.get('install_mode')
+            or tools.config['test_enable']
+        )
+
     @api.model_create_multi
     def create(self, vals_list):
         # EXTENDS base res.partner.bank
+        to_trust = [vals.get('allow_out_payment') for vals in vals_list]
+        for vals in vals_list:
+            vals['allow_out_payment'] = False
 
-        if not self.user_has_groups('account.group_validate_bank_account'):
-            for vals in vals_list:
-                # force the allow_out_payment field to False in order to prevent scam payments on newly created bank accounts
-                vals['allow_out_payment'] = False
+        for vals in vals_list:
+            if vals.get('account_number'):
+                vals['account_number'] = format_account_number(self.env, vals['account_number'])
 
-        res = super().create(vals_list)
-        for account in res:
-            msg = escape(_("Bank Account %s created")) % account._get_html_link(title=f"#{account.id}")
-            account.partner_id._message_log(body=msg)
-        return res
+            if (partner_id := vals.get('partner_id')) and (account_number := vals.get('account_number')):
+                archived_res_partner_bank = self.env['res.partner.bank'].search([('active', '=', False), ('partner_id', '=', partner_id), ('account_number', '=', account_number)])
+                if archived_res_partner_bank:
+                    raise UserError(_("A bank account with Account Number %(number)s already exists for Partner %(partner)s, but is archived. Please unarchive it instead.", number=account_number, partner=archived_res_partner_bank.partner_id.name))
+
+        accounts = super().create(vals_list)
+        for account, trust in zip(accounts, to_trust):
+            if trust and account._user_can_trust():
+                account.allow_out_payment = True
+            partner = account.partner_id
+            msg = _("Partner set to %s", partner._get_html_link(title=f"#{partner.display_name}"))
+            account._message_log(body=msg)
+            msg = _("Bank Account %s created", account._get_html_link(title=f"#{account.id}"))
+            partner._message_log(body=msg)
+        return accounts
 
     def write(self, vals):
         # EXTENDS base res.partner.bank
-        # Track and log changes to partner_id, heavily inspired from account_move
-        account_initial_values = defaultdict(dict)
-        # Get all tracked fields (without related fields because these fields must be managed on their own model)
-        tracking_fields = []
-        for field_name in vals:
-            field = self._fields[field_name]
-            if not (hasattr(field, 'related') and field.related) and hasattr(field, 'tracking') and field.tracking:
-                tracking_fields.append(field_name)
-        fields_definition = self.env['res.partner.bank'].fields_get(tracking_fields)
+        if vals.get('account_number'):
+            vals['account_number'] = format_account_number(self.env, vals['account_number'])
 
-        # Get initial values for each account
-        for account in self:
-            for field in tracking_fields:
-                # Group initial values by partner_id
-                account_initial_values[account][field] = account[field]
+        # track and log changes on partner_id
+        track_fnames = [fname for fname in self._track_get_fields() if fname in vals]
+        if track_fnames:
+            for account in self:
+                msg = _("Bank Account %s updated", account._get_html_link(title=f"#{account.id}"))
+                account.partner_id._track_record(account, track_fnames, body=msg)
+                if vals.get('partner_id'):
+                    account.env['res.partner'].browse(vals['partner_id'])._track_record(account, track_fnames, body=msg)
 
         # Some fields should not be editable based on conditions. It is enforced in the view, but not in python which
         # leaves them vulnerable to edits via the shell/... So we need to ensure that the user has the rights to edit
         # these fields when writing too.
-        if ('acc_number' in vals or 'partner_id' in vals) and any(account.lock_trust_fields for account in self):
+        # While we do lock changes if the account is trusted, we still want to allow to change them if we go from not trusted -> trusted or from trusted -> not trusted.
+        trusted_accounts = self.filtered(lambda x: x.lock_trust_fields)
+        if not trusted_accounts:
+            should_allow_changes = True  # If we were on a non-trusted account, we will allow to change (setting/... one last time before trusting)
+        else:
+            # If we were on a trusted account, we only allow changes if the account is moving to untrusted.
+            should_allow_changes = self.env.su or ('allow_out_payment' in vals and vals['allow_out_payment'] is False)
+
+        lock_fields = {'account_number', 'sanitized_account_number', 'partner_id', 'account_type'}
+        if not should_allow_changes and any(
+            account[fname] != account._fields[fname].convert_to_record(
+                account._fields[fname].convert_to_cache(vals[fname], account),
+                account,
+            )
+            for fname in lock_fields & set(vals)
+            for account in trusted_accounts
+        ):
             raise UserError(_("You cannot modify the account number or partner of an account that has been trusted."))
 
-        if 'allow_out_payment' in vals and not self.user_has_groups('account.group_validate_bank_account'):
+        if 'allow_out_payment' in vals and any(not bank._user_can_trust() for bank in self):
             raise UserError(_("You do not have the rights to trust or un-trust accounts."))
 
         res = super().write(vals)
 
-        # Log changes to move lines on each move
-        for account, initial_values in account_initial_values.items():
-            tracking_value_ids = account._mail_track(fields_definition, initial_values)[1]
-            if tracking_value_ids:
-                msg = escape(_("Bank Account %s updated")) % account._get_html_link(title=f"#{account.id}")
-                account.partner_id._message_log(body=msg, tracking_value_ids=tracking_value_ids)
-                if 'partner_id' in initial_values:  # notify previous partner as well
-                    initial_values['partner_id']._message_log(body=msg, tracking_value_ids=tracking_value_ids)
+        # Check
+        if "allow_out_payment" in vals:
+            self._check_allow_out_payment()
+
         return res
 
-    def unlink(self):
-        # EXTENDS base res.partner.bank
-        for account in self:
-            msg = escape(_("Bank Account %s with number %s deleted")) % (account._get_html_link(title=f"#{account.id}"), account.acc_number)
-            account.partner_id._message_log(body=msg)
-        return super().unlink()
+    @api.model
+    def default_get(self, fields):
+        if 'account_number' not in fields:
+            return super().default_get(fields)
 
-    @api.depends('allow_out_payment', 'acc_number', 'bank_id')
-    @api.depends_context('display_account_trust')
-    def _compute_display_name(self):
-        super()._compute_display_name()
-        if self.env.context.get('display_account_trust'):
-            for acc in self:
-                trusted_label = _('trusted') if acc.allow_out_payment else _('untrusted')
-                if acc.bank_id:
-                    name = f'{acc.acc_number} - {acc.bank_id.name} ({trusted_label})'
-                else:
-                    name = f'{acc.acc_number} ({trusted_label})'
-                acc.display_name = name
+        # When create & edit, `name` could be used to pass (in the context) the
+        # value input by the user. However, we want to set the default value of
+        # `account_number` variable instead.
+        default_account_number = self.env.context.get('default_account_number', False) or self.env.context.get('default_name', False)
+        return super(ResPartnerBank, self.with_context(default_account_number=default_account_number)).default_get(fields)

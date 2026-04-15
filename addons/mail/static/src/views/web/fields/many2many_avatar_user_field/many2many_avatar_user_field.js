@@ -1,11 +1,8 @@
-/* @odoo-module */
-
-import { useOpenChat } from "@mail/core/web/open_chat_hook";
 import { useAssignUserCommand } from "@mail/views/web/fields/assign_user_command_hook";
 
 import { registry } from "@web/core/registry";
-import { TagsList } from "@web/core/tags_list/tags_list";
-import { patch } from "@web/core/utils/patch";
+import { usePopover } from "@web/core/popover/popover_hook";
+import { AvatarCard } from "@mail/core/web/avatar_card/avatar_card";
 import {
     Many2ManyTagsAvatarField,
     many2ManyTagsAvatarField,
@@ -13,35 +10,56 @@ import {
     listMany2ManyTagsAvatarField,
     KanbanMany2ManyTagsAvatarField,
     kanbanMany2ManyTagsAvatarField,
-    KanbanMany2ManyTagsAvatarFieldTagsList,
 } from "@web/views/fields/many2many_tags_avatar/many2many_tags_avatar_field";
+import { Many2XAvatarUserAutocomplete } from "../avatar_autocomplete/avatar_many2x_autocomplete";
 
-export class Many2ManyAvatarUserTagsList extends TagsList {}
-Many2ManyAvatarUserTagsList.template = "mail.Many2ManyAvatarUserTagsList";
-
-const userChatter = {
-    setup() {
-        this._super(...arguments);
-        this.openChat = useOpenChat(this.relation);
-        if (this.props.withCommand) {
-            useAssignUserCommand();
+const WithUserChatter = (T) =>
+    class UserChatterMixin extends T {
+        setup() {
+            super.setup(...arguments);
+            if (this.props.withCommand) {
+                useAssignUserCommand();
+            }
+            this.avatarCard = usePopover(AvatarCard);
         }
-    },
 
-    getTagProps(record) {
-        return {
-            ...this._super(...arguments),
-            onImageClicked: () => this.openChat(record.resId),
-        };
-    },
-};
-export class Many2ManyTagsAvatarUserField extends Many2ManyTagsAvatarField {
+        displayAvatarCard(record) {
+            return ["res.users", "res.partner"].includes(this.relation);
+        }
+
+        getAvatarCardProps(record) {
+            return {
+                id: record.resId,
+                model: this.relation,
+            };
+        }
+
+        getTagProps(record) {
+            return {
+                ...super.getTagProps(...arguments),
+                onAvatarClick: (target) => {
+                    if (!this.displayAvatarCard(record)) {
+                        return;
+                    }
+                    if (
+                        !this.avatarCard.isOpen ||
+                        (this.lastOpenedId && record.resId !== this.lastOpenedId)
+                    ) {
+                        this.avatarCard.open(target, this.getAvatarCardProps(record));
+                        this.lastOpenedId = record.resId;
+                    }
+                },
+            };
+        }
+    };
+
+export class Many2ManyTagsAvatarUserField extends WithUserChatter(Many2ManyTagsAvatarField) {
+    static template = "mail.Many2ManyTagsAvatarUserField";
     static components = {
         ...Many2ManyTagsAvatarField.components,
-        TagsList: Many2ManyAvatarUserTagsList,
+        Many2XAutocomplete: Many2XAvatarUserAutocomplete,
     };
 }
-patch(Many2ManyTagsAvatarUserField.prototype, "mail/fields/web", userChatter);
 
 export const many2ManyTagsAvatarUserField = {
     ...many2ManyTagsAvatarField,
@@ -51,21 +69,24 @@ export const many2ManyTagsAvatarUserField = {
 
 registry.category("fields").add("many2many_avatar_user", many2ManyTagsAvatarUserField);
 
-export class KanbanMany2ManyAvatarUserTagsList extends KanbanMany2ManyTagsAvatarFieldTagsList {
-    static template = "mail.KanbanMany2ManyAvatarUserTagsList";
-}
-
-export class KanbanMany2ManyTagsAvatarUserField extends KanbanMany2ManyTagsAvatarField {
-    static template = "mail.KanbanMany2ManyTagsAvatarUserField";
+export class KanbanMany2ManyTagsAvatarUserField extends WithUserChatter(
+    KanbanMany2ManyTagsAvatarField
+) {
     static components = {
         ...KanbanMany2ManyTagsAvatarField.components,
-        TagsList: KanbanMany2ManyAvatarUserTagsList,
     };
     get displayText() {
         return !this.props.readonly;
     }
+
+    getTagProps(record) {
+        const p = super.getTagProps(record);
+        return {
+            ...p,
+            text: this.displayText ? p.text : "",
+        };
+    }
 }
-patch(KanbanMany2ManyTagsAvatarUserField.prototype, "mail/fields/web", userChatter);
 export const kanbanMany2ManyTagsAvatarUserField = {
     ...kanbanMany2ManyTagsAvatarField,
     component: KanbanMany2ManyTagsAvatarUserField,
@@ -73,22 +94,32 @@ export const kanbanMany2ManyTagsAvatarUserField = {
 };
 registry.category("fields").add("kanban.many2many_avatar_user", kanbanMany2ManyTagsAvatarUserField);
 
-export class ListMany2ManyTagsAvatarUserField extends ListMany2ManyTagsAvatarField {
+export class ListMany2ManyTagsAvatarUserField extends WithUserChatter(
+    ListMany2ManyTagsAvatarField
+) {
     static template = "mail.ListMany2ManyTagsAvatarUserField";
     static components = {
         ...ListMany2ManyTagsAvatarField.components,
-        TagsList: Many2ManyAvatarUserTagsList,
+        Many2XAutocomplete: Many2XAvatarUserAutocomplete,
     };
 
     get displayText() {
         return this.props.record.data[this.props.name].records.length === 1 || !this.props.readonly;
     }
+
+    getTagProps(record) {
+        const p = super.getTagProps(record);
+        return {
+            ...p,
+            text: this.displayText ? p.text : "",
+        };
+    }
 }
-patch(ListMany2ManyTagsAvatarUserField.prototype, "mail/fields/web", userChatter);
 
 export const listMany2ManyTagsAvatarUserField = {
     ...listMany2ManyTagsAvatarField,
     component: ListMany2ManyTagsAvatarUserField,
+    listViewWidth: [120],
     additionalClasses: ["o_field_many2many_tags_avatar", "o_field_many2many_tags_avatar_list"],
 };
 

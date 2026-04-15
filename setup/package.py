@@ -1,22 +1,21 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 # Part of Odoo. See LICENSE file for full copyright and licensing details.
 
 import argparse
 import logging
 import os
-import pexpect
 import shutil
-import signal
 import subprocess
 import sys
 import tempfile
-import textwrap
 import time
 import traceback
+from datetime import datetime
+from glob import glob
+from pathlib import Path
 from xmlrpc import client as xmlrpclib
 
-from glob import glob
+import pexpect
 
 #----------------------------------------------------------
 # Utils
@@ -55,12 +54,11 @@ class OdooTestError(Exception):
 
 
 def run_cmd(cmd, chdir=None, timeout=None):
-    logging.info("Running command %s", cmd)
+    logging.info("Running command: '%s'", ' '.join(cmd))
     return subprocess.run(cmd, cwd=chdir, timeout=timeout)
 
 
 def _rpc_count_modules(addr='http://127.0.0.1', port=8069, dbname='mycompany'):
-    time.sleep(5)
     uid = xmlrpclib.ServerProxy('%s:%s/xmlrpc/2/common' % (addr, port)).authenticate(
         dbname, 'admin', 'admin', {}
     )
@@ -68,7 +66,6 @@ def _rpc_count_modules(addr='http://127.0.0.1', port=8069, dbname='mycompany'):
         dbname, uid, 'admin', 'ir.module.module', 'search', [('state', '=', 'installed')]
     )
     if len(modules) > 1:
-        time.sleep(1)
         toinstallmodules = xmlrpclib.ServerProxy('%s:%s/xmlrpc/2/object' % (addr, port)).execute(
             dbname, uid, 'admin', 'ir.module.module', 'search', [('state', '=', 'to install')]
         )
@@ -85,7 +82,7 @@ def _rpc_count_modules(addr='http://127.0.0.1', port=8069, dbname='mycompany'):
 def publish(args, pub_type, extensions):
     """Publish builded package (move builded files and generate a symlink to the latests)
     :args: parsed program args
-    :pub_type: one of [deb, rpm, src, exe]
+    :pub_type: one of [deb, rpm, src, exe, iot]
     :extensions: list of extensions to publish
     :returns: published files
     """
@@ -197,26 +194,26 @@ class Docker():
         self.tag = 'odoo-%s-%s-nightly-tests' % (DOCKERVERSION, self.arch)
         self.container_name = None
         self.exposed_port = None
-        dockerfiles = {
-            'tgz': os.path.join(args.build_dir, 'setup/package.dfsrc'),
-            'deb': os.path.join(args.build_dir, 'setup/package.dfdebian'),
-            'rpm': os.path.join(args.build_dir, 'setup/package.dffedora'),
+        docker_templates = {
+            'tgz': os.path.join(args.build_dir, 'setup/docker/package.dfsrc'),
+            'deb': os.path.join(args.build_dir, 'setup/docker/package.dfdebian'),
+            'rpm': os.path.join(args.build_dir, 'setup/docker/package.dffedora'),
+            'win': os.path.join(args.build_dir, 'setup/docker/package.dfwine'),
         }
-        self.dockerfile = dockerfiles[self.arch]
+        self.docker_template = Path(docker_templates[self.arch]).read_text(encoding='utf-8').replace('USER odoo', DOCKERUSER)
         self.test_log_file = '/data/src/test-%s.log' % self.arch
+        self.docker_dir = Path(self.args.build_dir) / 'docker'
+        if not self.docker_dir.exists():
+            self.docker_dir.mkdir()
         self.build_image()
 
     def build_image(self):
         """Build the dockerimage by copying Dockerfile into build_dir/docker"""
-        docker_dir = os.path.join(self.args.build_dir, 'docker')
-        docker_file_path = os.path.join(docker_dir, 'Dockerfile')
-        os.mkdir(docker_dir)
-        shutil.copy(self.dockerfile, docker_file_path)
-        with open(docker_file_path, 'a') as dockerfile:
-            dockerfile.write(DOCKERUSER)
-        shutil.copy(os.path.join(self.args.build_dir, 'requirements.txt'), docker_dir)
-        run_cmd(["docker", "build", "--rm=True", "-t", self.tag, "."], chdir=docker_dir, timeout=1200).check_returncode()
-        shutil.rmtree(docker_dir)
+        docker_file = self.docker_dir / 'Dockerfile'
+        docker_file.write_text(self.docker_template)
+        shutil.copy(os.path.join(self.args.build_dir, 'requirements.txt'), self.docker_dir)
+        run_cmd(["docker", "build", "--rm=True", "-t", self.tag, "."], chdir=self.docker_dir, timeout=1200).check_returncode()
+        shutil.rmtree(self.docker_dir)
 
     def run(self, cmd, build_dir, container_name, user='odoo', exposed_port=None, detach=False, timeout=None):
         self.container_name = container_name
@@ -256,13 +253,13 @@ class Docker():
         logging.info('Starting to test Odoo install test')
         start_time = time.time()
         while self.is_running() and (time.time() - start_time) < INSTALL_TIMEOUT:
-            time.sleep(5)
+            time.sleep(5)  # give some time for odoo to install and start
             if os.path.exists(os.path.join(args.build_dir, 'odoo.pid')):
                 try:
                     _rpc_count_modules(port=self.exposed_port)
+                    return
                 finally:
                     self.stop()
-                return
         if self.is_running():
             self.stop()
             raise OdooTestTimeoutError('Odoo pid file never appeared after %s sec' % INSTALL_TIMEOUT)
@@ -295,11 +292,14 @@ class DockerTgz(Docker):
         logging.info('Start testing python tgz package')
         cmds = [
             'service postgresql start',
-            'pip3 install /data/src/odoo_%s.%s.tar.gz' % (VERSION, TSTAMP),
             'su postgres -s /bin/bash -c "createuser -s odoo"',
-            'su postgres -s /bin/bash -c "createdb mycompany"',
-            'su odoo -s /bin/bash -c "odoo -d mycompany -i base --stop-after-init"',
-            'su odoo -s /bin/bash -c "odoo -d mycompany --pidfile=/data/src/odoo.pid"',
+            'su odoo -s /bin/bash -c "python3 -m venv /var/lib/odoo/odoovenv"',
+            'su odoo -s /bin/bash -c "/var/lib/odoo/odoovenv/bin/python3 -m pip install --upgrade pip"',
+            'su odoo -s /bin/bash -c "/var/lib/odoo/odoovenv/bin/python3 -m pip install -r /opt/release/requirements.txt"',
+            f'su odoo -s /bin/bash -c "/var/lib/odoo/odoovenv/bin/python3 -m pip install /data/src/odoo_{VERSION}.{TSTAMP}.tar.gz"',
+            'su odoo -s /bin/bash -c "createdb mycompany"',
+            'su odoo -s /bin/bash -c "/var/lib/odoo/odoovenv/bin/odoo -d mycompany -i base --stop-after-init"',
+            'su odoo -s /bin/bash -c "/var/lib/odoo/odoovenv/bin/odoo -d mycompany --pidfile=/data/src/odoo.pid --http-interface 0.0.0.0"',
         ]
         self.run(' && '.join(cmds), self.args.build_dir, 'odoo-src-test-%s' % TSTAMP, user='root', detach=True, exposed_port=8069, timeout=300)
         self.test_odoo()
@@ -327,11 +327,9 @@ class DockerDeb(Docker):
         logging.info('Start testing debian package')
         cmds = [
             'service postgresql start',
-            'su postgres -s /bin/bash -c "createdb mycompany"',
             '/usr/bin/apt-get update -y',
-            '/usr/bin/dpkg -i /data/src/odoo_%s.%s_all.deb ; /usr/bin/apt-get install -f -y' % (VERSION, TSTAMP),
-            'su odoo -s /bin/bash -c "odoo -d mycompany -i base --stop-after-init"',
-            'su odoo -s /bin/bash -c "odoo -d mycompany --pidfile=/data/src/odoo.pid"',
+            f'/usr/bin/apt-get install -y /data/src/odoo_{VERSION}.{TSTAMP}_all.deb',
+            'su odoo -s /bin/bash -c "odoo -d mycompany -i base --pidfile=/data/src/odoo.pid --http-interface 0.0.0.0"',
         ]
         self.run(' && '.join(cmds), self.args.build_dir, 'odoo-deb-test-%s' % TSTAMP, user='root', detach=True, exposed_port=8069, timeout=300)
         self.test_odoo()
@@ -346,13 +344,14 @@ class DockerRpm(Docker):
     def build(self):
         logging.info('Start building fedora rpm package')
         rpmbuild_dir = '/var/lib/odoo/rpmbuild'
+        build_date = datetime.now().strftime('%a %b %d %Y')
         cmds = [
             'cd /data/src',
             'mkdir -p dist',
             'rpmdev-setuptree -d',
             f'cp -a /data/src/setup/rpm/odoo.spec {rpmbuild_dir}/SPECS/',
             f'tar --transform "s/^\\./odoo-{VERSION}/" -c -z -f {rpmbuild_dir}/SOURCES/odoo-{VERSION}.tar.gz .',
-            f'rpmbuild -bb --define="%version {VERSION}" /data/src/setup/rpm/odoo.spec',
+            f'rpmbuild -bb --define="%version {VERSION}" --define "%release {TSTAMP}" --define "%build_date {build_date}" /data/src/setup/rpm/odoo.spec',
             f'mv {rpmbuild_dir}/RPMS/noarch/odoo*.rpm /data/src/dist/'
         ]
         self.run(' && '.join(cmds), self.args.build_dir, f'odoo-rpm-build-{TSTAMP}')
@@ -366,10 +365,11 @@ class DockerRpm(Docker):
         cmds = [
             'su postgres -c "/usr/bin/pg_ctl -D /var/lib/postgres/data start"',
             'sleep 5',
-            'su postgres -c "createdb mycompany"',
-            'dnf install -d 0 -e 0 /data/src/odoo_%s.%s.rpm -y' % (VERSION, TSTAMP),
+            'su postgres -c "createuser -s odoo"',
+            'su odoo -c "createdb mycompany"',
+            'dnf install -q /data/src/odoo_%s.%s.rpm -y' % (VERSION, TSTAMP),
             'su odoo -s /bin/bash -c "odoo -c /etc/odoo/odoo.conf -d mycompany -i base --stop-after-init"',
-            'su odoo -s /bin/bash -c "odoo -c /etc/odoo/odoo.conf -d mycompany --pidfile=/data/src/odoo.pid"',
+            'su odoo -s /bin/bash -c "odoo -c /etc/odoo/odoo.conf -d mycompany --pidfile=/data/src/odoo.pid --http-interface 0.0.0.0"',
         ]
         self.run(' && '.join(cmds), args.build_dir, 'odoo-rpm-test-%s' % TSTAMP, user='root', detach=True, exposed_port=8069, timeout=300)
         self.test_odoo()
@@ -393,125 +393,44 @@ class DockerRpm(Docker):
         # Remove temp directory
         shutil.rmtree(temp_path)
 
-# KVM stuffs
-class KVM(object):
+
+class DockerWine(Docker):
+    """Docker class to build Windows package"""
+
+    arch = 'win'
+
     def __init__(self, args):
-        self.args = args
-        self.image = args.vm_winxp_image
-        self.ssh_key = args.vm_winxp_ssh_key
-        self.login = args.vm_winxp_login
+        super().__init__(args)
+        self.package_name = "windows"
+        self.nsi_filepath = r"c:\odoobuild\server\setup\win32\setup.nsi"
+        self.nt_service_name = nt_service_name
 
-    def timeout(self, signum, frame):
-        logging.warning("vm timeout kill (pid: {})".format(self.kvm_proc.pid))
-        self.kvm_proc.terminate()
-
-    def start(self):
-        kvm_cmd = [
-            "kvm",
-            "-cpu", "Skylake-Client,hypervisor=on,hle=off,rtm=off",
-            "-smp", "2,sockets=2,cores=1,threads=1",
-            "-net", "nic,model=e1000e,macaddr=52:54:00:d3:38:5e",
-            "-net", "user,hostfwd=tcp:127.0.0.1:10022-:22,hostfwd=tcp:127.0.0.1:18069-:8069,hostfwd=tcp:127.0.0.1:15432-:5432",
-            "-m", "2048",
-            "-drive", f"if=virtio,file={self.image},snapshot=on",
-            "-nographic",
-            "-serial", "none",
+    def build(self):
+        logging.info('Start building %s package', self.package_name)
+        winver = "%s.%s" % (VERSION.replace('~', '_').replace('+', ''), TSTAMP)
+        container_python = '/var/lib/odoo/.wine/drive_c/odoobuild/WinPy64/python-3.12.3.amd64/python.exe'
+        nsis_args = f'/DVERSION={winver} /DMAJOR_VERSION={version_info[0]} /DMINOR_VERSION={version_info[1]} /DSERVICENAME={self.nt_service_name} /DPYTHONVERSION=3.12.3'
+        cmds = [
+            rf'wine {container_python} -m pip list',
+            rf'wine "c:\nsis-3.11\makensis.exe" {nsis_args} "{self.nsi_filepath}"'
         ]
-        logging.info("Starting kvm: {}".format(" ".join(kvm_cmd)))
-        self.kvm_proc = subprocess.Popen(kvm_cmd)
-        try:
-            self.wait_ssh(30)  # give some time to the VM to start, otherwise the SSH server may not be ready
-            signal.alarm(2400)
-            signal.signal(signal.SIGALRM, self.timeout)
-            self.run()
-        finally:
-            signal.signal(signal.SIGALRM, signal.SIG_DFL)
-            self.kvm_proc.terminate()
-            time.sleep(10)
-
-    def ssh(self, cmd):
-        run_cmd([
-            'ssh',
-            '-o', 'UserKnownHostsFile=/dev/null',
-            '-o', 'StrictHostKeyChecking=no',
-            '-o', 'BatchMode=yes',
-            '-o', 'ConnectTimeout=10',
-            '-p', '10022',
-            '-i', self.ssh_key,
-            '%s@127.0.0.1' % self.login,
-            cmd
-        ]).check_returncode()
-
-    def rsync(self, rsync_args, options=['--delete', '--exclude', '.git', '--exclude', '.tx', '--exclude', '__pycache__']):
-        cmd = [
-            'rsync',
-            '-a',
-            '-e', 'ssh -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no -p 10022 -i %s' % self.ssh_key
-        ]
-        cmd.extend(options)
-        cmd.extend(rsync_args)
-        run_cmd(cmd).check_returncode()
-
-    def wait_ssh(self, n):
-        for i in range(n):
-            try:
-                self.ssh('exit')
-                return
-            except subprocess.CalledProcessError:
-                time.sleep(10)
-        raise Exception('Unable to conncect to the VM')
-
-    def run(self):
-        pass
+        self.run(' && '.join(cmds), self.args.build_dir, 'odoo-win-build-%s' % TSTAMP)
+        logging.info('Finished building %s package', self.package_name)
 
 
-class KVMWinBuildExe(KVM):
-    def run(self):
-        logging.info('Start building Windows package')
-        with open(os.path.join(self.args.build_dir, 'setup/win32/Makefile.version'), 'w', encoding='utf-8') as f:
-            win_version = VERSION.replace('~', '_').replace('+', '')
-            f.write(textwrap.dedent(f"""
-                VERSION={win_version}.{TSTAMP}
-                MAJORVERSION={version_info[0]}
-                MINORVERSION={version_info[1]}
-            """))
-        with open(os.path.join(self.args.build_dir, 'setup/win32/Makefile.python'), 'w', encoding='utf-8') as f:
-            f.write("PYTHON_VERSION=%s\n" % self.args.vm_winxp_python_version)
-        with open(os.path.join(self.args.build_dir, 'setup/win32/Makefile.servicename'), 'w', encoding='utf-8') as f:
-            f.write("SERVICENAME=%s\n" % nt_service_name)
+class DockerIot(DockerWine):
+    """Docker class to build windows IoT package"""
 
-        remote_build_dir = '/cygdrive/c/odoobuild/server/'
+    def __init__(self, args):
+        super().__init__(args)
+        self.package_name = "IoT"
+        self.nsi_filepath = r"c:\odoobuild\server\setup\win32\setup-iot.nsi"
+        self.nt_service_name = "odoo-iot"
 
-        self.ssh("mkdir -p build")
-        logging.info("Syncing Odoo files to virtual machine...")
-        self.rsync(['%s/' % self.args.build_dir, '%s@127.0.0.1:%s' % (self.login, remote_build_dir)])
-        self.ssh("cd {}setup/win32;time make allinone;".format(remote_build_dir))
-        self.rsync(['%s@127.0.0.1:%ssetup/win32/release/' % (self.login, remote_build_dir), '%s/' % self.args.build_dir])
-        logging.info('Finished building Windows package')
-
-
-class KVMWinTestExe(KVM):
-    def run(self):
-        logging.info('Start testing Windows package')
-        setup_path = glob("%s/odoo_setup_*.exe" % self.args.build_dir)[0]
-        setupfile = setup_path.split('/')[-1]
-        setupversion = setupfile.split('odoo_setup_')[1].split('.exe')[0]
-
-        self.rsync(['%s' % setup_path, '%s@127.0.0.1:' % self.login])
-        self.ssh("TEMP=/tmp ./%s /S" % setupfile)
-        self.ssh('PGPASSWORD=openpgpwd /cygdrive/c/"Program Files"/"Odoo %s"/PostgreSQL/bin/createdb.exe -e -U openpg mycompany' % setupversion)
-        self.ssh('netsh advfirewall set publicprofile state off')
-        self.ssh('/cygdrive/c/"Program Files"/"Odoo {sv}"/python/python.exe \'c:\\Program Files\\Odoo {sv}\\server\\odoo-bin\' -d mycompany -i base --stop-after-init'.format(sv=setupversion))
-        _rpc_count_modules(port=18069)
-        logging.info('Finished testing Windows package')
-
-
-def build_exe(args):
-    KVMWinBuildExe(args).start()
-
-def test_exe(args):
-    if args.test:
-        KVMWinTestExe(args).start()
+    def build_image(self):
+        shutil.copy(os.path.join(self.args.build_dir, 'setup/iot_box_builder/configuration/requirements.txt'), self.docker_dir / 'requirements-iot.txt')
+        self.tag = f'{self.tag}-iot'
+        super().build_image()
 
 
 def parse_args():
@@ -526,12 +445,7 @@ def parse_args():
     ap.add_argument("--build-rpm", action="store_true")
     ap.add_argument("--build-tgz", action="store_true")
     ap.add_argument("--build-win", action="store_true")
-
-    # Windows VM
-    ap.add_argument("--vm-winxp-image", default='/home/odoo/vm/win1036/win10_winpy36.qcow2', help="%(default)s")
-    ap.add_argument("--vm-winxp-ssh-key", default='/home/odoo/vm/win1036/id_rsa', help="%(default)s")
-    ap.add_argument("--vm-winxp-login", default='Naresh', help="Windows login %(default)s")
-    ap.add_argument("--vm-winxp-python-version", default='3.7.7', help="Windows Python version installed in the VM (default: %(default)s)")
+    ap.add_argument("--build-iot", action="store_true")
 
     ap.add_argument("-t", "--test", action="store_true", default=False, help="Test built packages")
     ap.add_argument("-s", "--sign", action="store_true", default=False, help="Sign Debian package / generate Rpm repo")
@@ -581,12 +495,20 @@ def main(args):
                 logging.error("Won't publish the deb release.\n Exception: %s" % str(e))
         if args.build_win:
             _prepare_build_dir(args, win32=True)
-            build_exe(args)
+            docker_wine = DockerWine(args)
+            docker_wine.build()
             try:
-                test_exe(args)
                 published_files = publish(args, 'windows', ['exe'])
             except Exception as e:
                 logging.error("Won't publish the exe release.\n Exception: %s" % str(e))
+        if args.build_iot:
+            _prepare_build_dir(args, win32=True)
+            docker_iot = DockerIot(args)
+            docker_iot.build()
+            try:
+                published_files = publish(args, 'iot', ['exe'])
+            except Exception as e:
+                logging.error("Won't publish the iot release.\n Exception: %s" % str(e))
     except Exception as e:
         logging.error('Something bad happened ! : {}'.format(e))
         traceback.print_exc()

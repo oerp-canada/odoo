@@ -1,9 +1,11 @@
-# -*- coding: utf-8 -*-
 # Part of Odoo. See LICENSE file for full copyright and licensing details.
-from odoo.api import model
-from typing import Iterator, Mapping
+import json
+
 from collections import abc
-from odoo.addons.microsoft_calendar.utils.event_id_storage import combine_ids
+from typing import Iterator, Mapping
+
+from odoo.tools import email_normalize
+from odoo.tools.misc import frozendict
 
 
 class MicrosoftEvent(abc.Set):
@@ -17,14 +19,15 @@ class MicrosoftEvent(abc.Set):
     """
 
     def __init__(self, iterable=()):
-        self._events = {}
+        _events = {}
         for item in iterable:
             if isinstance(item, self.__class__):
-                self._events[item.id] = item._events[item.id]
+                _events[item.id] = item._events[item.id]
             elif isinstance(item, Mapping):
-                self._events[item.get('id')] = item
+                _events[item.get('id')] = item
             else:
                 raise ValueError("Only %s or iterable of dict are supported" % self.__class__.__name__)
+        self._events = frozendict(_events)
 
     def __iter__(self) -> Iterator['MicrosoftEvent']:
         return iter(MicrosoftEvent([vals]) for vals in self._events.values())
@@ -45,7 +48,9 @@ class MicrosoftEvent(abc.Set):
         except ValueError:
             raise ValueError("Expected singleton: %s" % self)
         event_id = list(self._events.keys())[0]
-        return self._events[event_id].get(name)
+        value = self._events[event_id].get(name)
+        json.dumps(value)
+        return value
 
     def __repr__(self):
         return '%s%s' % (self.__class__.__name__, self.ids)
@@ -99,11 +104,12 @@ class MicrosoftEvent(abc.Set):
 
         unmapped_events = self.filter(lambda e: e.id not in mapped_events)
 
+        # Query events OR recurrences, get organizer_id and universal_id values by splitting microsoft_id.
         model_env = force_model if force_model is not None else self._get_model(env)
         odoo_events = model_env.with_context(active_test=False).search([
             '|',
             ('ms_universal_event_id', "in", unmapped_events.uids),
-            ('ms_organizer_event_id', "in", unmapped_events.ids)
+            ('microsoft_id', "in", unmapped_events.ids)
         ]).with_env(env)
 
         # 1. try to match unmapped events with Odoo events using their iCalUId
@@ -119,7 +125,7 @@ class MicrosoftEvent(abc.Set):
 
         # 2. try to match unmapped events with Odoo events using their id
         unmapped_events = self.filter(lambda e: e.id not in mapped_events)
-        mapping = {e.ms_organizer_event_id: e for e in odoo_events}
+        mapping = {e.microsoft_id: e for e in odoo_events}
 
         for ms_event in unmapped_events:
             odoo_event = mapping.get(ms_event.id)
@@ -130,7 +136,8 @@ class MicrosoftEvent(abc.Set):
                 # don't forget to also set the global event ID on the Odoo event to ease
                 # and improve reliability of future mappings
                 odoo_event.write({
-                    'microsoft_id': combine_ids(ms_event.id, ms_event.iCalUId),
+                    'microsoft_id': ms_event.id,
+                    'ms_universal_event_id': ms_event.iCalUId,
                     'need_sync_m': False,
                 })
 
@@ -149,9 +156,14 @@ class MicrosoftEvent(abc.Set):
         """
         if self.isOrganizer:
             return env.user.id
-        if self.organizer.get('emailAddress') and self.organizer.get('emailAddress').get('address'):
+
+        if not self.organizer:
+            return False
+
+        organizer_email = self.organizer.get('emailAddress') and email_normalize(self.organizer.get('emailAddress').get('address'))
+        if organizer_email:
             # Warning: In Microsoft: 1 email = 1 user; but in Odoo several users might have the same email
-            user = env['res.users'].search([('email', '=', self.organizer.get('emailAddress').get('address'))], limit=1)
+            user = env['res.users'].search([('email', '=', organizer_email)], limit=1)
             return user.id if user else False
         return False
 
@@ -192,8 +204,6 @@ class MicrosoftEvent(abc.Set):
         }
         rrule_type = type_dict.get(pattern['type'], pattern['type'])
         interval = pattern['interval']
-        if rrule_type == 'yearly':
-            interval *= 12
         result = {
             'rrule_type': rrule_type,
             'end_type': end_type_dict.get(range['type'], False),

@@ -1,8 +1,9 @@
 # -*- coding: utf-8 -*-
 # Part of Odoo. See LICENSE file for full copyright and licensing details.
 
-from odoo.addons.mail.tests.common import MailCommon
+from odoo.addons.mail.tests.common import MailCommon, mail_new_test_user
 from odoo.addons.test_mail.tests.common import TestRecipients
+from odoo.exceptions import AccessError
 from odoo.tests import tagged
 from odoo.tests.common import users
 
@@ -12,12 +13,7 @@ class TestMailComposerMixin(MailCommon, TestRecipients):
 
     @classmethod
     def setUpClass(cls):
-        super(TestMailComposerMixin, cls).setUpClass()
-
-        # ensure employee can create partners, necessary for templates
-        cls.user_employee.write({
-            'groups_id': [(4, cls.env.ref('base.group_partner_manager').id)],
-        })
+        super().setUpClass()
 
         cls.mail_template = cls.env['mail.template'].create({
             'body_html': '<p>EnglishBody for <t t-out="object.name"/></p>',
@@ -31,8 +27,24 @@ class TestMailComposerMixin(MailCommon, TestRecipients):
             'customer_id': cls.partner_1.id,
         })
 
+        # Enable group-based template management
+        cls.env['ir.config_parameter'].set_bool('mail.restrict.template.rendering', True)
+
+        # User without the group "mail.group_mail_template_editor"
+        cls.user_rendering_restricted = mail_new_test_user(
+            cls.env,
+            company_id=cls.company_admin.id,
+            groups='base.group_user',
+            login='user_rendering_restricted',
+            name='Code Template Restricted User',
+            notification_type='inbox',
+            signature='--\nErnest'
+        )
+        cls.user_rendering_restricted.group_ids -= cls.env.ref('mail.group_mail_template_editor')
+        cls.user_employee.group_ids += cls.env.ref('mail.group_mail_template_editor')
+
         cls._activate_multi_lang(
-            layout_arch_db='<body><t t-out="message.body"/> English Layout for <t t-esc="model_description"/></body>',
+            layout_arch_db='<body><t t-out="message.body"/> English Layout for <t t-out="model_description"/></body>',
             lang_code='es_ES',
             test_record=cls.test_record,
             test_template=cls.mail_template,
@@ -92,12 +104,43 @@ class TestMailComposerMixin(MailCommon, TestRecipients):
         self.assertFalse(composer.lang)
         self.assertFalse(composer.subject)
 
+    @users("user_rendering_restricted")
+    def test_mail_composer_mixin_render_lang(self):
+        """ Test _render_lang when rendering is involved, depending on template
+        editor rights. """
+        source = self.test_record.with_env(self.env)
+        composer = self.env['mail.test.composer.mixin'].create({
+            'description': '<p>Description for <t t-out="object.name"/></p>',
+            'name': 'Invite',
+            'template_id': self.mail_template.id,
+            'source_ids': [(4, source.id)],
+        })
+
+        # _render_lang should be ok when content is the same as template
+        rendered = composer._render_lang(source.ids)
+        self.assertEqual(rendered, {source.id: self.partner_1.lang})
+
+        # _render_lang should crash when content is dynamic and not coming from template
+        composer.lang = " {{ 'en_US' }}"
+        with self.assertRaises(AccessError):
+            rendered = composer._render_lang(source.ids)
+
+        # _render_lang should not crash when content is not coming from template
+        # but not dynamic and/or is actually the default computed based on partner
+        for lang_value, expected in [
+            (False, self.partner_1.lang), ("", self.partner_1.lang), ("fr_FR", "fr_FR")
+        ]:
+            with self.subTest(lang_value=lang_value):
+                composer.lang = lang_value
+                rendered = composer._render_lang(source.ids)
+                self.assertEqual(rendered, {source.id: expected})
+
     @users("employee")
     def test_rendering_custom(self):
         """ Test rendering with custom strings (not coming from template) """
         source = self.test_record.with_env(self.env)
         composer = self.env['mail.test.composer.mixin'].create({
-            'description': '<p>Description for <t t-esc="object.name"/></p>',
+            'description': '<p>Description for <t t-out="object.name"/></p>',
             'body': '<p>SpecificBody from <t t-out="user.name"/></p>',
             'name': 'Invite',
             'subject': 'SpecificSubject for {{ object.name }}',
@@ -120,7 +163,7 @@ class TestMailComposerMixin(MailCommon, TestRecipients):
         customer.lang = 'es_ES'
         source = self.test_record.with_env(self.env)
         composer = self.env['mail.test.composer.mixin'].create({
-            'description': '<p>Description for <t t-esc="object.name"/></p>',
+            'description': '<p>Description for <t t-out="object.name"/></p>',
             'name': 'Invite',
             'template_id': self.mail_template.id,
             'source_ids': [(4, source.id)],
@@ -146,3 +189,15 @@ class TestMailComposerMixin(MailCommon, TestRecipients):
                          'Translation comes from the template, as both values equal')
         description = composer._render_field('description', source.ids)[source.id]
         self.assertEqual(description, f'<p>Description for {source.name}</p>')
+
+        # check default computation when 'lang' is void -> actually rerouted to template lang
+        composer.lang = False
+        subject = composer._render_field('subject', source.ids, compute_lang=True)[source.id]
+        self.assertEqual(subject, f'SpanishSubject for {source.name}',
+                         'Translation comes from the template, as both values equal')
+
+        # check default computation when 'lang' is void in both -> main customer lang
+        self.mail_template.lang = False
+        subject = composer._render_field('subject', source.ids, compute_lang=True)[source.id]
+        self.assertEqual(subject, f'SpanishSubject for {source.name}',
+                         'Translation comes from customer lang, being default when no value is rendered')

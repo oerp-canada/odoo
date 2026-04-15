@@ -1,50 +1,180 @@
-/** @odoo-module */
+import { uuidv4 } from "@point_of_sale/utils";
+import {
+    getService,
+    makeDialogMockEnv,
+    mountWithCleanup,
+    patchWithCleanup,
+} from "@web/../tests/web_test_helpers";
+import { animationFrame, tick, waitFor, waitUntil } from "@odoo/hoot-dom";
+import { Deferred } from "@odoo/hoot-mock";
+import { expect, destroy } from "@odoo/hoot";
+import { MainComponentsContainer } from "@web/core/main_components_container";
+import { patch } from "@web/core/utils/patch";
+import { onMounted } from "@odoo/owl";
+import { user } from "@web/core/user";
+import { ConfirmationDialog } from "@web/core/confirmation_dialog/confirmation_dialog";
 
-import { registry } from "@web/core/registry";
+const { DateTime } = luxon;
 
-registry.category("mock_server").add("pos.session/load_pos_data", async function (route, args) {
-    return {
-        "res.company": { id: 1 },
-        "pos.session": { id: 1 },
-        "pos.printer": [],
-        "pos.config": { id: 1, uuid: "TEST-UUID", trusted_config_ids: [] },
-        "res.partner": [...(this.models["res.partner"]?.records || [])],
-        "pos.category": [...(this.models["pos.category"]?.records || [])],
-        "product.product": [...(this.models["product.product"]?.records || [])],
-        "product.pricelist": [...(this.models["product.pricelist"]?.records || [])],
-        "pos.payment.method": [...(this.models["pos.payment.method"]?.records || [])],
-        "res.currency": {
-            id: 1,
-            name: "USD",
-            symbol: "$",
-            position: "before",
-            rounding: 0.01,
-            rate: 1.0,
-            decimal_places: 2,
-        },
-        "res.users": {
-            id: 2,
-            name: "Mitchell Admin",
-            role: "manager",
-        },
-        "account.fiscal.position": [],
+export const setupPosEnv = async () => {
+    // Do not change these variables, they are in accordance with the demo data
+    odoo.pos_session_id = 1;
+    odoo.pos_config_id = 1;
+    odoo.from_backend = 0;
+    odoo.access_token = uuidv4(); // Avoid indexedDB conflicts
+    odoo.info = {
+        db: `pos-${uuidv4()}`, // Avoid indexedDB conflicts
+        isEnterprise: true,
     };
-});
 
-registry
-    .category("mock_server")
-    .add("pos.session/get_pos_ui_product_product_by_params", async function (route, { args }) {
-        return this.mockSearchRead("product.product", args[1], {});
+    await makeDialogMockEnv();
+    const store = getService("pos");
+    store.setCashier(store.user);
+    patchWithCleanup(user, {
+        // Needed for the allowProductCreation method
+        // and for product reorder in the frontend
+        checkAccessRight: (model, operation) =>
+            (operation === "create" && model === "product.product") ||
+            (operation === "write" && model === "product.template"),
+    });
+    return store;
+};
+
+export const getFilledOrder = async (store, data = {}) => {
+    const order = store.addNewOrder(data);
+    const product1 = store.models["product.template"].get(5);
+    const product2 = store.models["product.template"].get(6);
+    const date = DateTime.now();
+    order.write_date = date;
+    order.create_date = date;
+
+    await store.addLineToOrder(
+        {
+            product_tmpl_id: product1,
+            qty: 3,
+            write_date: date,
+            create_date: date,
+        },
+        order
+    );
+    await store.addLineToOrder(
+        {
+            product_tmpl_id: product2,
+            qty: 2,
+            write_date: date,
+            create_date: date,
+        },
+        order
+    );
+    store.addPendingOrder([order.id]);
+    return order;
+};
+
+export async function waitUntilOrdersSynced(store, options) {
+    await waitUntil(() => !store.syncingOrders.size, options);
+    await tick();
+}
+
+export const mountPosDialog = async (component, props) => {
+    patchDialogComponent(component);
+    const dialog = getService("dialog");
+    const root = await mountWithCleanup(MainComponentsContainer);
+    const deferred = new Deferred();
+
+    const getComponentInstance = (root) => {
+        const flattenedChildren = (comp, acc = {}) => {
+            const array = Object.values(comp.children);
+            for (const child of array) {
+                acc[child.name] = child;
+                flattenedChildren(child, acc);
+            }
+            return acc;
+        };
+        const components = flattenedChildren(root);
+        return components[component.name];
+    };
+
+    dialog.add(component, {
+        ...props,
+        onMounted() {
+            const dialogComponent = getComponentInstance(root.__owl__);
+            deferred.resolve(dialogComponent.component);
+        },
+    });
+    return await deferred;
+};
+
+export const patchDialogComponent = (component) => {
+    component.props = [...component.props, "onMounted?"];
+    patch(component.prototype, {
+        setup() {
+            super.setup();
+
+            onMounted(() => {
+                this.props.onMounted && this.props.onMounted();
+            });
+        },
+    });
+};
+
+export const expectFormattedPrice = (value, expected) => {
+    expect(value).toBe(expected.replaceAll(" ", "\u00a0"));
+};
+
+export const dialogActions = async (action, steps = []) => {
+    // Launch the action in a promise to be able to await the end of the steps
+    await mountWithCleanup(MainComponentsContainer);
+    const promise = new Promise((resolve) => {
+        const call = async (fn) => {
+            const result = await fn();
+            resolve(result);
+        };
+        call(action);
     });
 
-// Used to load the default UOM. Seems like this should be doe in load_pos_data?
-registry
-    .category("mock_server")
-    .add("ir.model.data/check_object_reference", async function (route, { args: [model, xmlId] }) {
-        if (model !== "uom" || xmlId !== "product_uom_unit") {
-            throw new Error(`Unknown object reference: ${model}.${xmlId}`);
-        }
-        return ["uom", 1];
+    // Wait for the dialog to be mounted
+    await waitFor(".o_dialog");
+
+    // Execute the steps one by one
+    for (const step of steps) {
+        await step();
+        await animationFrame();
+    }
+
+    // Return the result of the action
+    return await promise;
+};
+
+export const createPaymentLine = (store, order, paymentMethod, data = {}) =>
+    store.models["pos.payment"].create({
+        amount: 10,
+        payment_method_id: paymentMethod.id,
+        pos_order_id: order.id,
+        write_date: DateTime.now(),
+        create_date: DateTime.now(),
+        ...data,
     });
 
-// FIXME POSREF missing unhandledrejection handler and other code form qunit.js
+export const activateMountingDialogs = async (env) => {
+    const dialog = await mountWithCleanup(ConfirmationDialog, {
+        env,
+        props: {
+            title: "Title",
+            body: "Body",
+            confirm: () => false,
+            cancel: () => true,
+            dismiss: () => false,
+            close: () => {},
+        },
+    });
+    destroy(dialog);
+    await animationFrame();
+};
+
+export const normalizeFunctionsInObject = (obj) =>
+    Object.fromEntries(
+        Object.entries(obj).map(([key, value]) => [
+            key,
+            typeof value === "function" ? "function" : value,
+        ])
+    );

@@ -1,72 +1,67 @@
-# -*- coding: utf-8 -*-
 # Part of Odoo. See LICENSE file for full copyright and licensing details.
 
 __all__ = [
-    'convert_file', 'convert_sql_import',
-    'convert_csv_import', 'convert_xml_import'
+    'convert_csv_import',
+    'convert_file',
+    'convert_sql_import',
+    'convert_xml_import'
 ]
-
-import base64
+import csv
 import io
 import logging
 import os.path
 import pprint
 import re
 import subprocess
+import typing
 import warnings
+import zoneinfo
+from datetime import datetime, timedelta, UTC, tzinfo
 
-from datetime import datetime, timedelta
 from dateutil.relativedelta import relativedelta
-
-import pytz
 from lxml import etree, builder
 try:
     import jingtrang
 except ImportError:
     jingtrang = None
 
-import odoo
-from . import pycompat
+from .binary import BinaryBytes
 from .config import config
-from .misc import file_open, unquote, ustr, SKIPPED_ELEMENT_TYPES
-from .translate import _
-from odoo import SUPERUSER_ID, api
+from .misc import file_open, file_path, SKIPPED_ELEMENT_TYPES
 from odoo.exceptions import ValidationError
+
+from .safe_eval import safe_eval, time
 
 _logger = logging.getLogger(__name__)
 
-from .safe_eval import safe_eval as s_eval, pytz, time
-safe_eval = lambda expr, ctx={}: s_eval(expr, ctx, nocopy=True)
+ConvertMode = typing.Literal['init', 'update']
+IdRef = dict[str, int | typing.Literal[False]]
+
+
+class Pytz(typing.NamedTuple):
+    timezone: typing.Callable[[str], zoneinfo.ZoneInfo]
+    utc: tzinfo
+    UTC: tzinfo
+
 
 class ParseError(Exception):
     ...
 
-class RecordDictWrapper(dict):
-    """
-    Used to pass a record as locals in eval:
-    records do not strictly behave like dict, so we force them to.
-    """
-    def __init__(self, record):
-        self.record = record
-    def __getitem__(self, key):
-        if key in self.record:
-            return self.record[key]
-        return dict.__getitem__(self, key)
 
-def _get_idref(self, env, model_str, idref):
-    idref2 = dict(idref,
-                  Command=odoo.fields.Command,
+def _get_eval_context(self, env, model_str):
+    from odoo import fields, release  # noqa: PLC0415
+    context = dict(Command=fields.Command,
                   time=time,
                   DateTime=datetime,
                   datetime=datetime,
                   timedelta=timedelta,
                   relativedelta=relativedelta,
-                  version=odoo.release.major_version,
+                  version=release.major_version,
                   ref=self.id_get,
-                  pytz=pytz)
+                  pytz=Pytz(zoneinfo.ZoneInfo, UTC, UTC))
     if model_str:
-        idref2['obj'] = env[model_str].browse
-    return idref2
+        context['obj'] = env[model_str].browse
+    return context
 
 def _fix_multiple_roots(node):
     """
@@ -90,14 +85,11 @@ def _eval_xml(self, node, env):
     if node.tag in ('field','value'):
         t = node.get('type','char')
         f_model = node.get('model')
-        if node.get('search'):
-            f_search = node.get("search")
+        if f_search := node.get('search'):
             f_use = node.get("use",'id')
             f_name = node.get("name")
-            idref2 = {}
-            if f_search:
-                idref2 = _get_idref(self, env, f_model, self.idref)
-            q = safe_eval(f_search, idref2)
+            context = _get_eval_context(self, env, f_model)
+            q = safe_eval(f_search, context)
             ids = env[f_model].search(q).ids
             if f_use != 'id':
                 ids = [x[f_use] for x in env[f_model].browse(ids).read([f_use])]
@@ -110,11 +102,10 @@ def _eval_xml(self, node, env):
                 if isinstance(f_val, tuple):
                     f_val = f_val[0]
             return f_val
-        a_eval = node.get('eval')
-        if a_eval:
-            idref2 = _get_idref(self, env, f_model, self.idref)
+        if a_eval := node.get('eval'):
+            context = _get_eval_context(self, env, f_model)
             try:
-                return safe_eval(a_eval, idref2)
+                return safe_eval(a_eval, context)
             except Exception:
                 logging.getLogger('odoo.tools.convert.init').error(
                     'Could not eval(%s) for %s in %s', a_eval, node.get('name'), env.context)
@@ -127,13 +118,14 @@ def _eval_xml(self, node, env):
                 if found in done:
                     continue
                 done.add(found)
-                id = m.groups()[0]
-                if not id in self.idref:
-                    self.idref[id] = self.id_get(id)
+                rec_id = m[1]
+                xid = self.make_xml_id(rec_id)
+                if (record_id := self.idref.get(xid)) is None:
+                    record_id = self.idref[xid] = self.id_get(xid)
                 # So funny story: in Python 3, bytes(n: int) returns a
                 # bytestring of n nuls. In Python 2 it obviously returns the
                 # stringified number, which is what we're expecting here
-                s = s.replace(found, str(self.idref[id]))
+                s = s.replace(found, str(record_id))
             s = s.replace('%%', '%') # Quite weird but it's for (somewhat) backward compatibility sake
             return s
 
@@ -144,64 +136,89 @@ def _eval_xml(self, node, env):
         if t == 'html':
             return _process("".join(etree.tostring(n, method='html', encoding='unicode') for n in node))
 
-        data = node.text
         if node.get('file'):
-            with file_open(node.get('file'), 'rb', env=env) as f:
+            node_file = node.get('file')
+            if t == 'bytes':
+                with file_open(node_file, 'rb', env=env) as f:
+                    return BinaryBytes(f.read())
+            if t == 'base64':
+                warnings.warn("Since 20.0, use type=bytes instead of type=base64", DeprecationWarning)
+                with file_open(node_file, 'rb', env=env) as f:
+                    return BinaryBytes(f.read()).to_base64()
+
+            with file_open(node_file, env=env) as f:
                 data = f.read()
+        else:
+            data = node.text or ''
 
-        if t == 'base64':
-            return base64.b64encode(data)
+        match t:
+            case 'file':
+                path = data.strip()
+                try:
+                    file_path(os.path.join(self.module, path))
+                except FileNotFoundError:
+                    raise FileNotFoundError(
+                        f"No such file or directory: {path!r} in {self.module}"
+                    ) from None
+                return '%s,%s' % (self.module, path)
+            case 'char':
+                return data
+            case 'int':
+                d = data.strip()
+                if d == 'None':
+                    return None
+                return int(d)
+            case 'float':
+                return float(data.strip())
+            case 'list':
+                return [_eval_xml(self, n, env) for n in node.iterchildren('value')]
+            case 'tuple':
+                return tuple(_eval_xml(self, n, env) for n in node.iterchildren('value'))
+            case 'bytes':
+                raise ValueError("bytes type is only compatible with file data")
+            case 'base64':
+                raise ValueError("base64 type is only compatible with file data")
+            case t:
+                raise ValueError(f"Unknown type {t!r}")
 
-        # after that, only text content makes sense
-        data = pycompat.to_text(data)
-        if t == 'file':
-            from ..modules import module
-            path = data.strip()
-            if not module.get_module_resource(self.module, path):
-                raise IOError("No such file or directory: '%s' in %s" % (
-                    path, self.module))
-            return '%s,%s' % (self.module, path)
-
-        if t == 'char':
-            return data
-
-        if t == 'int':
-            d = data.strip()
-            if d == 'None':
-                return None
-            return int(d)
-
-        if t == 'float':
-            return float(data.strip())
-
-        if t in ('list','tuple'):
-            res=[]
-            for n in node.iterchildren(tag='value'):
-                res.append(_eval_xml(self, n, env))
-            if t=='tuple':
-                return tuple(res)
-            return res
     elif node.tag == "function":
+        from odoo.models import BaseModel  # noqa: PLC0415
         model_str = node.get('model')
         model = env[model_str]
         method_name = node.get('name')
         # determine arguments
         args = []
         kwargs = {}
-        a_eval = node.get('eval')
 
-        if a_eval:
-            idref2 = _get_idref(self, env, model_str, self.idref)
-            args = list(safe_eval(a_eval, idref2))
+        if a_eval := node.get('eval'):
+            context = _get_eval_context(self, env, model_str)
+            args = list(safe_eval(a_eval, context))
         for child in node:
             if child.tag == 'value' and child.get('name'):
                 kwargs[child.get('name')] = _eval_xml(self, child, env)
             else:
                 args.append(_eval_xml(self, child, env))
         # merge current context with context in kwargs
-        kwargs['context'] = {**env.context, **kwargs.get('context', {})}
+        if 'context' in kwargs:
+            model = model.with_context(**kwargs.pop('context'))
+        method = getattr(model, method_name)
+        is_model_method = getattr(method, '_api_model', False)
+        if is_model_method:
+            pass  # already bound to an empty recordset
+        else:
+            record_ids, *args = args
+            # skip falsy ids
+            try:
+                record_ids = tuple(record_id for record_id in record_ids if record_id)
+            except TypeError:
+                record_ids = (record_ids,) if record_ids else ()
+            model = model.browse(record_ids)
+            method = getattr(model, method_name)
         # invoke method
-        return odoo.api.call_kw(model, method_name, args, kwargs)
+        result = method(*args, **kwargs)
+        if isinstance(result, BaseModel):
+            result = result.ids
+        return result
     elif node.tag == "test":
         return node.text
 
@@ -229,7 +246,7 @@ class xml_import(object):
                     **safe_eval(context, {
                         'ref': self.id_get,
                         **(eval_context or {})
-                    })
+                    }),
                 }
             )
         return self.env
@@ -253,16 +270,14 @@ form: module.record_id""" % (xml_id,)
         d_model = rec.get("model")
         records = self.env[d_model]
 
-        d_search = rec.get("search")
-        if d_search:
-            idref = _get_idref(self, self.env, d_model, {})
+        if d_search := rec.get("search"):
+            context = _get_eval_context(self, self.env, d_model)
             try:
-                records = records.search(safe_eval(d_search, idref))
+                records = records.search(safe_eval(d_search, context))
             except ValueError:
                 _logger.warning('Skipping deletion for failed search `%r`', d_search, exc_info=True)
 
-        d_id = rec.get("id")
-        if d_id:
+        if d_id := rec.get("id"):
             try:
                 records += records.browse(self.id_get(d_id))
             except ValueError:
@@ -317,17 +332,17 @@ form: module.record_id""" % (xml_id,)
         if not values.get('name'):
             values['name'] = rec_id or '?'
 
-
+        from odoo.fields import Command  # noqa: PLC0415
         groups = []
         for group in rec.get('groups', '').split(','):
             if group.startswith('-'):
                 group_id = self.id_get(group[1:])
-                groups.append(odoo.Command.unlink(group_id))
+                groups.append(Command.unlink(group_id))
             elif group:
                 group_id = self.id_get(group)
-                groups.append(odoo.Command.link(group_id))
+                groups.append(Command.link(group_id))
         if groups:
-            values['groups_id'] = groups
+            values['group_ids'] = groups
 
 
         data = {
@@ -348,9 +363,9 @@ form: module.record_id""" % (xml_id,)
 
         if self.xml_filename and rec_id:
             model = model.with_context(
+                install_mode=True,
                 install_module=self.module,
                 install_filename=self.xml_filename,
-                install_xmlid=rec_id,
             )
 
         self._test_xml_id(rec_id)
@@ -364,42 +379,50 @@ form: module.record_id""" % (xml_id,)
             if not rec_id:
                 return None
 
-            record = env['ir.model.data']._load_xmlid(xid)
-            if record:
+            if record := env['ir.model.data']._load_xmlid(xid):
+                for child in rec.xpath('.//record[@id]'):
+                    sub_xid = child.get("id")
+                    self._test_xml_id(sub_xid)
+                    sub_xid = self.make_xml_id(sub_xid)
+                    if sub_record := env['ir.model.data']._load_xmlid(sub_xid):
+                        self.idref[sub_xid] = sub_record.id
+
                 # if the resource already exists, don't update it but store
                 # its database id (can be useful)
-                self.idref[rec_id] = record.id
+                self.idref[xid] = record.id
                 return None
             elif not nodeattr2bool(rec, 'forcecreate', True):
                 # if it doesn't exist and we shouldn't create it, skip it
                 return None
             # else create it normally
 
+        foreign_record_to_create = False
         if xid and xid.partition('.')[0] != self.module:
             # updating a record created by another module
             record = self.env['ir.model.data']._load_xmlid(xid)
-            if not record:
+            if not record and not (foreign_record_to_create := nodeattr2bool(rec, 'forcecreate')):  # Allow foreign records if explicitely stated
                 if self.noupdate and not nodeattr2bool(rec, 'forcecreate', True):
                     # if it doesn't exist and we shouldn't create it, skip it
                     return None
                 raise Exception("Cannot update missing record %r" % xid)
 
+        from odoo.fields import Command  # noqa: PLC0415
         res = {}
         sub_records = []
-        for field in rec.findall('./field'):
+        for field in rec.iterchildren('field'):
             #TODO: most of this code is duplicated above (in _eval_xml)...
             f_name = field.get("name")
-            f_ref = field.get("ref")
-            f_search = field.get("search")
+            if '@' in f_name:
+                continue  # used for translations
             f_model = field.get("model")
             if not f_model and f_name in model._fields:
                 f_model = model._fields[f_name].comodel_name
             f_use = field.get("use",'') or 'id'
             f_val = False
 
-            if f_search:
-                idref2 = _get_idref(self, env, f_model, self.idref)
-                q = safe_eval(f_search, idref2)
+            if f_search := field.get("search"):
+                context = _get_eval_context(self, env, f_model)
+                q = safe_eval(f_search, context)
                 assert f_model, 'Define an attribute model="..." in your .XML file!'
                 # browse the objects searched
                 s = env[f_model].search(q)
@@ -407,12 +430,12 @@ form: module.record_id""" % (xml_id,)
                 _fields = env[rec_model]._fields
                 # if the current field is many2many
                 if (f_name in _fields) and _fields[f_name].type == 'many2many':
-                    f_val = [odoo.Command.set([x[f_use] for x in s])]
+                    f_val = [Command.set([x[f_use] for x in s])]
                 elif len(s):
                     # otherwise (we are probably in a many2one field),
                     # take the first element of the search
                     f_val = s[0][f_use]
-            elif f_ref:
+            elif f_ref := field.get("ref"):
                 if f_name in model._fields and model._fields[f_name].type == 'reference':
                     val = self.model_id_get(f_ref)
                     f_val = val[0] + ',' + str(val[1])
@@ -434,7 +457,7 @@ form: module.record_id""" % (xml_id,)
                     elif field_type == 'boolean' and isinstance(f_val, str):
                         f_val = str2bool(f_val)
                     elif field_type == 'one2many':
-                        for child in field.findall('./record'):
+                        for child in field.iterchildren('record'):
                             sub_records.append((child, model._fields[f_name].inverse_name))
                         if isinstance(f_val, str):
                             # We do not want to write on the field since we will write
@@ -446,11 +469,19 @@ form: module.record_id""" % (xml_id,)
             res[f_name] = f_val
         if extra_vals:
             res.update(extra_vals)
+        if 'sequence' not in res and 'sequence' in model._fields:
+            sequence = self.next_sequence()
+            if sequence:
+                res['sequence'] = sequence
+        if 'xmlid' not in res and 'xmlid' in model._fields:
+            res['xmlid'] = xid
 
         data = dict(xml_id=xid, values=res, noupdate=self.noupdate)
+        if foreign_record_to_create:
+            model = model.with_context(foreign_record_to_create=foreign_record_to_create)
         record = model._load_records([data], self.mode == 'update')
-        if rec_id:
-            self.idref[rec_id] = record.id
+        if xid:
+            self.idref[xid] = record.id
         if config.get('import_partial'):
             env.cr.commit()
         for child_rec, inverse_name in sub_records:
@@ -461,6 +492,7 @@ form: module.record_id""" % (xml_id,)
         # This helper transforms a <template> element into a <record> and forwards it
         tpl_id = el.get('id', el.get('t-name'))
         full_tpl_id = tpl_id
+        attrib = el.attrib
         if '.' not in full_tpl_id:
             full_tpl_id = '%s.%s' % (self.module, tpl_id)
         # set the full template name for qweb <module>.<id>
@@ -469,7 +501,7 @@ form: module.record_id""" % (xml_id,)
             el.tag = 't'
         else:
             el.tag = 'data'
-        el.attrib.pop('id', None)
+        attrib.pop('id', None)
 
         if self.module.startswith('theme_'):
             model = 'theme.ir.ui.view'
@@ -481,8 +513,8 @@ form: module.record_id""" % (xml_id,)
             'model': model,
         }
         for att in ['forcecreate', 'context']:
-            if att in el.attrib:
-                record_attrs[att] = el.attrib.pop(att)
+            if att in attrib:
+                record_attrs[att] = attrib.pop(att)
 
         Field = builder.E.field
         name = el.get('name', tpl_id)
@@ -491,27 +523,33 @@ form: module.record_id""" % (xml_id,)
         record.append(Field(name, name='name'))
         record.append(Field(full_tpl_id, name='key'))
         record.append(Field("qweb", name='type'))
-        if 'track' in el.attrib:
-            record.append(Field(el.get('track'), name='track'))
-        if 'priority' in el.attrib:
-            record.append(Field(el.get('priority'), name='priority'))
-        if 'inherit_id' in el.attrib:
-            record.append(Field(name='inherit_id', ref=el.get('inherit_id')))
-        if 'website_id' in el.attrib:
-            record.append(Field(name='website_id', ref=el.get('website_id')))
-        if 'key' in el.attrib:
-            record.append(Field(el.get('key'), name='key'))
-        if el.get('active') in ("True", "False"):
+        if 'track' in attrib:
+            record.append(Field(attrib.pop('track'), name='track'))
+        if 'priority' in attrib:
+            record.append(Field(attrib.pop('priority'), name='priority'))
+        if 'inherit_id' in attrib:
+            record.append(Field(name='inherit_id', ref=attrib.pop('inherit_id')))
+        if 'website_id' in attrib:
+            record.append(Field(name='website_id', ref=attrib.pop('website_id')))
+        if 'key' in attrib:
+            record.append(Field(attrib.pop('key'), name='key'))
+
+        # If the "active" value is set on the root node (instead of an inner
+        # <field>), it is treated as the value for the "active" field but only
+        # when *not updating*. This allows to update the record in a more recent
+        # version without changing its active state (compatibility).
+        if (active := attrib.pop('active', None)) in ("True", "False"):
             view_id = self.id_get(tpl_id, raise_if_not_found=False)
             if self.mode != "update" or not view_id:
-                record.append(Field(name='active', eval=el.get('active')))
-        if el.get('customize_show') in ("True", "False"):
-            record.append(Field(name='customize_show', eval=el.get('customize_show')))
-        groups = el.attrib.pop('groups', None)
+                record.append(Field(name='active', eval=active))
+
+        if (customize_show := attrib.pop('customize_show', None)) in ("True", "False"):
+            record.append(Field(name='customize_show', eval=customize_show))
+        groups = attrib.pop('groups', None)
         if groups:
             grp_lst = [("ref('%s')" % x) for x in groups.split(',')]
-            record.append(Field(name="groups_id", eval="[Command.set(["+', '.join(grp_lst)+"])]"))
-        if el.get('primary') == 'True':
+            record.append(Field(name="group_ids", eval="[Command.set(["+', '.join(grp_lst)+"])]"))
+        if attrib.pop('primary', None) == 'True':
             # Pseudo clone mode, we'll set the t-name to the full canonical xmlid
             el.append(
                 builder.E.xpath(
@@ -527,15 +565,54 @@ form: module.record_id""" % (xml_id,)
 
         return self._tag_record(record)
 
+    def _tag_asset(self, el):
+        """
+        Transforms an <asset> element into a <record> and forwards it.
+        """
+        asset_id = el.get('id')
+        Field = builder.E.field
+
+        record = etree.Element('record', attrib={
+            'id': asset_id,
+            'model': 'theme.ir.asset' if self.module.startswith('theme_') else 'ir.asset',
+        })
+
+        name = el.get('name', asset_id)
+        record.append(Field(name, name='name'))
+
+        # E.g. <bundle directive="prepend">web.assets_frontend</bundle>
+        # (directive is optional)
+        bundle_el = el.find('bundle')
+        record.append(Field(bundle_el.text, name='bundle'))
+        if 'directive' in bundle_el.attrib:
+            record.append(Field(bundle_el.get('directive'), name='directive'))
+
+        # E.g. <path>website/static/src/snippets/s_share/000.scss</path>
+        record.append(Field(el.find('path').text, name='path'))
+
+        # Same as <template> for ir.ui.view:
+        # If the "active" value is set on the root node (instead of an inner
+        # <field>), it is treated as the value for the "active" field but only
+        # when *not updating*. This allows to update the record in a more recent
+        # version without changing its active state (compatibility).
+        if el.get('active') in ("True", "False"):
+            record_id = self.id_get(asset_id, raise_if_not_found=False)
+            if self.mode != "update" or not record_id:
+                record.append(Field(name='active', eval=el.get('active')))
+
+        for child in el.iterchildren('field'):
+            record.append(child)
+
+        return self._tag_record(record)
+
     def id_get(self, id_str, raise_if_not_found=True):
+        id_str = self.make_xml_id(id_str)
         if id_str in self.idref:
             return self.idref[id_str]
-        res = self.model_id_get(id_str, raise_if_not_found)
-        return res and res[1]
+        return self.model_id_get(id_str, raise_if_not_found)[1]
 
     def model_id_get(self, id_str, raise_if_not_found=True):
-        if '.' not in id_str:
-            id_str = '%s.%s' % (self.module, id_str)
+        id_str = self.make_xml_id(id_str)
         return self.env['ir.model.data']._xmlid_to_res_model_res_id(id_str, raise_if_not_found=raise_if_not_found)
 
     def _tag_root(self, el):
@@ -546,6 +623,7 @@ form: module.record_id""" % (xml_id,)
 
             self.envs.append(self.get_env(el))
             self._noupdate.append(nodeattr2bool(el, 'noupdate', self.noupdate))
+            self._sequences.append(0 if nodeattr2bool(el, 'auto_sequence', False) else None)
             try:
                 f(rec)
             except ParseError:
@@ -568,6 +646,7 @@ form: module.record_id""" % (xml_id,)
             finally:
                 self._noupdate.pop()
                 self.envs.pop()
+                self._sequences.pop()
 
     @property
     def env(self):
@@ -577,12 +656,19 @@ form: module.record_id""" % (xml_id,)
     def noupdate(self):
         return self._noupdate[-1]
 
-    def __init__(self, env, module, idref, mode, noupdate=False, xml_filename=None):
+    def next_sequence(self):
+        value = self._sequences[-1]
+        if value is not None:
+            value = self._sequences[-1] = value + 10
+        return value
+
+    def __init__(self, env, module, idref: IdRef | None, mode: ConvertMode, noupdate: bool = False, xml_filename: str = ''):
         self.mode = mode
         self.module = module
         self.envs = [env(context=dict(env.context, lang=None))]
-        self.idref = {} if idref is None else idref
+        self.idref: IdRef = {} if idref is None else idref
         self._noupdate = [noupdate]
+        self._sequences = []
         self.xml_filename = xml_filename
         self._tags = {
             'record': self._tag_record,
@@ -590,6 +676,7 @@ form: module.record_id""" % (xml_id,)
             'function': self._tag_function,
             'menuitem': self._tag_menuitem,
             'template': self._tag_template,
+            'asset': self._tag_asset,
 
             **dict.fromkeys(self.DATA_ROOTS, self._tag_root)
         }
@@ -599,12 +686,28 @@ form: module.record_id""" % (xml_id,)
         self._tag_root(de)
     DATA_ROOTS = ['odoo', 'data', 'openerp']
 
-def convert_file(env, module, filename, idref, mode='update', noupdate=False, kind=None, pathname=None):
+
+def convert_file(
+        env,
+        module,
+        filename,
+        idref: IdRef | None,
+        mode: ConvertMode = 'update',
+        noupdate=False,
+        kind=None,
+        pathname=None,
+):
+    if kind is not None:
+        warnings.warn(
+            "The `kind` argument is deprecated in Odoo 19.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
     if pathname is None:
         pathname = os.path.join(module, filename)
     ext = os.path.splitext(filename)[1].lower()
 
-    with file_open(pathname, 'rb') as fp:
+    with file_open(pathname, 'rb', env=env) as fp:
         if ext == '.csv':
             convert_csv_import(env, module, pathname, fp.read(), idref, mode, noupdate)
         elif ext == '.sql':
@@ -616,11 +719,20 @@ def convert_file(env, module, filename, idref, mode='update', noupdate=False, ki
         else:
             raise ValueError("Can't load unknown file type %s.", filename)
 
+
 def convert_sql_import(env, fp):
     env.cr.execute(fp.read()) # pylint: disable=sql-injection
 
-def convert_csv_import(env, module, fname, csvcontent, idref=None, mode='init',
-        noupdate=False):
+
+def convert_csv_import(
+        env,
+        module,
+        fname,
+        csvcontent,
+        idref: IdRef | None = None,
+        mode: ConvertMode = 'init',
+        noupdate=False,
+):
     '''Import csv file :
         quote: "
         delimiter: ,
@@ -628,22 +740,32 @@ def convert_csv_import(env, module, fname, csvcontent, idref=None, mode='init',
     env = env(context=dict(env.context, lang=None))
     filename, _ext = os.path.splitext(os.path.basename(fname))
     model = filename.split('-')[0]
-    reader = pycompat.csv_reader(io.BytesIO(csvcontent), quotechar='"', delimiter=',')
+    reader = csv.reader(io.StringIO(csvcontent.decode()), quotechar='"', delimiter=',')
     fields = next(reader)
 
     if not (mode == 'init' or 'id' in fields):
         _logger.error("Import specification does not contain 'id' and we are in init mode, Cannot continue.")
         return
 
+    translate_indexes = {i for i, field in enumerate(fields) if '@' in field}
+    def remove_translations(row):
+        return [cell for i, cell in enumerate(row) if i not in translate_indexes]
+
+    fields = remove_translations(fields)
+    if not fields:
+        return
+
+    # clean the data from translations (treated during translation import), then
     # filter out empty lines (any([]) == False) and lines containing only empty cells
     datas = [
-        line for line in reader
-        if any(line)
+        data_line for line in reader
+        if any(data_line := remove_translations(line))
     ]
 
     context = {
         'mode': mode,
         'module': module,
+        'install_mode': True,
         'install_module': module,
         'install_filename': fname,
         'noupdate': noupdate,
@@ -652,11 +774,25 @@ def convert_csv_import(env, module, fname, csvcontent, idref=None, mode='init',
     if any(msg['type'] == 'error' for msg in result['messages']):
         # Report failed import and abort module install
         warning_msg = "\n".join(msg['message'] for msg in result['messages'])
-        raise Exception(_('Module loading %s failed: file %s could not be processed:\n %s') % (module, fname, warning_msg))
+        raise Exception(env._(
+            "Module loading %(module)s failed: file %(file)s could not be processed:\n%(message)s",
+            module=module,
+            file=fname,
+            message=warning_msg,
+        ))
 
-def convert_xml_import(env, module, xmlfile, idref=None, mode='init', noupdate=False, report=None):
+
+def convert_xml_import(
+        env,
+        module,
+        xmlfile,
+        idref: IdRef | None = None,
+        mode: ConvertMode = 'init',
+        noupdate=False,
+        report=None,
+):
     doc = etree.parse(xmlfile)
-    schema = os.path.join(config['root_path'], 'import_xml.rng')
+    schema = os.path.join(config.root_path, 'import_xml.rng')
     relaxng = etree.RelaxNG(etree.parse(schema))
     try:
         relaxng.assert_(doc)

@@ -13,7 +13,12 @@
  * limitations under the License.
  */
 
-let opMap;
+const { OPS } = globalThis.pdfjsLib || (await import("pdfjs-lib"));
+
+const opMap = Object.create(null);
+for (const key in OPS) {
+  opMap[OPS[key]] = key;
+}
 
 const FontInspector = (function FontInspectorClosure() {
   let fonts;
@@ -63,7 +68,7 @@ const FontInspector = (function FontInspectorClosure() {
     name: "Font Inspector",
     panel: null,
     manager: null,
-    init(pdfjsLib) {
+    init() {
       const panel = this.panel;
       const tmp = document.createElement("button");
       tmp.addEventListener("click", resetSelection);
@@ -106,21 +111,29 @@ const FontInspector = (function FontInspectorClosure() {
         }
         return moreInfo;
       }
-      const moreInfo = properties(fontObj, ["name", "type"]);
+
+      const moreInfo = fontObj.css
+        ? properties(fontObj, ["baseFontName"])
+        : properties(fontObj, ["name", "type"]);
+
       const fontName = fontObj.loadedName;
       const font = document.createElement("div");
       const name = document.createElement("span");
       name.textContent = fontName;
-      const download = document.createElement("a");
-      if (url) {
-        url = /url\(['"]?([^)"']+)/.exec(url);
-        download.href = url[1];
-      } else if (fontObj.data) {
-        download.href = URL.createObjectURL(
-          new Blob([fontObj.data], { type: fontObj.mimetype })
-        );
+      let download;
+      if (!fontObj.css) {
+        download = document.createElement("a");
+        if (url) {
+          url = /url\(['"]?([^)"']+)/.exec(url);
+          download.href = url[1];
+        } else if (fontObj.data) {
+          download.href = URL.createObjectURL(
+            new Blob([fontObj.data], { type: fontObj.mimetype })
+          );
+        }
+        download.textContent = "Download";
       }
-      download.textContent = "Download";
+
       const logIt = document.createElement("a");
       logIt.href = "";
       logIt.textContent = "Log";
@@ -134,7 +147,11 @@ const FontInspector = (function FontInspectorClosure() {
       select.addEventListener("click", function () {
         selectFont(fontName, select.checked);
       });
-      font.append(select, name, " ", download, " ", logIt, moreInfo);
+      if (download) {
+        font.append(select, name, " ", download, " ", logIt, moreInfo);
+      } else {
+        font.append(select, name, " ", logIt, moreInfo);
+      }
       fonts.append(font);
       // Somewhat of a hack, should probably add a hook for when the text layer
       // is done rendering.
@@ -160,7 +177,7 @@ const StepperManager = (function StepperManagerClosure() {
     name: "Stepper",
     panel: null,
     manager: null,
-    init(pdfjsLib) {
+    init() {
       const self = this;
       stepperControls = document.createElement("div");
       stepperChooser = document.createElement("select");
@@ -173,11 +190,6 @@ const StepperManager = (function StepperManagerClosure() {
       if (sessionStorage.getItem("pdfjsBreakPoints")) {
         breakPoints = JSON.parse(sessionStorage.getItem("pdfjsBreakPoints"));
       }
-
-      opMap = Object.create(null);
-      for (const key in pdfjsLib.OPS) {
-        opMap[pdfjsLib.OPS[key]] = key;
-      }
     },
     cleanup() {
       stepperChooser.textContent = "";
@@ -188,6 +200,10 @@ const StepperManager = (function StepperManagerClosure() {
     active: false,
     // Stepper specific functions.
     create(pageIndex) {
+      const pageContainer = document.querySelector(
+        `#viewer div[data-page-number="${pageIndex + 1}"]`
+      );
+
       const debug = document.createElement("div");
       debug.id = "stepper" + pageIndex;
       debug.hidden = true;
@@ -198,7 +214,12 @@ const StepperManager = (function StepperManagerClosure() {
       b.value = pageIndex;
       stepperChooser.append(b);
       const initBreakPoints = breakPoints[pageIndex] || [];
-      const stepper = new Stepper(debug, pageIndex, initBreakPoints);
+      const stepper = new Stepper(
+        debug,
+        pageIndex,
+        initBreakPoints,
+        pageContainer
+      );
       steppers.push(stepper);
       if (steppers.length === 1) {
         this.selectStepper(pageIndex, false);
@@ -225,9 +246,9 @@ const StepperManager = (function StepperManagerClosure() {
 })();
 
 // The stepper for each page's operatorList.
-const Stepper = (function StepperClosure() {
+class Stepper {
   // Shorter way to create element and optionally set textContent.
-  function c(tag, textContent) {
+  #c(tag, textContent) {
     const d = document.createElement(tag);
     if (textContent) {
       d.textContent = textContent;
@@ -235,7 +256,7 @@ const Stepper = (function StepperClosure() {
     return d;
   }
 
-  function simplifyArgs(args) {
+  #simplifyArgs(args) {
     if (typeof args === "string") {
       const MAX_STRING_LENGTH = 75;
       return args.length <= MAX_STRING_LENGTH
@@ -251,7 +272,7 @@ const Stepper = (function StepperClosure() {
         simpleArgs = [];
       let i, ii;
       for (i = 0, ii = Math.min(MAX_ITEMS, args.length); i < ii; i++) {
-        simpleArgs.push(simplifyArgs(args[i]));
+        simpleArgs.push(this.#simplifyArgs(args[i]));
       }
       if (i < args.length) {
         simpleArgs.push("...");
@@ -260,183 +281,397 @@ const Stepper = (function StepperClosure() {
     }
     const simpleObj = {};
     for (const key in args) {
-      simpleObj[key] = simplifyArgs(args[key]);
+      simpleObj[key] = this.#simplifyArgs(args[key]);
     }
     return simpleObj;
   }
 
-  // eslint-disable-next-line no-shadow
-  class Stepper {
-    constructor(panel, pageIndex, initialBreakPoints) {
-      this.panel = panel;
-      this.breakPoint = 0;
-      this.nextBreakPoint = null;
-      this.pageIndex = pageIndex;
-      this.breakPoints = initialBreakPoints;
-      this.currentIdx = -1;
-      this.operatorListIdx = 0;
-      this.indentLevel = 0;
+  constructor(panel, pageIndex, initialBreakPoints, pageContainer) {
+    this.panel = panel;
+    this.breakPoint = 0;
+    this.nextBreakPoint = null;
+    this.pageIndex = pageIndex;
+    this.breakPoints = initialBreakPoints;
+    this.currentIdx = -1;
+    this.operatorListIdx = 0;
+    this.indentLevel = 0;
+    this.operatorsGroups = null;
+    this.pageContainer = pageContainer;
+  }
+
+  init(operatorList) {
+    const panel = this.panel;
+    const content = this.#c("div", "c=continue, s=step");
+
+    const showBoxesToggle = this.#c("label", "Show bounding boxes");
+    const showBoxesCheckbox = this.#c("input");
+    showBoxesCheckbox.type = "checkbox";
+    showBoxesToggle.prepend(showBoxesCheckbox);
+    content.append(this.#c("br"), showBoxesToggle);
+
+    const table = this.#c("table");
+    content.append(table);
+    table.cellSpacing = 0;
+    const headerRow = this.#c("tr");
+    table.append(headerRow);
+    headerRow.append(
+      this.#c("th", "Break"),
+      this.#c("th", "Idx"),
+      this.#c("th", "fn"),
+      this.#c("th", "args")
+    );
+    panel.append(content);
+    this.table = table;
+    this.updateOperatorList(operatorList);
+
+    const hoverStyle = this.#c("style");
+    this.hoverStyle = hoverStyle;
+    content.prepend(hoverStyle);
+    table.addEventListener("mouseover", this.#handleStepHover.bind(this));
+    table.addEventListener("mouseleave", e => {
+      hoverStyle.innerText = "";
+    });
+
+    showBoxesCheckbox.addEventListener("change", () => {
+      if (showBoxesCheckbox.checked) {
+        this.pageContainer.classList.add("showDebugBoxes");
+      } else {
+        this.pageContainer.classList.remove("showDebugBoxes");
+      }
+    });
+  }
+
+  updateOperatorList(operatorList) {
+    const self = this;
+
+    function cboxOnClick() {
+      const x = +this.dataset.idx;
+      if (this.checked) {
+        self.breakPoints.push(x);
+      } else {
+        self.breakPoints.splice(self.breakPoints.indexOf(x), 1);
+      }
+      StepperManager.saveBreakPoints(self.pageIndex, self.breakPoints);
     }
 
-    init(operatorList) {
-      const panel = this.panel;
-      const content = c("div", "c=continue, s=step");
-      const table = c("table");
-      content.append(table);
-      table.cellSpacing = 0;
-      const headerRow = c("tr");
-      table.append(headerRow);
-      headerRow.append(
-        c("th", "Break"),
-        c("th", "Idx"),
-        c("th", "fn"),
-        c("th", "args")
-      );
-      panel.append(content);
-      this.table = table;
-      this.updateOperatorList(operatorList);
+    const MAX_OPERATORS_COUNT = 15000;
+    if (this.operatorListIdx > MAX_OPERATORS_COUNT) {
+      return;
     }
 
-    updateOperatorList(operatorList) {
-      const self = this;
+    const chunk = document.createDocumentFragment();
+    const operatorsToDisplay = Math.min(
+      MAX_OPERATORS_COUNT,
+      operatorList.fnArray.length
+    );
+    for (let i = this.operatorListIdx; i < operatorsToDisplay; i++) {
+      const line = this.#c("tr");
+      line.className = "line";
+      line.dataset.idx = i;
+      chunk.append(line);
+      const checked = this.breakPoints.includes(i);
+      const args = operatorList.argsArray[i] || [];
 
-      function cboxOnClick() {
-        const x = +this.dataset.idx;
-        if (this.checked) {
-          self.breakPoints.push(x);
-        } else {
-          self.breakPoints.splice(self.breakPoints.indexOf(x), 1);
-        }
-        StepperManager.saveBreakPoints(self.pageIndex, self.breakPoints);
-      }
+      const breakCell = this.#c("td");
+      const cbox = this.#c("input");
+      cbox.type = "checkbox";
+      cbox.className = "points";
+      cbox.checked = checked;
+      cbox.dataset.idx = i;
+      cbox.onclick = cboxOnClick;
 
-      const MAX_OPERATORS_COUNT = 15000;
-      if (this.operatorListIdx > MAX_OPERATORS_COUNT) {
-        return;
-      }
-
-      const chunk = document.createDocumentFragment();
-      const operatorsToDisplay = Math.min(
-        MAX_OPERATORS_COUNT,
-        operatorList.fnArray.length
-      );
-      for (let i = this.operatorListIdx; i < operatorsToDisplay; i++) {
-        const line = c("tr");
-        line.className = "line";
-        line.dataset.idx = i;
-        chunk.append(line);
-        const checked = this.breakPoints.includes(i);
-        const args = operatorList.argsArray[i] || [];
-
-        const breakCell = c("td");
-        const cbox = c("input");
-        cbox.type = "checkbox";
-        cbox.className = "points";
-        cbox.checked = checked;
-        cbox.dataset.idx = i;
-        cbox.onclick = cboxOnClick;
-
-        breakCell.append(cbox);
-        line.append(breakCell, c("td", i.toString()));
-        const fn = opMap[operatorList.fnArray[i]];
-        let decArgs = args;
-        if (fn === "showText") {
-          const glyphs = args[0];
-          const charCodeRow = c("tr");
-          const fontCharRow = c("tr");
-          const unicodeRow = c("tr");
-          for (const glyph of glyphs) {
-            if (typeof glyph === "object" && glyph !== null) {
-              charCodeRow.append(c("td", glyph.originalCharCode));
-              fontCharRow.append(c("td", glyph.fontChar));
-              unicodeRow.append(c("td", glyph.unicode));
-            } else {
-              // null or number
-              const advanceEl = c("td", glyph);
-              advanceEl.classList.add("advance");
-              charCodeRow.append(advanceEl);
-              fontCharRow.append(c("td"));
-              unicodeRow.append(c("td"));
-            }
+      breakCell.append(cbox);
+      line.append(breakCell, this.#c("td", i.toString()));
+      const fn = opMap[operatorList.fnArray[i]];
+      let decArgs = args;
+      if (fn === "showText") {
+        const glyphs = args[0];
+        const charCodeRow = this.#c("tr");
+        const fontCharRow = this.#c("tr");
+        const unicodeRow = this.#c("tr");
+        for (const glyph of glyphs) {
+          if (typeof glyph === "object" && glyph !== null) {
+            charCodeRow.append(this.#c("td", glyph.originalCharCode));
+            fontCharRow.append(this.#c("td", glyph.fontChar));
+            unicodeRow.append(this.#c("td", glyph.unicode));
+          } else {
+            // null or number
+            const advanceEl = this.#c("td", glyph);
+            advanceEl.classList.add("advance");
+            charCodeRow.append(advanceEl);
+            fontCharRow.append(this.#c("td"));
+            unicodeRow.append(this.#c("td"));
           }
-          decArgs = c("td");
-          const table = c("table");
-          table.classList.add("showText");
-          decArgs.append(table);
-          table.append(charCodeRow, fontCharRow, unicodeRow);
-        } else if (fn === "restore") {
-          this.indentLevel--;
         }
-        line.append(c("td", " ".repeat(this.indentLevel * 2) + fn));
-        if (fn === "save") {
-          this.indentLevel++;
-        }
+        decArgs = this.#c("td");
+        const table = this.#c("table");
+        table.classList.add("showText");
+        decArgs.append(table);
+        table.append(charCodeRow, fontCharRow, unicodeRow);
+      } else if (fn === "constructPath") {
+        const [op, [path], minMax] = args;
+        decArgs = this.#c("td");
+        decArgs.append(JSON.stringify(this.#simplifyArgs(path)));
+        decArgs.append(this.#c("br"));
+        decArgs.append(`minMax: ${JSON.stringify(this.#simplifyArgs(minMax))}`);
+        decArgs.append(this.#c("br"));
+        decArgs.append(`→ ${opMap[op]}`);
+      } else if (fn === "restore" && this.indentLevel > 0) {
+        this.indentLevel--;
+      }
+      line.append(this.#c("td", " ".repeat(this.indentLevel * 2) + fn));
+      if (fn === "save") {
+        this.indentLevel++;
+      }
 
-        if (decArgs instanceof HTMLElement) {
-          line.append(decArgs);
-        } else {
-          line.append(c("td", JSON.stringify(simplifyArgs(decArgs))));
+      if (decArgs instanceof HTMLElement) {
+        line.append(decArgs);
+      } else {
+        line.append(this.#c("td", JSON.stringify(this.#simplifyArgs(decArgs))));
+      }
+    }
+    if (operatorsToDisplay < operatorList.fnArray.length) {
+      const lastCell = this.#c("td", "...");
+      lastCell.colspan = 4;
+      chunk.append(lastCell);
+    }
+    this.operatorListIdx = operatorList.fnArray.length;
+    this.table.append(chunk);
+  }
+
+  setOperatorBBoxes(bboxes, metadata) {
+    let boxesContainer = this.pageContainer.querySelector(".pdfBugGroupsLayer");
+    if (!boxesContainer) {
+      boxesContainer = this.#c("div");
+      boxesContainer.classList.add("pdfBugGroupsLayer");
+      this.pageContainer.append(boxesContainer);
+
+      boxesContainer.addEventListener(
+        "click",
+        this.#handleDebugBoxClick.bind(this)
+      );
+      boxesContainer.addEventListener(
+        "mouseover",
+        this.#handleDebugBoxHover.bind(this)
+      );
+    }
+    boxesContainer.innerHTML = "";
+
+    const dependents = new Map();
+    for (const [dependentIdx, { dependencies: ownDependencies }] of metadata) {
+      for (const dependencyIdx of ownDependencies) {
+        let ownDependents = dependents.get(dependencyIdx);
+        if (!ownDependents) {
+          dependents.set(dependencyIdx, (ownDependents = new Set()));
         }
+        ownDependents.add(dependentIdx);
       }
-      if (operatorsToDisplay < operatorList.fnArray.length) {
-        const lastCell = c("td", "...");
-        lastCell.colspan = 4;
-        chunk.append(lastCell);
-      }
-      this.operatorListIdx = operatorList.fnArray.length;
-      this.table.append(chunk);
     }
 
-    getNextBreakPoint() {
-      this.breakPoints.sort(function (a, b) {
-        return a - b;
-      });
-      for (const breakPoint of this.breakPoints) {
-        if (breakPoint > this.currentIdx) {
-          return breakPoint;
-        }
+    const groups = Array.from({ length: bboxes.length }, (_, i) => {
+      let minX = null;
+      let minY = null;
+      let maxX = null;
+      let maxY = null;
+      if (!bboxes.isEmpty(i)) {
+        minX = bboxes.minX(i);
+        minY = bboxes.minY(i);
+        maxX = bboxes.maxX(i);
+        maxY = bboxes.maxY(i);
       }
-      return null;
-    }
 
-    breakIt(idx, callback) {
-      StepperManager.selectStepper(this.pageIndex, true);
-      this.currentIdx = idx;
-
-      const listener = evt => {
-        switch (evt.keyCode) {
-          case 83: // step
-            document.removeEventListener("keydown", listener);
-            this.nextBreakPoint = this.currentIdx + 1;
-            this.goTo(-1);
-            callback();
-            break;
-          case 67: // continue
-            document.removeEventListener("keydown", listener);
-            this.nextBreakPoint = this.getNextBreakPoint();
-            this.goTo(-1);
-            callback();
-            break;
-        }
+      return {
+        minX,
+        minY,
+        maxX,
+        maxY,
+        dependencies: Array.from(metadata.get(i)?.dependencies ?? []).sort(),
+        dependents: Array.from(dependents.get(i) ?? []).sort(),
+        isRenderingOperation: metadata.get(i)?.isRenderingOperation ?? false,
+        idx: i,
       };
-      document.addEventListener("keydown", listener);
-      this.goTo(idx);
-    }
+    });
+    this.operatorsGroups = groups;
 
-    goTo(idx) {
-      const allRows = this.panel.getElementsByClassName("line");
-      for (const row of allRows) {
-        if ((row.dataset.idx | 0) === idx) {
-          row.style.backgroundColor = "rgb(251,250,207)";
-          row.scrollIntoView();
-        } else {
-          row.style.backgroundColor = null;
+    const operatorsGroupsByZindex = groups.toSorted((a, b) => {
+      if (a.minX === null) {
+        return b.minX === null ? 0 : 1;
+      }
+      if (b.minX === null) {
+        return -1;
+      }
+
+      const diffs = [
+        a.minY - b.minY,
+        a.minX - b.minX,
+        b.maxY - a.maxY,
+        b.maxX - a.maxX,
+      ];
+      for (const diff of diffs) {
+        if (Math.abs(diff) > 0.01) {
+          return Math.sign(diff);
         }
+      }
+      for (const diff of diffs) {
+        if (Math.abs(diff) > 0.0001) {
+          return Math.sign(diff);
+        }
+      }
+      return 0;
+    });
+
+    for (let i = 0; i < operatorsGroupsByZindex.length; i++) {
+      const group = operatorsGroupsByZindex[i];
+      if (group.minX !== null) {
+        const el = this.#c("div");
+        el.style.left = `${group.minX * 100}%`;
+        el.style.top = `${group.minY * 100}%`;
+        el.style.width = `${(group.maxX - group.minX) * 100}%`;
+        el.style.height = `${(group.maxY - group.minY) * 100}%`;
+        el.dataset.idx = group.idx;
+        boxesContainer.append(el);
       }
     }
   }
-  return Stepper;
-})();
+
+  #handleStepHover(e) {
+    const tr = e.target.closest("tr");
+    if (!tr || tr.dataset.idx === undefined) {
+      return;
+    }
+
+    const index = +tr.dataset.idx;
+    this.#highlightStepsGroup(index);
+  }
+
+  #handleDebugBoxHover(e) {
+    if (e.target.dataset.idx === undefined) {
+      return;
+    }
+
+    const idx = Number(e.target.dataset.idx);
+    this.#highlightStepsGroup(idx);
+  }
+
+  #handleDebugBoxClick(e) {
+    if (e.target.dataset.idx === undefined) {
+      return;
+    }
+
+    const idx = Number(e.target.dataset.idx);
+
+    this.table.childNodes[idx].scrollIntoView();
+  }
+
+  #highlightStepsGroup(index) {
+    const group = this.operatorsGroups?.[index];
+    if (!group) {
+      return;
+    }
+
+    const renderingColor = `rgba(0, 0, 0, 0.1)`;
+    const dependencyColor = `rgba(0, 255, 255, 0.1)`;
+    const dependentColor = `rgba(255, 0, 0, 0.1)`;
+
+    const solid = color => `background-color: ${color}`;
+    // Used for operations that have an empty bounding box
+    const striped = color => `
+      background-image: repeating-linear-gradient(
+        -45deg,
+        white,
+        white 10px,
+        ${color} 10px,
+        ${color} 20px
+      )
+    `;
+
+    const select = idx => `#${this.panel.id} tr[data-idx="${idx}"]`;
+    const selectN = idxs =>
+      idxs.length === 0 ? "q:not(q)" : idxs.map(select).join(", ");
+
+    const isEmpty = idx =>
+      !this.operatorsGroups[idx] || this.operatorsGroups[idx].minX === null;
+
+    const selfColor = group.isRenderingOperation
+      ? renderingColor
+      : dependentColor;
+
+    this.hoverStyle.innerText = `${select(index)} {
+      ${group.minX === null ? striped(selfColor) : solid(selfColor)}
+    }`;
+    if (group.dependencies.length > 0) {
+      this.hoverStyle.innerText += `
+        ${selectN(group.dependencies.filter(idx => !isEmpty(idx)))} {
+          ${solid(dependencyColor)}
+        }
+        ${selectN(group.dependencies.filter(isEmpty))} {
+          ${striped(dependencyColor)}
+        }`;
+    }
+    if (group.dependents.length > 0) {
+      this.hoverStyle.innerText += `
+        ${selectN(group.dependents.filter(idx => !isEmpty(idx)))} {
+          ${solid(dependentColor)}
+        }
+        ${selectN(group.dependents.filter(isEmpty))} {
+          ${striped(dependentColor)}
+        }`;
+    }
+
+    this.hoverStyle.innerText += `
+      #viewer [data-page-number="${this.pageIndex + 1}"] .pdfBugGroupsLayer [data-idx="${index}"] {
+        background-color: var(--hover-background-color);
+        outline-style: var(--hover-outline-style);
+      }
+    `;
+  }
+
+  getNextBreakPoint() {
+    this.breakPoints.sort((a, b) => a - b);
+    for (const breakPoint of this.breakPoints) {
+      if (breakPoint > this.currentIdx) {
+        return breakPoint;
+      }
+    }
+    return null;
+  }
+
+  breakIt(idx, callback) {
+    StepperManager.selectStepper(this.pageIndex, true);
+    this.currentIdx = idx;
+
+    const listener = evt => {
+      switch (evt.keyCode) {
+        case 83: // step
+          document.removeEventListener("keydown", listener);
+          this.nextBreakPoint = this.currentIdx + 1;
+          this.goTo(-1);
+          callback();
+          break;
+        case 67: // continue
+          document.removeEventListener("keydown", listener);
+          this.nextBreakPoint = this.getNextBreakPoint();
+          this.goTo(-1);
+          callback();
+          break;
+      }
+    };
+    document.addEventListener("keydown", listener);
+    this.goTo(idx);
+  }
+
+  goTo(idx) {
+    const allRows = this.panel.getElementsByClassName("line");
+    for (const row of allRows) {
+      if ((row.dataset.idx | 0) === idx) {
+        row.style.backgroundColor = "rgb(251,250,207)";
+        row.scrollIntoView();
+      } else {
+        row.style.backgroundColor = null;
+      }
+    }
+  }
+}
 
 const Stats = (function Stats() {
   let stats = [];
@@ -457,7 +692,7 @@ const Stats = (function Stats() {
     name: "Stats",
     panel: null,
     manager: null,
-    init(pdfjsLib) {},
+    init() {},
     enabled: false,
     active: false,
     // Stats specific functions.
@@ -479,9 +714,7 @@ const Stats = (function Stats() {
       statsDiv.textContent = stat.toString();
       wrapper.append(title, statsDiv);
       stats.push({ pageNumber, div: wrapper });
-      stats.sort(function (a, b) {
-        return a.pageNumber - b.pageNumber;
-      });
+      stats.sort((a, b) => a.pageNumber - b.pageNumber);
       clear(this.panel);
       for (const entry of stats) {
         this.panel.append(entry.div);
@@ -495,115 +728,118 @@ const Stats = (function Stats() {
 })();
 
 // Manages all the debugging tools.
-const PDFBug = (function PDFBugClosure() {
-  const panelWidth = 300;
-  const buttons = [];
-  let activePanel = null;
+class PDFBug {
+  static #buttons = [];
 
-  return {
-    tools: [FontInspector, StepperManager, Stats],
-    enable(ids) {
-      const all = ids.length === 1 && ids[0] === "all";
-      const tools = this.tools;
-      for (const tool of tools) {
-        if (all || ids.includes(tool.id)) {
-          tool.enabled = true;
-        }
-      }
-      if (!all) {
-        // Sort the tools by the order they are enabled.
-        tools.sort(function (a, b) {
-          let indexA = ids.indexOf(a.id);
-          indexA = indexA < 0 ? tools.length : indexA;
-          let indexB = ids.indexOf(b.id);
-          indexB = indexB < 0 ? tools.length : indexB;
-          return indexA - indexB;
-        });
-      }
-    },
-    init(pdfjsLib, container, ids) {
-      this.loadCSS();
-      this.enable(ids);
-      /*
-       * Basic Layout:
-       * PDFBug
-       *  Controls
-       *  Panels
-       *    Panel
-       *    Panel
-       *    ...
-       */
-      const ui = document.createElement("div");
-      ui.id = "PDFBug";
+  static #activePanel = null;
 
-      const controls = document.createElement("div");
-      controls.setAttribute("class", "controls");
-      ui.append(controls);
+  static tools = [FontInspector, StepperManager, Stats];
 
-      const panels = document.createElement("div");
-      panels.setAttribute("class", "panels");
-      ui.append(panels);
+  static enable(ids) {
+    const all = ids.length === 1 && ids[0] === "all";
+    const tools = this.tools;
+    for (const tool of tools) {
+      if (all || ids.includes(tool.id)) {
+        tool.enabled = true;
+      }
+    }
+    if (!all) {
+      // Sort the tools by the order they are enabled.
+      tools.sort(function (a, b) {
+        let indexA = ids.indexOf(a.id);
+        indexA = indexA < 0 ? tools.length : indexA;
+        let indexB = ids.indexOf(b.id);
+        indexB = indexB < 0 ? tools.length : indexB;
+        return indexA - indexB;
+      });
+    }
+  }
 
-      container.append(ui);
-      container.style.right = panelWidth + "px";
+  static init(container, ids) {
+    this.loadCSS();
+    this.enable(ids);
+    /*
+     * Basic Layout:
+     * PDFBug
+     *  Controls
+     *  Panels
+     *    Panel
+     *    Panel
+     *    ...
+     */
+    const ui = document.createElement("div");
+    ui.id = "PDFBug";
 
-      // Initialize all the debugging tools.
-      for (const tool of this.tools) {
-        const panel = document.createElement("div");
-        const panelButton = document.createElement("button");
-        panelButton.textContent = tool.name;
-        panelButton.addEventListener("click", event => {
-          event.preventDefault();
-          this.selectPanel(tool);
-        });
-        controls.append(panelButton);
-        panels.append(panel);
-        tool.panel = panel;
-        tool.manager = this;
-        if (tool.enabled) {
-          tool.init(pdfjsLib);
-        } else {
-          panel.textContent =
-            `${tool.name} is disabled. To enable add "${tool.id}" to ` +
-            "the pdfBug parameter and refresh (separate multiple by commas).";
-        }
-        buttons.push(panelButton);
-      }
-      this.selectPanel(0);
-    },
-    loadCSS() {
-      const { url } = import.meta;
+    const controls = document.createElement("div");
+    controls.setAttribute("class", "controls");
+    ui.append(controls);
 
-      const link = document.createElement("link");
-      link.rel = "stylesheet";
-      link.href = url.replace(/.js$/, ".css");
+    const panels = document.createElement("div");
+    panels.setAttribute("class", "panels");
+    ui.append(panels);
 
-      document.head.append(link);
-    },
-    cleanup() {
-      for (const tool of this.tools) {
-        if (tool.enabled) {
-          tool.cleanup();
-        }
+    container.append(ui);
+    container.style.right = "var(--panel-width)";
+
+    // Initialize all the debugging tools.
+    for (const tool of this.tools) {
+      const panel = document.createElement("div");
+      const panelButton = document.createElement("button");
+      panelButton.textContent = tool.name;
+      panelButton.addEventListener("click", event => {
+        event.preventDefault();
+        this.selectPanel(tool);
+      });
+      controls.append(panelButton);
+      panels.append(panel);
+      tool.panel = panel;
+      tool.manager = this;
+      if (tool.enabled) {
+        tool.init();
+      } else {
+        panel.textContent =
+          `${tool.name} is disabled. To enable add "${tool.id}" to ` +
+          "the pdfBug parameter and refresh (separate multiple by commas).";
       }
-    },
-    selectPanel(index) {
-      if (typeof index !== "number") {
-        index = this.tools.indexOf(index);
+      this.#buttons.push(panelButton);
+    }
+    this.selectPanel(0);
+  }
+
+  static loadCSS() {
+    const { url } = import.meta;
+
+    const link = document.createElement("link");
+    link.rel = "stylesheet";
+    link.href = url.replace(/\.js$/, ".css");
+
+    document.head.append(link);
+  }
+
+  static cleanup() {
+    for (const tool of this.tools) {
+      if (tool.enabled) {
+        tool.cleanup();
       }
-      if (index === activePanel) {
-        return;
-      }
-      activePanel = index;
-      for (const [j, tool] of this.tools.entries()) {
-        const isActive = j === index;
-        buttons[j].classList.toggle("active", isActive);
-        tool.active = isActive;
-        tool.panel.hidden = !isActive;
-      }
-    },
-  };
-})();
+    }
+  }
+
+  static selectPanel(index) {
+    if (typeof index !== "number") {
+      index = this.tools.indexOf(index);
+    }
+    if (index === this.#activePanel) {
+      return;
+    }
+    this.#activePanel = index;
+    for (const [j, tool] of this.tools.entries()) {
+      const isActive = j === index;
+      this.#buttons[j].classList.toggle("active", isActive);
+      tool.active = isActive;
+      tool.panel.hidden = !isActive;
+    }
+  }
+}
 
 globalThis.FontInspector = FontInspector;
 globalThis.StepperManager = StepperManager;

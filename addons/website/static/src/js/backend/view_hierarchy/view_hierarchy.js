@@ -1,33 +1,34 @@
-/** @odoo-module **/
-
+import { useLayoutEffect, useState } from "@web/owl2/utils";
 import { HierarchyNavbar } from "./hierarchy_navbar";
 import { Layout } from "@web/search/layout";
 import { registry } from "@web/core/registry";
 import { useService } from "@web/core/utils/hooks";
-import { Component, onWillStart, useEffect, useState } from "@odoo/owl";
+import { Component, onWillStart } from "@odoo/owl";
+import { router } from "@web/core/browser/router";
+import { standardActionServiceProps } from "@web/webclient/actions/action_service";
 
 export class ViewHierarchy extends Component {
+    static components = { Layout, HierarchyNavbar };
+    static template = "website.view_hierarchy";
+    static props = { ...standardActionServiceProps };
     setup() {
         this.action = useService("action");
         this.orm = useService("orm");
-        this.router = useService("router");
         this.state = useState({ showInactive: false, searchedView: {}, viewTree: {} });
         this.websites = useState({ names: new Set(["All Websites"]), selected: "All Websites" });
-        this.viewId = this.props.action.context.active_id || this.router.current.hash.active_id;
+        this.viewId = this.props.action.context.active_id || router.current.active_id;
         this.hideGenericViewByWebsite = {};
 
         onWillStart(async () => {
-            ({
-                sibling_views: this.siblingViews,
-                hierarchy: this.state.viewTree,
-            } = await this.orm.call("ir.ui.view", "get_view_hierarchy", [this.viewId], {}));
+            ({ sibling_views: this.siblingViews, hierarchy: this.state.viewTree } =
+                await this.orm.call("ir.ui.view", "get_view_hierarchy", [this.viewId], {}));
 
             this.setupWebsiteNames();
             this.setupHideGenericViewByWebsite();
             this.linkViewsToParent();
         });
 
-        useEffect(
+        useLayoutEffect(
             (searchFoundElem) => {
                 if (searchFoundElem) {
                     searchFoundElem.scrollIntoView({ behavior: "smooth", block: "center" });
@@ -244,8 +245,5 @@ export class ViewHierarchy extends Component {
         });
     }
 }
-
-ViewHierarchy.components = { Layout, HierarchyNavbar };
-ViewHierarchy.template = "website.view_hierarchy";
 
 registry.category("actions").add("website_view_hierarchy", ViewHierarchy);

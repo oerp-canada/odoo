@@ -1,6 +1,5 @@
-/** @odoo-module */
-
-import { Component, useExternalListener, useState } from "@odoo/owl";
+import { useExternalListener, useLayoutEffect, useState } from "@web/owl2/utils";
+import { Component } from "@odoo/owl";
 import { useAutofocus, useService } from "@web/core/utils/hooks";
 
 /**
@@ -27,9 +26,15 @@ import { useAutofocus, useService } from "@web/core/utils/hooks";
  */
 export class SearchBar extends Component {
     static template = "point_of_sale.SearchBar";
+    static props = {
+        config: Object,
+        placeholder: String,
+        onSearch: Function,
+        onFilterSelected: Function,
+    };
 
     setup() {
-        this.ui = useState(useService("ui"));
+        this.ui = useService("ui");
         useAutofocus();
         useExternalListener(window, "click", this._hideOptions);
         this.filterOptionsList = [...this.props.config.filter.options.keys()];
@@ -44,6 +49,13 @@ export class SearchBar extends Component {
             showFilterOptions: false,
             selectedFilter: this.props.config.defaultFilter || this.filterOptionsList[0],
         });
+        useLayoutEffect(
+            () => {
+                this.state.selectedFilter =
+                    this.props.config.defaultFilter || this.filterOptionsList[0];
+            },
+            () => [this.props.config.defaultFilter]
+        );
     }
     _onSelectFilter(key) {
         this.state.selectedFilter = key;

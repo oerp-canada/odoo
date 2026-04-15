@@ -1,5 +1,3 @@
-/** @odoo-module */
-
 import { registry } from '@web/core/registry';
 import { CharField, charField } from '@web/views/fields/char/char_field';
 
@@ -10,7 +8,7 @@ export class ProjectTaskNameWithSubtaskCountCharField extends CharField {
 export const projectTaskNameWithSubtaskCountCharField = {
     ...charField,
     component: ProjectTaskNameWithSubtaskCountCharField,
-    fieldsDependencies: [
+    fieldDependencies: [
         { name: "subtask_count", type: "integer" },
         { name: "closed_subtask_count", type: "integer" },
     ],

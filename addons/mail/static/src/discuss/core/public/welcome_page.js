@@ -1,128 +1,105 @@
-/* @odoo-module */
+import { useLayoutEffect, useState, useSubEnv } from "@web/owl2/utils";
+import { CallPreview } from "@mail/discuss/call/common/call_preview";
 
-import { useMessaging, useStore } from "@mail/core/common/messaging_hook";
-
-import { Component, useRef, useState } from "@odoo/owl";
+import { Component, markup } from "@odoo/owl";
 
 import { browser } from "@web/core/browser/browser";
 import { useService } from "@web/core/utils/hooks";
+import { _t } from "@web/core/l10n/translation";
 
 export class WelcomePage extends Component {
-    static props = ["data?", "proceed?"];
+    static props = ["proceed?"];
     static template = "mail.WelcomePage";
+    static components = { CallPreview };
+
+    cameraPermissionOnMountChecked = false;
 
     setup() {
-        this.messaging = useMessaging();
-        this.store = useStore();
-        this.rpc = useService("rpc");
-        /** @type {import("@mail/core/common/persona_service").PersonaService} */
-        this.personaService = useService("mail.persona");
+        super.setup();
+        this.isClosed = false;
+        this.store = useService("mail.store");
+        this.ui = useService("ui");
+        this.rtc = useService("discuss.rtc");
+        useSubEnv({ inWelcomePage: true });
         this.state = useState({
-            userName: "Guest",
-            audioStream: null,
-            videoStream: null,
+            userName: this.store.self_user?.name || "",
+            activateCamera: 0,
+            activateMicrophone: 0,
+            hasMicrophone: undefined,
+            hasCamera: undefined,
         });
-        this.audioRef = useRef("audio");
-        this.videoRef = useRef("video");
+        useLayoutEffect(
+            (showCallPreview, cameraPermission, microphonePermission) => {
+                if (!showCallPreview) {
+                    return;
+                }
+                if (cameraPermission === "prompt" && !this.cameraPermissionOnMountChecked) {
+                    this.rtc.showMediaPermissionDialog("camera");
+                }
+                if (cameraPermission === "granted") {
+                    this.state.activateCamera++;
+                }
+                if (microphonePermission === "granted") {
+                    this.state.activateMicrophone++;
+                }
+                this.cameraPermissionOnMountChecked = Boolean(cameraPermission);
+            },
+            () => [this.showCallPreview, this.rtc.cameraPermission, this.rtc.microphonePermission]
+        );
     }
 
     onKeydownInput(ev) {
-        if (ev.key === "Enter") {
+        if (ev.key === "Enter" && this.canJoin) {
             this.joinChannel();
         }
     }
 
     async joinChannel() {
-        if (this.store.guest) {
-            await this.personaService.updateGuestName(this.store.self, this.state.userName.trim());
+        if (!this.store.self_user) {
+            await this.store.self_guest?.updateGuestName(this.state.userName.trim());
         }
-        if (this.props.data?.discussPublicViewData.addGuestAsMemberOnJoin) {
-            await this.rpc("/discuss/channel/add_guest_as_member", {
-                channel_id: this.props.data.channelData.id,
-                channel_uuid: this.props.data.channelData.uuid,
-            });
-        }
+        browser.localStorage.setItem("discuss_call_preview_join_mute", !this.state.hasMicrophone);
+        browser.localStorage.setItem(
+            "discuss_call_preview_join_video",
+            Boolean(this.state.hasCamera)
+        );
         this.props.proceed?.();
     }
 
-    get hasRtcSupport() {
-        return Boolean(
-            navigator.mediaDevices && navigator.mediaDevices.getUserMedia && window.MediaStream
+    get canJoin() {
+        return (
+            this.store.self_user || (this.state.userName.trim() && this.state.userName.length <= 60)
         );
     }
 
-    async enableMicrophone() {
-        if (!this.hasRtcSupport) {
-            return;
-        }
-        try {
-            this.state.audioStream = await navigator.mediaDevices.getUserMedia({ audio: true });
-            this.audioRef.el.srcObject = this.audioStream;
-        } catch {
-            // TODO: display popup asking the user to re-enable their mic
-        }
+    get noActiveParticipants() {
+        return !this.store.discuss.thread.channel.hasRtcSessionActive;
     }
 
-    disableMicrophone() {
-        this.audioRef.el.srcObject = null;
-        if (!this.state.audioStream) {
-            return;
-        }
-        this.stopTracksOnMediaStream(this.state.audioStream);
-        this.state.audioStream = null;
-    }
-
-    async enableVideo() {
-        if (!this.hasRtcSupport) {
-            return;
-        }
-        try {
-            this.state.videoStream = await navigator.mediaDevices.getUserMedia({ video: true });
-            this.videoRef.el.srcObject = this.state.videoStream;
-        } catch {
-            // TODO: display popup asking the user to re-enable their camera
-        }
-    }
-
-    disableVideo() {
-        this.videoRef.el.srcObject = null;
-        if (!this.state.videoStream) {
-            return;
-        }
-        this.stopTracksOnMediaStream(this.state.videoStream);
-        this.state.videoStream = null;
-    }
-
-    /**
-     * @param {MediaStream} mediaStream
-     */
-    stopTracksOnMediaStream(mediaStream) {
-        for (const track of mediaStream.getTracks()) {
-            track.stop();
-        }
-    }
-
-    async onClickMic() {
-        if (!this.state.audioStream) {
-            await this.enableMicrophone();
-        } else {
-            this.disableMicrophone();
-        }
-        browser.localStorage.setItem(
-            "discuss_call_preview_join_mute",
-            Boolean(!this.state.audioStream)
+    get subtitle() {
+        return _t(
+            "%(open_tag_1)swith%(close_tag_1)s %(open_tag_2)s%(company_name)s%(close_tag_2)s",
+            {
+                open_tag_1: markup`<span class="text-muted">`,
+                close_tag_1: markup`</span>`,
+                open_tag_2: markup`<span>`,
+                close_tag_2: markup`</span>`,
+                company_name: this.store.companyName,
+            }
         );
     }
 
-    async onClickVideo() {
-        if (!this.state.videoStream) {
-            await this.enableVideo();
-        } else {
-            this.disableVideo();
+    get showCallPreview() {
+        return this.store.discuss.thread.channel.default_display_mode === "video_full_screen";
+    }
+
+    /** @param {{ microphone?: boolean, camera?: boolean }} settings */
+    onCallSettingsChanged(settings) {
+        if (settings.microphone !== undefined) {
+            this.state.hasMicrophone = settings.microphone;
         }
-        browser.localStorage.setItem(
-            "discuss_call_preview_join_video",
-            Boolean(this.state.videoStream)
-        );
+        if (settings.camera !== undefined) {
+            this.state.hasCamera = settings.camera;
+        }
     }
 }

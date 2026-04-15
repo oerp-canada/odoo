@@ -1,9 +1,8 @@
-# -*- coding: utf-8 -*-
 # Part of Odoo. See LICENSE file for full copyright and licensing details.
 
 import logging
 
-from odoo.tools.translate import _
+from odoo.tools.translate import _, LazyTranslate
 from odoo.tools import email_normalize
 from odoo.exceptions import UserError
 
@@ -11,6 +10,7 @@ from odoo import api, fields, models, Command
 
 
 _logger = logging.getLogger(__name__)
+_lt = LazyTranslate(__name__)
 
 
 class PortalWizard(models.TransientModel):
@@ -98,11 +98,12 @@ class PortalWizardUser(models.TransientModel):
         portal_users_with_email = self.filtered(lambda user: email_normalize(user.email))
         (self - portal_users_with_email).email_state = 'ko'
 
-        normalized_emails = [email_normalize(portal_user.email) for portal_user in portal_users_with_email]
-        existing_users = self.env['res.users'].with_context(active_test=False).sudo().search_read([('login', 'in', normalized_emails)], ['id', 'login'])
-
+        existing_users = self.env['res.users'].with_context(active_test=False).sudo().search_read(
+            self._get_similar_users_domain(portal_users_with_email),
+            self._get_similar_users_fields()
+        )
         for portal_user in portal_users_with_email:
-            if next((user for user in existing_users if user['login'] == email_normalize(portal_user.email) and user['id'] != portal_user.user_id.id), None):
+            if next((user for user in existing_users if self._is_portal_similar_than_user(user, portal_user)), None):
                 portal_user.email_state = 'exist'
             else:
                 portal_user.email_state = 'ok'
@@ -113,15 +114,17 @@ class PortalWizardUser(models.TransientModel):
             user = portal_wizard_user.partner_id.with_context(active_test=False).user_ids
             portal_wizard_user.user_id = user[0] if user else False
 
-    @api.depends('user_id', 'user_id.groups_id')
+    @api.depends('user_id', 'user_id.active', 'user_id.group_ids')
     def _compute_group_details(self):
         for portal_wizard_user in self:
             user = portal_wizard_user.user_id
 
+            # If a user was internal when archived, reusing
+            # their user for portal should be done via settings
             if user and user._is_internal():
                 portal_wizard_user.is_internal = True
                 portal_wizard_user.is_portal = False
-            elif user and user.has_group('base.group_portal'):
+            elif user and user.active and user._is_portal():
                 portal_wizard_user.is_internal = False
                 portal_wizard_user.is_portal = True
             else:
@@ -153,41 +156,34 @@ class PortalWizardUser(models.TransientModel):
             company = self.partner_id.company_id or self.env.company
             user_sudo = self.sudo().with_company(company.id)._create_user()
 
-        if not user_sudo.active or not self.is_portal:
-            user_sudo.write({'active': True, 'groups_id': [(4, group_portal.id), (3, group_public.id)]})
-            # prepare for the signup process
-            user_sudo.partner_id.signup_prepare()
+        # users whose access was revoked used to be assigned to the public group
+        user_sudo.write({'active': True, 'group_ids': [(4, group_portal.id), (3, group_public.id)]})
+        # prepare for the signup process
+        user_sudo.partner_id.signup_prepare()
 
         self.with_context(active_test=True)._send_email()
 
         return self.action_refresh_modal()
 
     def action_revoke_access(self):
-        """Remove the user of the partner from the portal group.
+        """Archive the portal user of the partner.
 
-        If the user was only in the portal group, we archive it.
+        User is kept in `group_portal` as `group_public` should only be
+        used for automated tasks and guest interactions.
         """
         self.ensure_one()
         if not self.is_portal:
             raise UserError(_('The partner "%s" has no portal access or is internal.', self.partner_id.name))
 
-        group_portal = self.env.ref('base.group_portal')
-        group_public = self.env.ref('base.group_public')
-
         self._update_partner_email()
 
         # Remove the sign up token, so it can not be used
-        self.partner_id.sudo().signup_token = False
+        self.partner_id.sudo().signup_type = None
 
         user_sudo = self.user_id.sudo()
 
-        # remove the user from the portal group
-        if user_sudo and user_sudo.has_group('base.group_portal'):
-            # if user belongs to portal only, deactivate it
-            if len(user_sudo.groups_id) <= 1:
-                user_sudo.write({'groups_id': [(3, group_portal.id), (4, group_public.id)], 'active': False})
-            else:
-                user_sudo.write({'groups_id': [(3, group_portal.id), (4, group_public.id)]})
+        if user_sudo and user_sudo._is_portal():
+            user_sudo.write({'active': False})
 
         return self.action_refresh_modal()
 
@@ -225,18 +221,24 @@ class PortalWizardUser(models.TransientModel):
         """ send notification email to a new portal user """
         self.ensure_one()
 
-        # determine subject and body in the portal user's language
-        template = self.env.ref('portal.mail_template_data_portal_welcome')
+        template = self.env.ref('auth_signup.portal_set_password_email')
         if not template:
             raise UserError(_('The template "Portal: new user" not found for sending email to the portal user.'))
 
         lang = self.user_id.sudo().lang
         partner = self.user_id.sudo().partner_id
-
-        portal_url = partner.with_context(signup_force_type_in_url='', lang=lang)._get_signup_url_for_action()[partner.id]
         partner.signup_prepare()
 
-        template.with_context(dbname=self._cr.dbname, portal_url=portal_url, lang=lang).send_mail(self.id, force_send=True)
+        template.with_context(
+            dbname=self.env.cr.dbname,
+            email_notification_force_header=True,
+            email_notification_force_footer=True,
+            email_notification_subtitles=[_lt("Your Account"), self.sudo().user_id.name or ''],
+            email_notification_subtitles_highlight_index=1,
+            lang=lang,
+            medium='portalinvite',
+            welcome_message=self.wizard_id.welcome_message,
+        ).send_mail(self.user_id.id, force_send=True, email_layout_xmlid='mail.mail_notification_layout')
 
         return True
 
@@ -253,3 +255,22 @@ class PortalWizardUser(models.TransientModel):
         email_normalized = email_normalize(self.email)
         if self.email_state == 'ok' and email_normalize(self.partner_id.email) != email_normalized:
             self.partner_id.write({'email': email_normalized})
+
+    def _get_similar_users_domain(self, portal_users_with_email):
+        """ Returns the domain needed to find the users that have the same email
+        as portal users.
+        :param portal_users_with_email: portal users that have an email address.
+        """
+        normalized_emails = [email_normalize(portal_user.email) for portal_user in portal_users_with_email]
+        return [('login', 'in', normalized_emails)]
+
+    def _get_similar_users_fields(self):
+        """ Returns a list of field elements to extract from users.
+        """
+        return ['id', 'login']
+
+    def _is_portal_similar_than_user(self, user, portal_user):
+        """ Checks if the credentials of a portal user and a user are the same
+        (users are distinct and their emails are similar).
+        """
+        return user['login'] == email_normalize(portal_user.email) and user['id'] != portal_user.user_id.id

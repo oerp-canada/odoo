@@ -6,14 +6,17 @@ from odoo import fields
 from odoo.tests import HttpCase, tagged
 
 from odoo.addons.mail.tests.common import mail_new_test_user
+from odoo.addons.account.tests.common import AccountTestInvoicingCommon
 
 
 @tagged('post_install', '-at_install')
-class TestEventProductConfiguratorUi(HttpCase):
+class TestEventProductConfiguratorUi(AccountTestInvoicingCommon, HttpCase):
 
     @classmethod
     def setUpClass(cls):
         super().setUpClass()
+
+        cls.env.user.group_ids += cls.quick_ref('event.group_event_manager')
 
         # Adding sale users to test the access rights
         cls.salesman = mail_new_test_user(
@@ -57,7 +60,8 @@ class TestEventProductConfiguratorUi(HttpCase):
         cls.event_product_template = cls.env['product.template'].create({
             'name': 'Registration Event (TEST variants)',
             'list_price': 30.0,
-            'detailed_type': 'event',
+            'type': 'service',
+            'service_tracking': 'event',
         })
 
         # Generate variants
@@ -83,7 +87,6 @@ class TestEventProductConfiguratorUi(HttpCase):
         # Create the event and link it to the product variants as event tickets
         cls.event = cls.env['event.event'].create({
             'name': 'TestEvent',
-            'auto_confirm': True,
             'date_begin': fields.Datetime.to_string(datetime.today() + timedelta(days=1)),
             'date_end': fields.Datetime.to_string(datetime.today() + timedelta(days=15)),
             'date_tz': 'Europe/Brussels',
@@ -112,7 +115,7 @@ class TestEventProductConfiguratorUi(HttpCase):
             cls.event_product_template.optional_product_ids = [cls.product_product_memorabilia.id,]
 
     def test_event_using_product_configurator(self):
-        self.start_tour("/web", 'event_sale_with_product_configurator_tour', login='salesman')
+        self.start_tour("/odoo", 'event_sale_with_product_configurator_tour', login='salesman')
 
         sale_order = self.env['sale.order'].search([('create_uid', "=", self.salesman.id)])
 

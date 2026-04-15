@@ -1,29 +1,36 @@
-/** @odoo-module **/
-
-import { ConfirmationDialog } from "@web/core/confirmation_dialog/confirmation_dialog";
-import { _t, _lt } from "@web/core/l10n/translation";
-import { useOwnedDialogs, useService } from "@web/core/utils/hooks";
-import { sprintf } from "@web/core/utils/strings";
+import { reactive, useState } from "@web/owl2/utils";
+import {
+    deleteConfirmationMessage,
+    ConfirmationDialog,
+} from "@web/core/confirmation_dialog/confirmation_dialog";
+import { _t } from "@web/core/l10n/translation";
+import { useBus, useOwnedDialogs, useService } from "@web/core/utils/hooks";
 import { Layout } from "@web/search/layout";
-import { useModel } from "@web/views/model";
+import { useModelWithSampleData } from "@web/model/model";
 import { FormViewDialog } from "@web/views/view_dialogs/form_view_dialog";
-import { useSetupView } from "@web/views/view_hook";
-import { CalendarDatePicker } from "./date_picker/calendar_date_picker";
-import { CalendarFilterPanel } from "./filter_panel/calendar_filter_panel";
+import { CallbackRecorder, useSetupAction } from "@web/search/action_hook";
 import { CalendarMobileFilterPanel } from "./mobile_filter_panel/calendar_mobile_filter_panel";
 import { CalendarQuickCreate } from "./quick_create/calendar_quick_create";
+import { CalendarSidePanel } from "@web/views/calendar/calendar_side_panel/calendar_side_panel";
 import { SearchBar } from "@web/search/search_bar/search_bar";
 import { useSearchBarToggler } from "@web/search/search_bar/search_bar_toggler";
 import { ViewScaleSelector } from "@web/views/view_components/view_scale_selector";
 import { CogMenu } from "@web/search/cog_menu/cog_menu";
+import { browser } from "@web/core/browser/browser";
+import { standardViewProps } from "@web/views/standard_view_props";
+import { MultiSelectionButtons } from "@web/views/view_components/multi_selection_buttons";
+import { getLocalYearAndWeek } from "@web/core/l10n/dates";
 
-import { Component, useState } from "@odoo/owl";
+import { Component } from "@odoo/owl";
+import { hasTouch } from "@web/core/browser/feature_detection";
+
+const { DateTime } = luxon;
 
 export const SCALE_LABELS = {
-    day: _lt("Day"),
-    week: _lt("Week"),
-    month: _lt("Month"),
-    year: _lt("Year"),
+    day: _t("Day"),
+    week: _t("Week"),
+    month: _t("Month"),
+    year: _t("Year"),
 };
 
 function useUniqueDialog() {
@@ -38,73 +45,230 @@ function useUniqueDialog() {
 }
 
 export class CalendarController extends Component {
+    static components = {
+        MobileFilterPanel: CalendarMobileFilterPanel,
+        QuickCreate: CalendarQuickCreate,
+        QuickCreateFormView: FormViewDialog,
+        Layout,
+        SearchBar,
+        ViewScaleSelector,
+        CogMenu,
+        CalendarSidePanel,
+        MultiSelectionButtons,
+    };
+    static template = "web.CalendarController";
+    static props = {
+        ...standardViewProps,
+        Model: Function,
+        Renderer: Function,
+        archInfo: Object,
+        buttonTemplate: String,
+        itemCalendarProps: { type: Object, optional: true },
+    };
+
     setup() {
         this.action = useService("action");
         this.orm = useService("orm");
         this.displayDialog = useUniqueDialog();
 
-        this.model = useModel(this.props.Model, {
-            ...this.props.archInfo,
-            resModel: this.props.resModel,
-            domain: this.props.domain,
-            fields: this.props.fields,
-        });
-        this.displayName = this.env.config.getDisplayName();
+        this.model = useModelWithSampleData(this.props.Model, this.modelParams);
 
-        useSetupView({
+        useSetupAction({
             getLocalState: () => this.model.exportedState,
         });
-
+        this.keyExpandSidebar = `calendar_sidepanel_expanded,${this.env.config.viewId},${this.env.config.actionId}`;
+        const localSidePanelExpanded = browser.localStorage.getItem(this.keyExpandSidebar);
         this.state = useState({
-            showSideBar: !this.env.isSmall,
+            isWeekendVisible:
+                browser.localStorage.getItem("calendar.isWeekendVisible") != null
+                    ? JSON.parse(browser.localStorage.getItem("calendar.isWeekendVisible"))
+                    : true,
+            sidePanelExpanded:
+                !this.env.isSmall &&
+                Boolean(localSidePanelExpanded != null ? JSON.parse(localSidePanelExpanded) : true),
         });
 
         this.searchBarToggler = useSearchBarToggler();
-    }
 
-    get rendererProps() {
-        return {
-            model: this.model,
+        this._baseRendererProps = {
             createRecord: this.createRecord.bind(this),
             deleteRecord: this.deleteRecord.bind(this),
             editRecord: this.editRecord.bind(this),
             setDate: this.setDate.bind(this),
-            displayName: this.displayName,
         };
+
+        this.prepareSelectionFeature();
     }
-    get containerProps() {
+
+    get modelParams() {
         return {
-            model: this.model,
+            ...this.props.archInfo,
+            canScheduleEvents: this.canScheduleEvents,
+            resModel: this.props.resModel,
+            domain: this.props.domain,
+            fields: this.props.fields,
+            date: this.props.state?.date,
+            loadSurroundings: hasTouch(),
         };
     }
-    get datePickerProps() {
+
+    get canScheduleEvents() {
+        return !this.env.isSmall && this.props.archInfo.canSchedule && this.props.archInfo.canEdit;
+    }
+
+    get currentDate() {
+        const meta = this.model.meta;
+        const scale = meta.scale;
+        if (this.env.isSmall && ["week", "month"].includes(scale)) {
+            const date = meta.date || DateTime.now();
+            let text = "";
+            if (scale === "week") {
+                const startMonth = date.startOf("week");
+                const endMonth = date.endOf("week");
+                if (startMonth.toFormat("LLL") !== endMonth.toFormat("LLL")) {
+                    text = `${startMonth.toFormat("LLL")}-${endMonth.toFormat("LLL")}`;
+                } else {
+                    text = startMonth.toFormat("LLLL");
+                }
+            } else if (scale === "month") {
+                text = date.toFormat("LLLL");
+            }
+            return ` - ${text} ${date.year}`;
+        } else {
+            return "";
+        }
+    }
+
+    get date() {
+        return this.model.meta.date || DateTime.now();
+    }
+
+    get today() {
+        return DateTime.now().toFormat("d");
+    }
+
+    get currentYear() {
+        return this.date.toFormat("y");
+    }
+
+    get dayHeader() {
+        return `${this.date.toFormat("d")} ${this.date.toFormat("MMMM")} ${this.date.year}`;
+    }
+
+    get weekHeader() {
+        const { start, end } = this.model.visibleRange;
+        if (start.year != end.year) {
+            return `${start.toFormat("MMMM")} ${start.year} - ${end.toFormat("MMMM")} ${end.year}`;
+        } else if (start.month != end.month) {
+            return `${start.toFormat("MMMM")} - ${end.toFormat("MMMM")} ${start.year}`;
+        }
+        return `${start.toFormat("MMMM")} ${start.year}`;
+    }
+
+    get currentMonth() {
+        return `${this.date.toFormat("MMMM")} ${this.date.year}`;
+    }
+
+    get currentWeek() {
+        return getLocalYearAndWeek(this.model.visibleRange.start).week;
+    }
+
+    get rendererProps() {
         return {
+            ...this._baseRendererProps,
             model: this.model,
+            isWeekendVisible: this.model.scale === "day" || this.state.isWeekendVisible,
         };
     }
-    get filterPanelProps() {
-        return {
-            model: this.model,
-        };
-    }
+
     get mobileFilterPanelProps() {
         return {
             model: this.model,
-            sideBarShown: this.state.showSideBar,
-            toggleSideBar: () => (this.state.showSideBar = !this.state.showSideBar),
+            sidePanelShown: this.state.sidePanelExpanded,
+            toggleSidePanel: () => {
+                this.state.sidePanelExpanded = !this.state.sidePanelExpanded;
+            },
         };
     }
 
-    get showCalendar() {
-        return !this.env.isSmall || !this.state.showSideBar;
+    get sidePanelProps() {
+        return {
+            model: this.model,
+            editRecord: this.editRecord.bind(this),
+            sidePanelExpanded: this.state.sidePanelExpanded,
+            toggleSidePanel: this.toggleSidePanel.bind(this),
+        };
     }
 
-    get showSideBar() {
-        return this.state.showSideBar;
+    toggleSidePanel() {
+        this.state.sidePanelExpanded = !this.state.sidePanelExpanded;
+        browser.localStorage.setItem(this.keyExpandSidebar, this.state.sidePanelExpanded);
+    }
+
+    get showCalendar() {
+        return !this.env.isSmall || !this.state.sidePanelExpanded;
+    }
+
+    get hasSidePanel() {
+        return this.model.showDatePicker || this.model.filterSections.length > 0;
+    }
+
+    get sidePanelExpanded() {
+        return this.state.sidePanelExpanded;
     }
 
     get className() {
         return this.props.className;
+    }
+
+    get editRecordDefaultDisplayText() {
+        return _t("New Event");
+    }
+
+    prepareMultiSelectionButtonsReactive() {
+        return reactive({
+            onCancel: this.cleanSquareSelection.bind(this),
+            onAdd: (multiCreateData) => {
+                this.onMultiCreate(multiCreateData, this.selectedCells);
+                this.cleanSquareSelection();
+            },
+            onDelete: () => {
+                this.onMultiDelete(this.selectedCells);
+                this.cleanSquareSelection();
+            },
+            nbSelected: 0,
+            multiCreateView: this.model.meta.multiCreateView || "",
+            resModel: this.model.meta.resModel,
+            multiCreateValues: this.props.state?.multiCreateValues,
+            showMultiCreateTimeRange: this.model.showMultiCreateTimeRange,
+            visible: false,
+            context: this.props.context,
+        });
+    }
+
+    prepareSelectionFeature() {
+        this.selectedCells = null;
+        this.multiSelectionButtonsReactive = this.prepareMultiSelectionButtonsReactive();
+        this.callbackRecorder = new CallbackRecorder();
+        this._baseRendererProps.callbackRecorder = this.callbackRecorder;
+        this._baseRendererProps.onSquareSelection = this.updateMultiSelection.bind(this);
+        this._baseRendererProps.cleanSquareSelection = this.cleanSquareSelection.bind(this);
+
+        useBus(this.model.bus, "update", this.cleanSquareSelection.bind(this));
+    }
+
+    updateMultiSelection(selectedCells) {
+        this.selectedCells = selectedCells;
+        this.multiSelectionButtonsReactive.visible = true;
+        this.multiSelectionButtonsReactive.nbSelected = this.getSelectedRecordIds(
+            this.selectedCells
+        ).length;
+    }
+
+    cleanSquareSelection() {
+        this.selectedCells = null;
+        this.multiSelectionButtonsReactive.visible = false;
+        this.callbackRecorder.callbacks.forEach((fn) => fn());
     }
 
     getQuickCreateProps(record) {
@@ -116,11 +280,35 @@ export class CalendarController extends Component {
         };
     }
 
+    getQuickCreateFormViewProps(record) {
+        const rawRecord = this.model.buildRawRecord(record);
+        const context = this.model.makeContextDefaults(rawRecord);
+        context.is_quick_create_form = true;
+        return {
+            resModel: this.model.resModel,
+            viewId: this.model.quickCreateFormViewId,
+            title: _t("New Event"),
+            context,
+        };
+    }
+
     createRecord(record) {
         if (!this.model.canCreate) {
             return;
         }
         if (this.model.hasQuickCreate) {
+            if (this.model.quickCreateFormViewId) {
+                return new Promise((resolve) => {
+                    this.displayDialog(
+                        this.constructor.components.QuickCreateFormView,
+                        this.getQuickCreateFormViewProps(record),
+                        {
+                            onClose: () => resolve(),
+                        }
+                    );
+                });
+            }
+
             return new Promise((resolve) => {
                 this.displayDialog(
                     this.constructor.components.QuickCreate,
@@ -134,7 +322,7 @@ export class CalendarController extends Component {
             return this.editRecordInCreation(record);
         }
     }
-    async editRecord(record, context = {}, shouldFetchFormViewId = true) {
+    async editRecord(record, context = {}) {
         if (this.model.hasEditDialog) {
             return new Promise((resolve) => {
                 this.displayDialog(
@@ -143,7 +331,9 @@ export class CalendarController extends Component {
                         resModel: this.model.resModel,
                         resId: record.id || false,
                         context,
-                        title: record.id ? sprintf(_t("Open: %s"), record.title) : _t("New Event"),
+                        title: record.id
+                            ? _t("Open: %s", record.title)
+                            : this.editRecordDefaultDisplayText,
                         viewId: this.model.formViewId,
                         onRecordSaved: () => this.model.load(),
                     },
@@ -151,19 +341,10 @@ export class CalendarController extends Component {
                 );
             });
         } else {
-            let formViewId = this.model.formViewId;
-            if (shouldFetchFormViewId) {
-                formViewId = await this.orm.call(
-                    this.model.resModel,
-                    "get_formview_id",
-                    [[record.id]],
-                    context
-                );
-            }
             const action = {
                 type: "ir.actions.act_window",
                 res_model: this.model.resModel,
-                views: [[formViewId || false, "form"]],
+                views: [[this.model.formViewId || false, "form"]],
                 target: "current",
                 context,
             };
@@ -176,23 +357,62 @@ export class CalendarController extends Component {
     editRecordInCreation(record) {
         const rawRecord = this.model.buildRawRecord(record);
         const context = this.model.makeContextDefaults(rawRecord);
-        return this.editRecord(record, context, false);
+        return this.editRecord(record, context);
     }
-    deleteRecord(record) {
-        this.displayDialog(ConfirmationDialog, {
-            title: this.env._t("Confirmation"),
-            body: this.env._t("Are you sure you want to delete this record?"),
+
+    deleteConfirmationDialogProps(record) {
+        return {
+            title: _t("Bye-bye, record!"),
+            body: deleteConfirmationMessage,
             confirm: () => {
                 this.model.unlinkRecord(record.id);
             },
-            confirmLabel: _lt("Delete"),
+            confirmLabel: _t("Delete"),
+            confirmClass: "btn-danger",
             cancel: () => {
                 // `ConfirmationDialog` needs this prop to display the cancel
                 // button but we do nothing on cancel.
             },
-        });
+            cancelLabel: _t("No, keep it"),
+        };
     }
-    async setDate(move) {
+
+    deleteRecord(record) {
+        this.displayDialog(ConfirmationDialog, this.deleteConfirmationDialogProps(record));
+    }
+
+    getDates(selectedCells) {
+        const dates = [];
+        for (const element of selectedCells) {
+            const date = luxon.DateTime.fromISO(element.dataset.date);
+            if (!date.invalid) {
+                dates.push(date);
+            }
+        }
+        return dates;
+    }
+
+    onMultiCreate(multiCreateData, selectedCells) {
+        const dates = this.getDates(selectedCells);
+        return this.model.multiCreateRecords(multiCreateData, dates);
+    }
+
+    getSelectedRecordIds(selectedCells) {
+        const ids = [];
+        for (const element of selectedCells) {
+            for (const event of [...element.querySelectorAll(".fc-event")]) {
+                ids.push(parseInt(event.dataset.eventId, 10));
+            }
+        }
+        return ids;
+    }
+
+    onMultiDelete(selectedCells) {
+        const ids = this.getSelectedRecordIds(selectedCells);
+        return this.model.unlinkRecords(ids);
+    }
+
+    setDate(move) {
         let date = null;
         switch (move) {
             case "next":
@@ -203,9 +423,12 @@ export class CalendarController extends Component {
                 break;
             case "today":
                 date = luxon.DateTime.local().startOf("day");
+                if (date.ts === this.date.startOf("day").ts) {
+                    this.model.bus.trigger("SCROLL_TO_CURRENT_HOUR", false);
+                }
                 break;
         }
-        await this.model.load({ date });
+        this.model.load({ date });
     }
 
     get scales() {
@@ -217,15 +440,9 @@ export class CalendarController extends Component {
     async setScale(scale) {
         await this.model.load({ scale });
     }
+
+    toggleWeekendVisibility() {
+        this.state.isWeekendVisible = !this.state.isWeekendVisible;
+        browser.localStorage.setItem("calendar.isWeekendVisible", this.state.isWeekendVisible);
+    }
 }
-CalendarController.components = {
-    DatePicker: CalendarDatePicker,
-    FilterPanel: CalendarFilterPanel,
-    MobileFilterPanel: CalendarMobileFilterPanel,
-    QuickCreate: CalendarQuickCreate,
-    Layout,
-    SearchBar,
-    ViewScaleSelector,
-    CogMenu,
-};
-CalendarController.template = "web.CalendarController";

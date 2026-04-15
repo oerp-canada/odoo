@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 # Part of Odoo. See LICENSE file for full copyright and licensing details.
 import contextlib
+import json
 import logging
 import logging.handlers
 import os
@@ -8,7 +9,6 @@ import platform
 import pprint
 import sys
 import threading
-import time
 import traceback
 import warnings
 
@@ -21,6 +21,11 @@ from . import tools
 _logger = logging.getLogger(__name__)
 
 def log(logger, level, prefix, msg, depth=None):
+    warnings.warn(
+        "odoo.netsvc.log is deprecated starting Odoo 18, use normal logging APIs",
+        category=DeprecationWarning,
+        stacklevel=2,
+    )
     indent=''
     indent_after=' '*len(prefix)
     for line in (prefix + pprint.pformat(msg, depth=depth)).split('\n'):
@@ -42,6 +47,15 @@ class PostgreSQLHandler(logging.Handler):
     """ PostgreSQL Logging Handler will store logs in the database, by default
     the current database, can be set using --log-db=DBNAME
     """
+
+    def __init__(self):
+        super().__init__()
+        self._support_metadata = False
+        if tools.config['log_db'] != '%d':
+            with contextlib.suppress(Exception), tools.mute_logger('odoo.sql_db'), sql_db.db_connect(tools.config['log_db'], allow_uri=True).cursor() as cr:
+                cr.execute("""SELECT 1 FROM information_schema.columns WHERE table_name='ir_logging' and column_name='metadata' AND table_schema = current_schema""")
+                self._support_metadata = bool(cr.fetchone())
+
     def emit(self, record):
         ct = threading.current_thread()
         ct_db = getattr(ct, 'dbname', None)
@@ -51,28 +65,46 @@ class PostgreSQLHandler(logging.Handler):
         with contextlib.suppress(Exception), tools.mute_logger('odoo.sql_db'), sql_db.db_connect(dbname, allow_uri=True).cursor() as cr:
             # preclude risks of deadlocks
             cr.execute("SET LOCAL statement_timeout = 1000")
-            msg = tools.ustr(record.msg)
+            msg = str(record.msg)
             if record.args:
                 msg = msg % record.args
             traceback = getattr(record, 'exc_text', '')
             if traceback:
-                msg = "%s\n%s" % (msg, traceback)
+                msg = f"{msg}\n{traceback}"
             # we do not use record.levelname because it may have been changed by ColoredFormatter.
             levelname = logging.getLevelName(record.levelno)
 
             val = ('server', ct_db, record.name, levelname, msg, record.pathname, record.lineno, record.funcName)
+
+            if self._support_metadata:
+                from . import modules
+                metadata = {}
+                if modules.module.current_test:
+                    with contextlib.suppress(Exception):
+                        metadata['test'] = modules.module.current_test.get_log_metadata(record)
+
+                if metadata:
+                    cr.execute("""
+                        INSERT INTO ir_logging(create_date, type, dbname, name, level, message, path, line, func, metadata)
+                        VALUES (NOW() at time zone 'UTC', %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    """, (*val, json.dumps(metadata)))
+                    return
+
             cr.execute("""
                 INSERT INTO ir_logging(create_date, type, dbname, name, level, message, path, line, func)
                 VALUES (NOW() at time zone 'UTC', %s, %s, %s, %s, %s, %s, %s, %s)
             """, val)
 
-BLACK, RED, GREEN, YELLOW, BLUE, MAGENTA, CYAN, WHITE, _NOTHING, DEFAULT = range(10)
+BLACK, RED, GREEN, YELLOW, BLUE, MAGENTA, CYAN, WHITE, HIGH_INTENSITY, DEFAULT = range(10)
+HI_BLACK, HI_RED, HI_GREEN, HI_YELLOW, HI_BLUE, HI_MAGENTA, HI_CYAN, HI_WHITE = range(
+    BLACK + HIGH_INTENSITY, WHITE + HIGH_INTENSITY + 1)
 #The background is set with 40 plus the number of the color, and the foreground with 30
 #These are the sequences needed to get colored output
 RESET_SEQ = "\033[0m"
 COLOR_SEQ = "\033[1;%dm"
 BOLD_SEQ = "\033[1m"
-COLOR_PATTERN = "%s%s%%s%s" % (COLOR_SEQ, COLOR_SEQ, RESET_SEQ)
+COLOR_PATTERN = f"{COLOR_SEQ}{COLOR_SEQ}%s{RESET_SEQ}"
+TRUE_COLOR_PATTERN = f"\033[38;5;%dm%s{RESET_SEQ}"
 LEVEL_COLOR_MAPPING = {
     logging.DEBUG: (BLUE, DEFAULT),
     logging.INFO: (GREEN, DEFAULT),
@@ -80,20 +112,37 @@ LEVEL_COLOR_MAPPING = {
     logging.ERROR: (RED, DEFAULT),
     logging.CRITICAL: (WHITE, RED),
 }
+# all colors but black, grey, silver, WARNING and ERROR; length must be prime.
+PID_COLORS = (
+    GREEN, BLUE, MAGENTA, CYAN,
+    HI_RED, HI_GREEN, HI_YELLOW, HI_BLUE, HI_MAGENTA, HI_CYAN, HI_WHITE,
+)
+if os.environ.get('ODOO_PY_COLORS_NOPID'):
+    TRUE_COLOR_PATTERN = f"\033[%dm%s{RESET_SEQ}"
+    PID_COLORS = [0]
 
 class PerfFilter(logging.Filter):
+
     def format_perf(self, query_count, query_time, remaining_time):
-        return ("%d" % query_count, "%.3f" % query_time, "%.3f" % remaining_time)
+        return (f"{query_count:d}", f"{query_time:.3f}", f"{remaining_time:.3f}")
+
+    def format_cursor_mode(self, cursor_mode):
+        return cursor_mode or '-'
 
     def filter(self, record):
         if hasattr(threading.current_thread(), "query_count"):
             query_count = threading.current_thread().query_count
             query_time = threading.current_thread().query_time
             perf_t0 = threading.current_thread().perf_t0
-            remaining_time = time.time() - perf_t0 - query_time
+            remaining_time = tools.real_time() - perf_t0 - query_time
             record.perf_info = '%s %s %s' % self.format_perf(query_count, query_time, remaining_time)
+            if tools.config['db_replica_host'] or 'replica' in tools.config['dev_mode']:
+                cursor_mode = threading.current_thread().cursor_mode
+                record.perf_info = f'{record.perf_info} {self.format_cursor_mode(cursor_mode)}'
             delattr(threading.current_thread(), "query_count")
         else:
+            if tools.config['db_replica_host'] or 'replica' in tools.config['dev_mode']:
+                record.perf_info = "- - - -"
             record.perf_info = "- - -"
         return True
 
@@ -108,53 +157,54 @@ class ColoredPerfFilter(PerfFilter):
         return (
             colorize_time(query_count, "%d", 100, 1000),
             colorize_time(query_time, "%.3f", 0.1, 3),
-            colorize_time(remaining_time, "%.3f", 1, 5)
+            colorize_time(remaining_time, "%.3f", 1, 5),
             )
 
-class DBFormatter(logging.Formatter):
-    def format(self, record):
-        record.pid = os.getpid()
-        record.dbname = getattr(threading.current_thread(), 'dbname', '?')
-        return logging.Formatter.format(self, record)
+    def format_cursor_mode(self, cursor_mode):
+        cursor_mode = super().format_cursor_mode(cursor_mode)
+        cursor_mode_color = (
+            RED if cursor_mode == 'ro->rw'
+            else YELLOW if cursor_mode == 'rw'
+            else GREEN
+        )
+        return COLOR_PATTERN % (30 + cursor_mode_color, 40 + DEFAULT, cursor_mode)
 
-class ColoredFormatter(DBFormatter):
+
+class ColoredFormatter(logging.Formatter):
     def format(self, record):
         fg_color, bg_color = LEVEL_COLOR_MAPPING.get(record.levelno, (GREEN, DEFAULT))
         record.levelname = COLOR_PATTERN % (30 + fg_color, 40 + bg_color, record.levelname)
-        return DBFormatter.format(self, record)
+        record.process = TRUE_COLOR_PATTERN % (PID_COLORS[record.thread_native % len(PID_COLORS)], record.thread_native)
+        return super().format(record)
 
-_logger_init = False
+
+class LogRecord(logging.LogRecord):
+    def __init__(self, name, level, pathname, lineno, msg, args, exc_info, func=None, sinfo=None, **kwargs):
+        super().__init__(name, level, pathname, lineno, msg, args, exc_info, func=func, sinfo=sinfo, **kwargs)
+        self.perf_info = ""
+        self.thread_native = threading.get_native_id()
+        self.dbname = getattr(threading.current_thread(), 'dbname', '?')
+
+
+showwarning = None
 def init_logger():
-    global _logger_init
-    if _logger_init:
+    global showwarning  # noqa: PLW0603
+    if logging.getLogRecordFactory() is LogRecord:
         return
-    _logger_init = True
 
-    old_factory = logging.getLogRecordFactory()
-    def record_factory(*args, **kwargs):
-        record = old_factory(*args, **kwargs)
-        record.perf_info = ""
-        return record
-    logging.setLogRecordFactory(record_factory)
+    logging.setLogRecordFactory(LogRecord)
+
+    logging.captureWarnings(True)
+    # must be after `loggin.captureWarnings` so we override *that* instead of
+    # the other way around
+    showwarning = warnings.showwarning
+    warnings.showwarning = showwarning_with_traceback
 
     # enable deprecation warnings (disabled by default)
     warnings.simplefilter('default', category=DeprecationWarning)
-    # ignore deprecation warnings from invalid escape (there's a ton and it's
-    # pretty likely a super low-value signal)
-    warnings.filterwarnings('ignore', r'^invalid escape sequence \'?\\.', category=DeprecationWarning)
-    if sys.version_info[:2] == (3, 9):
-        # recordsets are both sequence and set so trigger warning despite no issue
-        # Only applies to 3.9 as it was fixed in 3.10 see https://bugs.python.org/issue42470
-        warnings.filterwarnings('ignore', r'^Sampling from a set', category=DeprecationWarning, module='odoo')
+    warnings.filterwarnings('default', category=PendingDeprecationWarning)
     # https://github.com/urllib3/urllib3/issues/2680
     warnings.filterwarnings('ignore', r'^\'urllib3.contrib.pyopenssl\' module is deprecated.+', category=DeprecationWarning)
-    # ofxparse use an html parser to parse ofx xml files and triggers a warning since bs4 4.11.0
-    # https://github.com/jseutter/ofxparse/issues/170
-    try:
-        from bs4 import XMLParsedAsHTMLWarning
-        warnings.filterwarnings('ignore', category=XMLParsedAsHTMLWarning)
-    except ImportError:
-        pass
     # ignore a bunch of warnings we can't really fix ourselves
     for module in [
         'babel.util', # deprecated parser module, no release yet
@@ -173,24 +223,36 @@ def init_logger():
     # reportlab does a bunch of bytes/str mixing in a hashmap
     warnings.filterwarnings('ignore', category=BytesWarning, module='reportlab.platypus.paraparser')
 
+    # need to be adapted later but too muchwork for this pr.
+    warnings.filterwarnings('ignore', r'^datetime.datetime.utcnow\(\) is deprecated and scheduled for removal in a future version.*', category=DeprecationWarning)
+
+    # pkg_ressouce is used in google-auth < 1.23.0 (removed in https://github.com/googleapis/google-auth-library-python/pull/596)
+    # unfortunately, in ubuntu jammy and noble, the google-auth version is 1.5.1
+    # starting from noble, the default pkg_ressource version emits a warning on import, triggered when importing
+    # google-auth
+    warnings.filterwarnings('ignore', r'pkg_resources is deprecated as an API.+', category=DeprecationWarning)
+    warnings.filterwarnings('ignore', r'Deprecated call to \`pkg_resources.declare_namespace.+', category=DeprecationWarning)
+
+    # This warning is triggered library only during the python precompilation which does not occur on readonly filesystem
+    warnings.filterwarnings("ignore", r'invalid escape sequence', category=DeprecationWarning, module=".*vobject")
+    warnings.filterwarnings("ignore", r'invalid escape sequence', category=SyntaxWarning, module=".*vobject")
     from .tools.translate import resetlocale
     resetlocale()
 
     # create a format for log messages and dates
-    format = '%(asctime)s %(pid)s %(levelname)s %(dbname)s %(name)s: %(message)s %(perf_info)s'
+    format = '%(asctime)s %(process)s %(levelname)s %(dbname)s %(name)s: %(message)s %(perf_info)s'
     # Normal Handler on stderr
     handler = logging.StreamHandler()
 
     if tools.config['syslog']:
         # SysLog Handler
         if os.name == 'nt':
-            handler = logging.handlers.NTEventLogHandler("%s %s" % (release.description, release.version))
+            handler = logging.handlers.NTEventLogHandler(f"{release.description} {release.version}")
         elif platform.system() == 'Darwin':
             handler = logging.handlers.SysLogHandler('/var/run/log')
         else:
             handler = logging.handlers.SysLogHandler('/dev/log')
-        format = '%s %s' % (release.description, release.version) \
-                + ':%(dbname)s:%(levelname)s:%(name)s:%(message)s'
+        format = f'{release.description} {release.version}:%(dbname)s:%(levelname)s:%(name)s:%(message)s'
 
     elif tools.config['logfile']:
         # LogFile Handler
@@ -214,11 +276,11 @@ def init_logger():
     def is_a_tty(stream):
         return hasattr(stream, 'fileno') and os.isatty(stream.fileno())
 
-    if os.name == 'posix' and isinstance(handler, logging.StreamHandler) and (is_a_tty(handler.stream) or os.environ.get("ODOO_PY_COLORS")):
+    if isinstance(handler, logging.StreamHandler) and (is_a_tty(handler.stream) or os.environ.get("ODOO_PY_COLORS")):
         formatter = ColoredFormatter(format)
         perf_filter = ColoredPerfFilter()
     else:
-        formatter = DBFormatter(format)
+        formatter = logging.Formatter(format)
         perf_filter = PerfFilter()
         werkzeug.serving._log_add_style = False
     handler.setFormatter(formatter)
@@ -254,13 +316,9 @@ def init_logger():
 
 
 DEFAULT_LOG_CONFIGURATION = [
-    'odoo.http.rpc.request:INFO',
-    'odoo.http.rpc.response:INFO',
     ':INFO',
 ]
 PSEUDOCONFIG_MAPPER = {
-    'debug_rpc_answer': ['odoo:DEBUG', 'odoo.sql_db:INFO', 'odoo.http.rpc:DEBUG'],
-    'debug_rpc': ['odoo:DEBUG', 'odoo.sql_db:INFO', 'odoo.http.rpc.request:DEBUG'],
     'debug': ['odoo:DEBUG', 'odoo.sql_db:INFO'],
     'debug_sql': ['odoo.sql_db:DEBUG'],
     'info': [],
@@ -272,10 +330,6 @@ PSEUDOCONFIG_MAPPER = {
 
 logging.RUNBOT = 25
 logging.addLevelName(logging.RUNBOT, "INFO") # displayed as info in log
-logging.captureWarnings(True)
-# must be after `loggin.captureWarnings` so we override *that* instead of the
-# other way around
-showwarning = warnings.showwarning
 IGNORE = {
     'Comparison between bytes and int', # a.foo != False or some shit, we don't care
 }
@@ -286,6 +340,9 @@ def showwarning_with_traceback(message, category, filename, lineno, file=None, l
     # find the stack frame matching (filename, lineno)
     filtered = []
     for frame in traceback.extract_stack():
+        if frame.name == '__call__' and frame.filename.endswith('/odoo/http/router.py'):
+            # we don't care about the frames above our wsgi entrypoint
+            filtered.clear()
         if 'importlib' not in frame.filename:
             filtered.append(frame)
         if frame.filename == filename and frame.lineno == lineno:
@@ -295,7 +352,6 @@ def showwarning_with_traceback(message, category, filename, lineno, file=None, l
         file=file,
         line=''.join(traceback.format_list(filtered))
     )
-warnings.showwarning = showwarning_with_traceback
 
 def runbot(self, message, *args, **kws):
     self.log(logging.RUNBOT, message, *args, **kws)

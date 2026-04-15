@@ -1,7 +1,7 @@
 from odoo import fields, models
 
 
-class UoM(models.Model):
+class UomUom(models.Model):
     _inherit = 'uom.uom'
 
     l10n_es_edi_facturae_uom_code = fields.Selection(
@@ -41,4 +41,5 @@ class UoM(models.Model):
             ('33', 'Cubic meter'),
             ('34', 'Second'),
             ('35', 'Watt'),
+            ('36', 'Kilowatt-hour')
     ], string='Spanish EDI Units', default="05", required=True)

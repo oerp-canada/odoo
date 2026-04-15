@@ -2,13 +2,15 @@
 # Part of Odoo. See LICENSE file for full copyright and licensing details.
 
 from psycopg2 import IntegrityError
+from psycopg2.errors import NotNullViolation
 
-from odoo.exceptions import ValidationError
-from odoo.tests.common import TransactionCase, HttpCase, tagged
+from odoo.exceptions import UserError, ValidationError
+from odoo.tests import Form, TransactionCase, HttpCase, tagged
 from odoo.tools import mute_logger
 from odoo import Command
 
 
+@tagged('at_install', '-post_install')  # LEGACY at_install
 class TestXMLID(TransactionCase):
     def get_data(self, xml_id):
         """ Return the 'ir.model.data' record corresponding to ``xml_id``. """
@@ -172,209 +174,141 @@ class TestXMLID(TransactionCase):
         with self.assertRaisesRegex(IntegrityError, 'ir_model_data_name_nospaces'):
             model._load_records(data_list)
 
+    def test_update_xmlid(self):
+        def assert_xmlid(xmlid, value, message):
+            expected_values = (value._name, value.id)
+            with self.assertQueryCount(0):
+                self.assertEqual(self.env['ir.model.data']._xmlid_lookup(xmlid), expected_values, message)
+            module, name = xmlid.split('.')
+            self.env.cr.execute("SELECT model, res_id FROM ir_model_data where module=%s and name=%s", [module, name])
+            self.assertEqual((value._name, value.id), self.env.cr.fetchone(), message)
 
-class TestIrModel(TransactionCase):
+        xmlid = 'base.test_xmlid'
+        records = self.env['ir.model.data'].search([], limit=6)
+        with self.assertQueryCount(1):
+            self.env['ir.model.data']._update_xmlids([
+                {'xml_id': xmlid, 'record': records[0]},
+            ])
+        assert_xmlid(xmlid, records[0], f'The xmlid {xmlid} should have been created with record {records[0]}')
 
-    @classmethod
-    def setUpClass(cls):
-        super().setUpClass()
+        with self.assertQueryCount(1):
+            self.env['ir.model.data']._update_xmlids([
+                {'xml_id': xmlid, 'record': records[1]},
+            ], update=True)
+        assert_xmlid(xmlid, records[1], f'The xmlid {xmlid} should have been updated with record {records[1]}')
 
-        # The test mode is necessary in this case.  After each test, we call
-        # registry.reset_changes(), which opens a new cursor to retrieve custom
-        # models and fields.  A regular cursor would correspond to the state of
-        # the database before setUpClass(), which is not correct.  Instead, a
-        # test cursor will correspond to the state of the database of cls.cr at
-        # that point, i.e., before the call to setUp().
-        cls.registry.enter_test_mode(cls.cr)
-        cls.addClassCleanup(cls.registry.leave_test_mode)
+        with self.assertQueryCount(1):
+            self.env['ir.model.data']._update_xmlids([
+                {'xml_id': xmlid, 'record': records[2]},
+            ])
+        assert_xmlid(xmlid, records[2], f'The xmlid {xmlid} should have been updated with record {records[1]}')
 
-        # model and records for banana stages
-        cls.env['ir.model'].create({
-            'name': 'Banana Ripeness',
-            'model': 'x_banana_ripeness',
-            'field_id': [
-                Command.create({'name': 'x_name', 'ttype': 'char', 'field_description': 'Name'}),
+        # noupdate case
+        # note: this part is mainly there to avoid breaking the current behaviour, not asserting that it makes sence
+        xmlid = 'base.test_xmlid_noupdates'
+        with self.assertQueryCount(1):
+            self.env['ir.model.data']._update_xmlids([
+                {'xml_id': xmlid, 'record': records[3], 'noupdate':True}, # record created as noupdate
+            ])
+
+        assert_xmlid(xmlid, records[3], f'The xmlid {xmlid} should have been created for record {records[2]}')
+
+        with self.assertQueryCount(1):
+            self.env['ir.model.data']._update_xmlids([
+                {'xml_id': xmlid, 'record': records[4]},
+            ], update=True)
+        assert_xmlid(xmlid, records[3], f'The xmlid {xmlid} should not have been updated (update mode)')
+
+        with self.assertQueryCount(1):
+            self.env['ir.model.data']._update_xmlids([
+                {'xml_id': xmlid, 'record': records[5]},
+            ])
+        assert_xmlid(xmlid, records[5], f'The xmlid {xmlid} should have been updated with record (not an update) {records[1]}')
+
+
+@tagged('-at_install', 'post_install')
+class TestIrModelEdition(TransactionCase):
+    def test_new_ir_model_fields_related(self):
+        """Check that related field are handled correctly on new field"""
+        model = self.env['ir.model'].create({
+            'name': 'Bananas',
+            'model': 'x_bananas'
+        })
+        with self.debug_mode():
+            form = Form(self.env['ir.model.fields'].with_context(default_model_id=model.id))
+            form.related = 'id'
+            self.assertEqual(form.ttype, 'integer')
+
+    def test_delete_manual_models_with_base_fields(self):
+        model = self.env["ir.model"].create({
+            "model": "x_test_base_delete",
+            "name": "test base delete",
+            "field_id": [
+                Command.create({
+                    "name": "x_my_field",
+                    "ttype": "char",
+                }),
+                Command.create({
+                  "name": "active",
+                  "ttype": "boolean",
+                  "state": "base",
+                })
             ]
         })
-        # stage values are pairs (id, display_name)
-        cls.ripeness_green = cls.env['x_banana_ripeness'].name_create('Green')
-        cls.ripeness_okay = cls.env['x_banana_ripeness'].name_create('Okay, I guess?')
-        cls.ripeness_gone = cls.env['x_banana_ripeness'].name_create('Walked away on its own')
+        model2 = self.env["ir.model"].create({
+            "model": "x_test_base_delete2",
+            "name": "test base delete2",
+            "field_id": [
+                Command.create({
+                    "name": "x_my_field2",
+                    "ttype": "char",
+                }),
+                Command.create({
+                  "name": "active",
+                  "ttype": "boolean",
+                  "state": "base",
+                })
+            ]
+        })
+        self.assertTrue(model.exists())
+        self.assertTrue(model2.exists())
 
-        # model and records for bananas
-        cls.bananas_model = cls.env['ir.model'].create({
+        self.env["ir.model"].browse(model.ids + model2.ids).unlink()
+        self.assertFalse(model.exists())
+        self.assertFalse(model2.exists())
+
+    @mute_logger('odoo.sql_db')
+    def test_ir_model_fields_name_create(self):
+        model = self.env['ir.model'].create({
+            'name': 'Bananas',
+            'model': 'x_bananas'
+        })
+        # Quick create an ir_model_field should not be possible
+        # It should be raise a ValidationError
+        with self.assertRaises(NotNullViolation):
+            self.env['ir.model.fields'].name_create("field_name")
+
+        # But with default_ we should be able to name_create
+        self.env['ir.model.fields'].with_context(
+            default_model_id=model.id,
+            default_model=model.name,
+            default_ttype="char"
+        ).name_create("field_name")
+
+    def test_setup_models(self):
+        self.env['ir.model'].create({
             'name': 'Bananas',
             'model': 'x_bananas',
-            'field_id': [
-                Command.create({'name': 'x_name', 'ttype': 'char', 'field_description': 'Name'}),
-                Command.create({'name': 'x_length', 'ttype': 'float', 'field_description': 'Length'}),
-                Command.create({'name': 'x_color', 'ttype': 'integer', 'field_description': 'Color'}),
-                Command.create({'name': 'x_ripeness_id', 'ttype': 'many2one',
-                        'field_description': 'Ripeness','relation': 'x_banana_ripeness',
-                        'group_expand': True})
-            ]
+            'field_id': [Command.create({'name': 'x_name', 'ttype': 'char'})],
         })
-        # add non-stored field that is not valid in order
-        cls.env['ir.model.fields'].create({
-            'name': 'x_is_yellow',
-            'field_description': 'Is the banana yellow?',
-            'ttype': 'boolean',
-            'model_id': cls.bananas_model.id,
-            'store': False,
-            'depends': 'x_color',
-            'compute': "for banana in self:\n    banana['x_is_yellow'] = banana.x_color == 9"
-        })
-        # default stage is ripeness_green
-        cls.env['ir.default'].set('x_bananas', 'x_ripeness_id', cls.ripeness_green[0])
-        cls.env['x_bananas'].create([{
-            'x_name': 'Banana #1',
-            'x_length': 3.14159,
-            'x_color': 9,
-        }, {
-            'x_name': 'Banana #2',
-            'x_length': 0,
-            'x_color': 6,
-        }, {
-            'x_name': 'Banana #3',
-            'x_length': 10,
-            'x_color': 6,
-        }])
+        # check that registry setup doesn't introduce duplicates in registry.field_depends
+        self.registry._setup_models__(self.env.cr, [])
+        fnames = [str(field) for field in self.registry.field_depends]
+        self.assertEqual(len(fnames), len(set(fnames)), "registry.field_depends contains duplicates")
 
-    def setUp(self):
-        # this cleanup is necessary after each test, and must be done last
-        self.addCleanup(self.registry.reset_changes)
-        super().setUp()
-
-    def test_model_order_constraint(self):
-        """Check that the order constraint is properly enforced."""
-        VALID_ORDERS = ['id', 'id desc', 'id asc, x_length', 'x_color, x_length, create_uid']
-        for order in VALID_ORDERS:
-            self.bananas_model.order = order
-
-        INVALID_ORDERS = ['', 'x_wat', 'id esc', 'create_uid,', 'id, x_is_yellow']
-        for order in INVALID_ORDERS:
-            with self.assertRaises(ValidationError), self.cr.savepoint():
-                self.bananas_model.order = order
-
-        # check that the constraint is checked at model creation
-        fields_value = [
-            Command.create({'name': 'x_name', 'ttype': 'char', 'field_description': 'Name'}),
-            Command.create({'name': 'x_length', 'ttype': 'float', 'field_description': 'Length'}),
-            Command.create({'name': 'x_color', 'ttype': 'integer', 'field_description': 'Color'}),
-        ]
-        self.env['ir.model'].create({
-            'name': 'MegaBananas',
-            'model': 'x_mega_bananas',
-            'order': 'x_name asc, id desc',         # valid order
-            'field_id': fields_value,
-        })
-        with self.assertRaises(ValidationError):
-            self.env['ir.model'].create({
-                'name': 'GigaBananas',
-                'model': 'x_giga_bananas',
-                'order': 'x_name asc, x_wat',       # invalid order
-                'field_id': fields_value,
-            })
-
-    def test_model_order_search(self):
-        """Check that custom orders are applied when querying a model."""
-        ORDERS = {
-            'id asc': ['Banana #1', 'Banana #2', 'Banana #3'],
-            'id desc': ['Banana #3', 'Banana #2', 'Banana #1'],
-            'x_color asc, id asc': ['Banana #2', 'Banana #3', 'Banana #1'],
-            'x_color asc, id desc': ['Banana #3', 'Banana #2', 'Banana #1'],
-            'x_length asc, id': ['Banana #2', 'Banana #1', 'Banana #3'],
-        }
-        for order, names in ORDERS.items():
-            self.bananas_model.order = order
-            self.assertEqual(self.env['x_bananas']._order, order)
-
-            bananas = self.env['x_bananas'].search([])
-            self.assertEqual(bananas.mapped('x_name'), names, 'failed to order by %s' % order)
-
-    def test_group_expansion(self):
-        """Check that the basic custom group expansion works."""
-        groups = self.env['x_bananas'].read_group(domain=[],
-                                                  fields=['x_ripeness_id'],
-                                                  groupby=['x_ripeness_id'])
-        expected = [{
-            'x_ripeness_id': self.ripeness_green,
-            'x_ripeness_id_count': 3,
-            '__domain': [('x_ripeness_id', '=', self.ripeness_green[0])],
-        }, {
-            'x_ripeness_id': self.ripeness_okay,
-            'x_ripeness_id_count': 0,
-            '__domain': [('x_ripeness_id', '=', self.ripeness_okay[0])],
-        }, {
-            'x_ripeness_id': self.ripeness_gone,
-            'x_ripeness_id_count': 0,
-            '__domain': [('x_ripeness_id', '=', self.ripeness_gone[0])],
-        }]
-        self.assertEqual(groups, expected, 'should include 2 empty ripeness stages')
-
-    def test_rec_name_deletion(self):
-        """Check that deleting 'x_name' does not crash."""
-        record = self.env['x_bananas'].create({'x_name': "Ifan Ben-Mezd"})
-        self.assertEqual(record._rec_name, 'x_name')
-        self.assertEqual(self.registry.field_depends[type(record).display_name], ('x_name',))
-        self.assertEqual(record.display_name, "Ifan Ben-Mezd")
-
-        # unlinking x_name should fixup _rec_name and display_name
-        self.env['ir.model.fields']._get('x_bananas', 'x_name').unlink()
-        record = self.env['x_bananas'].browse(record.id)
-        self.assertEqual(record._rec_name, None)
-        self.assertEqual(self.registry.field_depends[type(record).display_name], ())
-        self.assertEqual(record.display_name, f"x_bananas,{record.id}")
-
-    def test_monetary_currency_field(self):
-        fields_value = [
-            Command.create({'name': 'x_monetary', 'ttype': 'monetary', 'field_description': 'Monetary', 'currency_field': 'test'}),
-        ]
-        with self.assertRaises(ValidationError):
-            self.env['ir.model'].create({
-                'name': 'Paper Company Model',
-                'model': 'x_paper_model',
-                'field_id': fields_value,
-            })
-
-        fields_value = [
-            Command.create({'name': 'x_monetary', 'ttype': 'monetary', 'field_description': 'Monetary', 'currency_field': 'x_falsy_currency'}),
-            Command.create({'name': 'x_falsy_currency', 'ttype': 'one2many', 'field_description': 'Currency', 'relation': 'res.currency'}),
-        ]
-        with self.assertRaises(ValidationError):
-            self.env['ir.model'].create({
-                'name': 'Paper Company Model',
-                'model': 'x_paper_model',
-                'field_id': fields_value,
-            })
-
-        fields_value = [
-            Command.create({'name': 'x_monetary', 'ttype': 'monetary', 'field_description': 'Monetary', 'currency_field': 'x_falsy_currency'}),
-            Command.create({'name': 'x_falsy_currency', 'ttype': 'many2one', 'field_description': 'Currency', 'relation': 'res.partner'}),
-        ]
-        with self.assertRaises(ValidationError):
-            self.env['ir.model'].create({
-                'name': 'Paper Company Model',
-                'model': 'x_paper_model',
-                'field_id': fields_value,
-            })
-
-        fields_value = [
-            Command.create({'name': 'x_monetary', 'ttype': 'monetary', 'field_description': 'Monetary', 'currency_field': 'x_good_currency'}),
-            Command.create({'name': 'x_good_currency', 'ttype': 'many2one', 'field_description': 'Currency', 'relation': 'res.currency'}),
-        ]
-        model = self.env['ir.model'].create({
-            'name': 'Paper Company Model',
-            'model': 'x_paper_model',
-            'field_id': fields_value,
-        })
-        monetary_field = model.field_id.search([['name', 'ilike', 'x_monetary']])
-        self.assertEqual(len(monetary_field), 1,
-                         "Should have the monetary field in the created ir.model")
-        self.assertEqual(monetary_field.currency_field, "x_good_currency",
-                         "The currency field in monetary should have x_good_currency as name")
 
 @tagged('test_eval_context')
+@tagged('at_install', '-post_install')  # LEGACY at_install
 class TestEvalContext(TransactionCase):
 
     def test_module_usage(self):
@@ -393,6 +327,22 @@ class TestEvalContext(TransactionCase):
 @tagged('-at_install', 'post_install')
 class TestIrModelFieldsTranslation(HttpCase):
     def test_ir_model_fields_translation(self):
+        # If not enabled (like in demo data), landing on res.config will try
+        # to disable module_sale_quotation_builder and raise an warning
+        group_order_template = self.env.ref('sale_management.group_sale_order_template', raise_if_not_found=False)
+        if group_order_template:
+            self.env.ref('base.group_user').write({"implied_ids": [(4, group_order_template.id)]})
+
+        # modify en_US translation
+        field = self.env['ir.model.fields'].search([('model_id.model', '=', 'res.users'), ('name', '=', 'login')])
+        self.assertEqual(field.with_context(lang='en_US').field_description, 'Login')
+        # check the name column of res.users is displayed as 'Login'
+        self.start_tour("/odoo", 'ir_model_fields_translation_en_tour', login="admin")
+        field.update_field_translations('field_description', {'en_US': 'Login2'})
+        # check the name column of res.users is displayed as 'Login2'
+        self.start_tour("/odoo", 'ir_model_fields_translation_en_tour2', login="admin")
+
+        # modify fr_FR translation
         self.env['res.lang']._activate_lang('fr_FR')
         field = self.env['ir.model.fields'].search([('model_id.model', '=', 'res.users'), ('name', '=', 'login')])
         field.update_field_translations('field_description', {'fr_FR': 'Identifiant'})
@@ -400,7 +350,428 @@ class TestIrModelFieldsTranslation(HttpCase):
         admin = self.env['res.users'].search([('login', '=', 'admin')], limit=1)
         admin.lang = 'fr_FR'
         # check the name column of res.users is displayed as 'Identifiant'
-        self.start_tour("/web", 'ir_model_fields_translation_tour', login="admin")
+        self.start_tour("/odoo", 'ir_model_fields_translation_fr_tour', login="admin")
         field.update_field_translations('field_description', {'fr_FR': 'Identifiant2'})
         # check the name column of res.users is displayed as 'Identifiant2'
-        self.start_tour("/web", 'ir_model_fields_translation_tour2', login="admin")
+        self.start_tour("/odoo", 'ir_model_fields_translation_fr_tour2', login="admin")
+
+
+@tagged('at_install', '-post_install')  # LEGACY at_install
+class TestIrModelInherit(TransactionCase):
+    def test_inherit(self):
+        imi = self.env["ir.model.inherit"].search([("model_id.model", "=", "ir.actions.server")])
+        self.assertEqual(len(imi), 1)
+        self.assertEqual(imi.parent_id.model, "ir.actions.actions")
+        self.assertFalse(imi.parent_field_id)
+
+    def test_inherits(self):
+        imi = self.env["ir.model.inherit"].search(
+            [("model_id.model", "=", "res.users"), ("parent_field_id", "!=", False)]
+        )
+        self.assertEqual(len(imi), 1)
+        self.assertEqual(imi.parent_id.model, "res.partner")
+        self.assertEqual(imi.parent_field_id.name, "partner_id")
+
+class TestCommonCustomFields(TransactionCase):
+    MODEL = 'res.partner'
+    COMODEL = 'res.users'
+
+    def setUp(self):
+        # check that the registry is properly reset
+        fnames = set(self.registry[self.MODEL]._fields)
+
+        @self.addCleanup
+        def check_registry():
+            assert set(self.registry[self.MODEL]._fields) == fnames
+
+        self.addCleanup(self.registry.reset_changes)
+        self.addCleanup(self.registry.clear_all_caches)
+
+        super().setUp()
+
+    def create_field(self, name, *, field_type='char'):
+        """ create a custom field and return it """
+        model = self.env['ir.model'].search([('model', '=', self.MODEL)])
+        field = self.env['ir.model.fields'].create({
+            'model_id': model.id,
+            'name': name,
+            'field_description': name,
+            'ttype': field_type,
+        })
+        self.assertIn(name, self.env[self.MODEL]._fields)
+        return field
+
+    def create_view(self, name):
+        """ create a view with the given field name """
+        return self.env['ir.ui.view'].create({
+            'name': 'yet another view',
+            'model': self.MODEL,
+            'arch': '<list string="X"><field name="%s"/></list>' % name,
+        })
+
+
+@tagged('at_install', '-post_install')
+class TestCustomFields(TestCommonCustomFields):
+    def test_create_custom(self):
+        """ custom field names must be start with 'x_' """
+        with self.assertRaises(IntegrityError), mute_logger('odoo.sql_db'):
+            self.create_field('xyz')
+
+    def test_rename_custom(self):
+        """ custom field names must be start with 'x_' """
+        field = self.create_field('x_xyz')
+        with self.assertRaises(IntegrityError), mute_logger('odoo.sql_db'):
+            field.name = 'xyz'
+
+    def test_create_valid(self):
+        """ field names must be valid pg identifiers """
+        with self.assertRaises(ValidationError):
+            self.create_field('x_foo bar')
+
+    def test_rename_valid(self):
+        """ field names must be valid pg identifiers """
+        field = self.create_field('x_foo')
+        with self.assertRaises(ValidationError):
+            field.name = 'x_foo bar'
+
+    def test_create_unique(self):
+        """ one cannot create two fields with the same name on a given model """
+        self.create_field('x_foo')
+        with self.assertRaises(IntegrityError), mute_logger('odoo.sql_db'):
+            self.create_field('x_foo')
+
+    def test_rename_unique(self):
+        """ one cannot create two fields with the same name on a given model """
+        field1 = self.create_field('x_foo')
+        field2 = self.create_field('x_bar')
+        with self.assertRaises(IntegrityError), mute_logger('odoo.sql_db'):
+            field2.name = field1.name
+
+    def test_remove_without_view(self):
+        """ try removing a custom field that does not occur in views """
+        field = self.create_field('x_foo')
+        field.unlink()
+
+    def test_rename_without_view(self):
+        """ try renaming a custom field that does not occur in views """
+        field = self.create_field('x_foo')
+        field.name = 'x_bar'
+
+    @mute_logger('odoo.addons.base.models.ir_ui_view')
+    def test_remove_with_view(self):
+        """ try removing a custom field that occurs in a view """
+        field = self.create_field('x_foo')
+        self.create_view('x_foo')
+
+        # try to delete the field, this should fail but not modify the registry
+        with self.assertRaises(UserError):
+            field.unlink()
+        self.assertIn('x_foo', self.env[self.MODEL]._fields)
+
+    @mute_logger('odoo.addons.base.models.ir_ui_view')
+    def test_rename_with_view(self):
+        """ try renaming a custom field that occurs in a view """
+        field = self.create_field('x_foo')
+        self.create_view('x_foo')
+
+        # try to delete the field, this should fail but not modify the registry
+        with self.assertRaises(UserError):
+            field.name = 'x_bar'
+        self.assertIn('x_foo', self.env[self.MODEL]._fields)
+
+    def test_unlink_base(self):
+        """ one cannot delete a non-custom field expect for uninstallation """
+        field = self.env['ir.model.fields']._get(self.MODEL, 'ref')
+        self.assertTrue(field)
+
+        with self.assertRaisesRegex(UserError, 'This column contains module data'):
+            field.unlink()
+
+        # but it works in the context of uninstalling a module
+        field.with_context(force_delete=True).unlink()
+
+    def test_unlink_with_inverse(self):
+        """ create a custom o2m and then delete its m2o inverse """
+        model = self.env['ir.model']._get(self.MODEL)
+        comodel = self.env['ir.model']._get(self.COMODEL)
+
+        m2o_field = self.env['ir.model.fields'].create({
+            'model_id': comodel.id,
+            'name': 'x_my_m2o',
+            'field_description': 'my_m2o',
+            'ttype': 'many2one',
+            'relation': self.MODEL,
+        })
+
+        o2m_field = self.env['ir.model.fields'].create({
+            'model_id': model.id,
+            'name': 'x_my_o2m',
+            'field_description': 'my_o2m',
+            'ttype': 'one2many',
+            'relation': self.COMODEL,
+            'relation_field': m2o_field.name,
+        })
+
+        # normal mode: you cannot break dependencies
+        with self.assertRaises(UserError):
+            m2o_field.unlink()
+
+        # uninstall mode: unlink dependant fields
+        m2o_field.with_context(force_delete=True).unlink()
+        self.assertFalse(o2m_field.exists())
+
+    def test_unlink_with_dependant(self):
+        """ create a computed field, then delete its dependency """
+        # Also applies to compute fields
+        comodel = self.env['ir.model'].search([('model', '=', self.COMODEL)])
+
+        field = self.create_field('x_my_char')
+
+        dependant = self.env['ir.model.fields'].create({
+            'model_id': comodel.id,
+            'name': 'x_oh_boy',
+            'field_description': 'x_oh_boy',
+            'ttype': 'char',
+            'related': 'partner_id.x_my_char',
+        })
+
+        # normal mode: you cannot break dependencies
+        with self.assertRaises(UserError):
+            field.unlink()
+
+        # uninstall mode: unlink dependant fields
+        field.with_context(force_delete=True).unlink()
+        self.assertFalse(dependant.exists())
+
+    def test_unlink_inherited_custom(self):
+        """ Creating a field on a model automatically creates an inherited field
+            in the comodel, and the latter can only be removed by deleting the
+            "parent" field.
+        """
+        field = self.create_field('x_foo')
+        self.assertEqual(field.state, 'manual')
+
+        inherited_field = self.env['ir.model.fields']._get(self.COMODEL, 'x_foo')
+        self.assertTrue(inherited_field)
+        self.assertEqual(inherited_field.state, 'base')
+
+        # one cannot delete the inherited field itself
+        with self.assertRaises(UserError):
+            inherited_field.unlink()
+
+        # but the inherited field is deleted when its parent field is
+        field.unlink()
+        self.assertFalse(field.exists())
+        self.assertFalse(inherited_field.exists())
+        self.assertFalse(self.env['ir.model.fields'].search_count([
+            ('model', 'in', [self.MODEL, self.COMODEL]),
+            ('name', '=', 'x_foo'),
+        ]))
+
+    def test_create_binary(self):
+        """ binary custom fields should be created as attachment=True to avoid
+        bloating the DB when creating e.g. image fields via studio
+        """
+        self.create_field('x_image', field_type='binary')
+        custom_binary = self.env[self.MODEL]._fields['x_image']
+
+        self.assertTrue(custom_binary.attachment)
+
+    def test_related_field(self):
+        """ create a custom related field, and check filled values """
+        #
+        # Add a custom field equivalent to the following definition:
+        #
+        # class ResPartner(models.Model)
+        #     _inherit = 'res.partner'
+        #     x_oh_boy = fields.Char(related="country_id.code", store=True)
+        #
+
+        # pick N=100 records in comodel
+        countries = self.env['res.country'].search([('code', '!=', False)], limit=100)
+        self.assertEqual(len(countries), 100, "Not enough records in comodel 'res.country'")
+
+        # create records in model, with N distinct values for the related field
+        partners = self.env['res.partner'].create([
+            {'name': country.code, 'country_id': country.id} for country in countries
+        ])
+        self.env.flush_all()
+
+        # create a non-computed field, and assert how many queries it takes
+        model_id = self.env['ir.model']._get_id('res.partner')
+        query_count = 52
+        with self.assertQueryCount(query_count):
+            self.env.registry.clear_cache()
+            self.env['ir.model.fields'].create({
+                'model_id': model_id,
+                'name': 'x_oh_box',
+                'field_description': 'x_oh_box',
+                'ttype': 'char',
+                'store': True,
+            })
+
+        # same with a related field, it only takes 8 extra queries
+        with self.assertQueryCount(query_count + 8):
+            self.env.registry.clear_cache()
+            self.env['ir.model.fields'].create({
+                'model_id': model_id,
+                'name': 'x_oh_boy',
+                'field_description': 'x_oh_boy',
+                'ttype': 'char',
+                'related': 'country_id.code',
+                'store': True,
+            })
+
+        # check the computed values
+        for partner in partners:
+            self.assertEqual(partner.x_oh_boy, partner.country_id.code)
+
+    def test_relation_of_a_custom_field(self):
+        """ change the relation model of a custom field """
+        model = self.env['ir.model'].search([('model', '=', self.MODEL)])
+        field = self.env['ir.model.fields'].create({
+            'name': 'x_foo',
+            'model_id': model.id,
+            'field_description': 'x_foo',
+            'ttype': 'many2many',
+            'relation': self.COMODEL,
+        })
+
+        # change the relation
+        with self.assertRaises(ValidationError):
+            field.relation = 'foo'
+
+    def test_selection(self):
+        """ custom selection field """
+        Model = self.env[self.MODEL]
+        model = self.env['ir.model'].search([('model', '=', self.MODEL)])
+        field = self.env['ir.model.fields'].create({
+            'model_id': model.id,
+            'name': 'x_sel',
+            'field_description': "Custom Selection",
+            'ttype': 'selection',
+            'selection_ids': [
+                Command.create({'value': 'foo', 'name': 'Foo', 'sequence': 0}),
+                Command.create({'value': 'bar', 'name': 'Bar', 'sequence': 1}),
+            ],
+        })
+
+        x_sel = Model._fields['x_sel']
+        self.assertEqual(x_sel.type, 'selection')
+        self.assertEqual(x_sel.selection, [('foo', 'Foo'), ('bar', 'Bar')])
+
+        # add selection value 'baz'
+        field.selection_ids.create({
+            'field_id': field.id, 'value': 'baz', 'name': 'Baz', 'sequence': 2,
+        })
+        x_sel = Model._fields['x_sel']
+        self.assertEqual(x_sel.type, 'selection')
+        self.assertEqual(x_sel.selection, [('foo', 'Foo'), ('bar', 'Bar'), ('baz', 'Baz')])
+
+        # assign values to records
+        rec1 = Model.create({'name': 'Rec1', 'x_sel': 'foo'})
+        rec2 = Model.create({'name': 'Rec2', 'x_sel': 'bar'})
+        rec3 = Model.create({'name': 'Rec3', 'x_sel': 'baz'})
+        self.assertEqual(rec1.x_sel, 'foo')
+        self.assertEqual(rec2.x_sel, 'bar')
+        self.assertEqual(rec3.x_sel, 'baz')
+
+        # remove selection value 'foo'
+        field.selection_ids[0].unlink()
+        x_sel = Model._fields['x_sel']
+        self.assertEqual(x_sel.type, 'selection')
+        self.assertEqual(x_sel.selection, [('bar', 'Bar'), ('baz', 'Baz')])
+
+        self.assertEqual(rec1.x_sel, False)
+        self.assertEqual(rec2.x_sel, 'bar')
+        self.assertEqual(rec3.x_sel, 'baz')
+
+        # update selection value 'bar'
+        field.selection_ids[0].value = 'quux'
+        x_sel = Model._fields['x_sel']
+        self.assertEqual(x_sel.type, 'selection')
+        self.assertEqual(x_sel.selection, [('quux', 'Bar'), ('baz', 'Baz')])
+
+        self.assertEqual(rec1.x_sel, False)
+        self.assertEqual(rec2.x_sel, 'quux')
+        self.assertEqual(rec3.x_sel, 'baz')
+
+
+class TestCustomFieldsPostInstall(TestCommonCustomFields):
+    def test_add_field_valid(self):
+        """ custom field names must start with 'x_', even when bypassing the constraints
+
+        If a user bypasses all constraints to add a custom field not starting by `x_`,
+        it must not be loaded in the registry.
+
+        This is to forbid users to override class attributes.
+        """
+        field = self.create_field('x_foo')
+        # Drop the SQL constraint, to bypass it,
+        # as a user could do through a SQL shell or a `cr.execute` in a server action
+        self.env.cr.execute("ALTER TABLE ir_model_fields DROP CONSTRAINT ir_model_fields_name_manual_field")
+        self.env.cr.execute("UPDATE ir_model_fields SET name = 'foo' WHERE id = %s", [field.id])
+        with self.assertLogs('odoo.registry') as log_catcher:
+            # Trick to reload the registry. The above rename done through SQL didn't reload the registry. This will.
+            self.env.registry._setup_models__(self.cr, [self.MODEL])
+            self.assertIn(
+                f'The field `{field.name}` is not defined in the `{field.model}` Python class', log_catcher.output[0]
+            )
+
+
+@tagged('at_install', '-post_install')
+class TestIrModelExplanation(TransactionCase):
+    def test_explanation_mro_reflection(self):
+        """ Test that _explanation is correctly aggregated across the MRO. """
+
+        class MockBaseModel:
+            _name = 'mock.mro.model'
+            _description = 'Mock'
+            _order = 'id'
+            _custom = False
+            _abstract = False
+            _transient = False
+            _fold_name = 'fold'
+            __module__ = 'odoo.addons.base.models.mock'
+            _explanation = 'Base explanation'
+            __doc__ = 'Base doc'
+
+        class MockExtensionModel(MockBaseModel):
+            __module__ = 'odoo.addons.hr.models.mock'
+            _explanation = 'Extension explanation'
+
+        # Instantiate the extension model as if the ORM built it
+        mock_model = MockExtensionModel()
+        self.env.registry['mock.mro.model'] = MockExtensionModel
+
+        try:
+            params = self.env['ir.model']._reflect_model_params(mock_model)
+
+            expected = 'Base explanation\n\nExtension explanation'
+            self.assertEqual(params['explanation'], expected)
+        finally:
+            del self.env.registry['mock.mro.model']
+
+    def test_model_explanation_reflection(self):
+        """ Test that _explanation is correctly reflected in ir.model. """
+        class MockModel:
+            _name = 'mock.model'
+            _description = 'Mock'
+            _order = 'id'
+            _custom = False
+            _abstract = False
+            _transient = False
+            _fold_name = 'fold'
+            __module__ = 'odoo.addons.base.models.mock'
+            _explanation = 'This is a mock model explanation.'
+            __doc__ = 'Base doc'
+
+        mock_model = MockModel()
+        self.env.registry['mock.model'] = MockModel
+
+        try:
+            params = self.env['ir.model']._reflect_model_params(mock_model)
+            expected = 'This is a mock model explanation.'
+            self.assertEqual(params['explanation'], expected)
+        finally:
+            del self.env.registry['mock.model']

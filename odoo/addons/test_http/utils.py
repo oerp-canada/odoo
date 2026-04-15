@@ -1,11 +1,11 @@
 # Part of Odoo. See LICENSE file for full copyright and licensing details.
 
+from html.parser import HTMLParser
+
 import geoip2.errors
 import geoip2.models
-from html.parser import HTMLParser
-from odoo.http import FilesystemSessionStore
-from odoo.tools._vendor.sessions import SessionStore
 
+from odoo.http.session import SessionStore
 
 TEST_IP = '192.0.2.42'  # 192.0.2.0/24 are reserved for documentation,
                         # they are like example.com for ip addresses
@@ -24,6 +24,9 @@ TEST_IP_GEOIP_COUNTRY = geoip2.models.Country(
      'traits': {'ip_address': TEST_IP, 'prefix_len': 21},
     }, ['en']
 )
+USER_AGENT_linux_chrome = 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36'
+USER_AGENT_linux_firefox = 'Mozilla/5.0 (X11; Ubuntu; Linux x86_64; rv:126.0) Gecko/20100101 Firefox/126.0'
+USER_AGENT_android_chrome = 'Mozilla/5.0 (Linux; Android 6.0; Nexus 5 Build/MRA58N) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Mobile Safari/537.36'
 
 
 class MemoryGeoipResolver:
@@ -43,16 +46,12 @@ class MemoryGeoipResolver:
             raise geoip2.errors.AddressNotFoundError(ip)
         return record
 
+
 class MemorySessionStore(SessionStore):
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.store = {}
-
-    def get(self, sid):
-        session = self.store.get(sid)
-        if not session:
-            session = self.new()
-        return session
 
     def save(self, session):
         self.store[session.sid] = session
@@ -60,11 +59,30 @@ class MemorySessionStore(SessionStore):
     def delete(self, session):
         self.store.pop(session.sid, None)
 
-    def rotate(self, session, env):
-        FilesystemSessionStore.rotate(self, session, env)
+    def get(self, sid, keep_sid=False):
+        if not self.is_valid_session_id(sid):
+            return self.new()
 
-    def vacuum(self):
+        session = self.store.get(sid)
+        if not session:
+            session = self.new()
+            if keep_sid:
+                session.sid = sid
+        return session
+
+    def vacuum(self, max_lifetime=None):
         return
+
+    def get_missing_session_identifiers(self, identifiers):
+        return set(identifiers).difference(self.store)
+
+    def delete_from_identifiers(self, identifiers):
+        sid_to_remove = []
+        for sid in self.store:
+            if any(sid.startswith(identifier) for identifier in identifiers):
+                sid_to_remove.append(sid)
+        for sid in sid_to_remove:
+            self.store.pop(sid)
 
 
 # pylint: disable=W0223(abstract-method)

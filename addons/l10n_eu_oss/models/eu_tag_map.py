@@ -23,7 +23,13 @@ EU_TAG_MAP = {
         'refund_tax_tag': None,
     },
     # Belgium
-    'be': {
+    'be_comp': {
+        'invoice_base_tag': 'l10n_be.tax_report_line_47_tag',
+        'invoice_tax_tag': None,
+        'refund_base_tag': 'l10n_be.tax_report_line_49_tag',
+        'refund_tax_tag': None,
+    },
+    'be_asso': {
         'invoice_base_tag': 'l10n_be.tax_report_line_47_tag',
         'invoice_tax_tag': None,
         'refund_base_tag': 'l10n_be.tax_report_line_49_tag',
@@ -80,9 +86,9 @@ EU_TAG_MAP = {
     },
     # France
     'fr': {
-        'invoice_base_tag': 'l10n_fr.tax_report_E3_tag',
+        'invoice_base_tag': 'l10n_fr_account.tax_report_E3_tag',
         'invoice_tax_tag': None,
-        'refund_base_tag': 'l10n_fr.tax_report_F8_tag',
+        'refund_base_tag': 'l10n_fr_account.tax_report_F8_tag',
         'refund_tax_tag': None,
     },
     # Germany SKR03
@@ -199,25 +205,25 @@ EU_TAG_MAP = {
     },
     # Spain
     'es_assec': {
-        'invoice_base_tag': "l10n_es.mod_303_124",
+        'invoice_base_tag': "l10n_es.mod_303_casilla_124_balance",
         'invoice_tax_tag': None,
         'refund_base_tag': None,
         'refund_tax_tag': None,
     },
     'es_common': {
-        'invoice_base_tag': "l10n_es.mod_303_124",
+        'invoice_base_tag': "l10n_es.mod_303_casilla_124_balance",
         'invoice_tax_tag': None,
         'refund_base_tag': None,
         'refund_tax_tag': None,
     },
     'es_full': {
-        'invoice_base_tag': "l10n_es.mod_303_124",
+        'invoice_base_tag': "l10n_es.mod_303_casilla_124_balance",
         'invoice_tax_tag': None,
         'refund_base_tag': None,
         'refund_tax_tag': None,
     },
     'es_pymes': {
-        'invoice_base_tag': "l10n_es.mod_303_124",
+        'invoice_base_tag': "l10n_es.mod_303_casilla_124_balance",
         'invoice_tax_tag': None,
         'refund_base_tag': None,
         'refund_tax_tag': None,

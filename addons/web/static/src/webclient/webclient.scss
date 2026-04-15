@@ -56,29 +56,17 @@ kbd {
 .badge {
   min-width: $o-badge-min-width;
   line-height: 1.1;
-}
-
-// Set position of our custom o-dropdown-menu (not bootstrap)
-.o-dropdown-menu {
-  top: 100%;
-  &.dropdown-menu-start {
-    left: 0;
-    right: auto;
-  }
-  &.dropdown-menu-end {
-    left: auto;
-    right: 0;
-  }
+  border: 0;
+  font-size: 0.85em;
+  user-select: none;
+  font-weight: 500;
+  @include o-text-overflow;
+  transition: none; // remove transition to prevent badges from flickering at reload
+  color: $o-black;
 }
 
 // == Boostrap Dropdown
 // ----------------------------------------------------------------------------
-.dropdown-menu {
-  max-height: 70vh;
-  overflow: auto;
-  background-clip: border-box;
-}
-
 :not(.dropstart) > .dropdown-item {
   &.active, &.selected {
     position: relative;
@@ -153,15 +141,16 @@ kbd {
 }
 
 .o_web_client.o_touch_device {
-  .btn {
+  .btn:not(.btn-link-inline) {
       &, .btn-sm {
+        &:where(:not(.dropdown-item)) {
           font-size: $font-size-base;
           padding: $o-touch-btn-padding;
+        }
       }
 
-      &.fa {
-          font-size: 1.3em;
-          padding: 2px 10px;
+      &:has(.fa-fw:only-child, .oi-fw:only-child) {
+          padding: $o-touch-btn-with-icon-padding;
       }
   }
 }
@@ -174,25 +163,23 @@ kbd {
 [type="number"],
 [type="email"],
 [type="tel"],
+input:not([type]),
 textarea,
 select {
   width: 100%;
   display: block;
   outline: none;
+  border-radius: 0; // webkit OSX browsers have a border-radius on select, input and textarea
 }
+
 select {
-  $-down-arrow: url("data:image/svg+xml," +
-    "<svg xmlns='http://www.w3.org/2000/svg' width='7' height='4' viewBox='0 0 7 4'>" +
-        "<polygon fill='%23#{str-slice(#{$o-main-text-color}, 2)}' points='3.5 4 7 0 0 0'/>" +
-    "</svg>");
 
   // FIXME buggy 'padding-left'
   cursor: pointer;
   min-width: 50px;
 
   appearance: none;
-  background: transparent $-down-arrow no-repeat right center;
-  border-radius: 0; // webkit OSX browsers have a border-radius on select
+  background: transparent $o-caret-down no-repeat right center;
 
   color: $o-main-text-color;
 
@@ -230,14 +217,6 @@ select {
 //------------------------------------------------------------------------------
 // Misc.
 //------------------------------------------------------------------------------
-
-// By default, <b> and <strong> are set to `$font-weight-bolder`.
-// Override with `$font-weight-bold` in order to ensure consistency with default
-// bold text, while keeping `$font-weight-bolder` variable untouched for specific
-// uses (eg. '.fw-bolder' class).
-b, strong {
-  font-weight: $font-weight-bold;
-}
 
 //== Titles
 @include media-breakpoint-down(md) {
@@ -277,7 +256,7 @@ b, strong {
 //== Buttons
 
 // Disable unnecessary box-shadows on mouse hover
-.btn:focus:hover {
+.btn:focus:hover:not(:focus-visible) {
   box-shadow: none;
 }
 
@@ -290,4 +269,15 @@ b, strong {
 .label {
   border-radius: 0;
   font-size: 1em; // Override 75% of .label
+}
+
+//------------------------------------------------------------------------------
+// Print Style
+//------------------------------------------------------------------------------
+
+@include media-only(print) {
+  html, body {
+    print-color-adjust: exact;
+    -webkit-print-color-adjust: exact;
+  }
 }

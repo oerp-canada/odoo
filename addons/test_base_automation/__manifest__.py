@@ -1,9 +1,7 @@
-# -*- coding: utf-8 -*-
 # Part of Odoo. See LICENSE file for full copyright and licensing details.
 
 {
     'name': 'Test - Base Automation',
-    'version': '1.0',
     'category': 'Hidden',
     'sequence': 9877,
     'summary': 'Base Automation Tests: Ensure Flow Robustness',
@@ -14,6 +12,11 @@ tests independently to functional aspects of other models.""",
     'data': [
         'security/ir.model.access.csv',
     ],
-    'installable': True,
+    'assets': {
+        'web.assets_tests': [
+            'test_base_automation/static/tests/**/*',
+        ],
+    },
+    'author': 'Odoo S.A.',
     'license': 'LGPL-3',
 }

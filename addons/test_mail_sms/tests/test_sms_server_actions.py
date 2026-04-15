@@ -8,6 +8,7 @@ from odoo.tools import mute_logger
 
 
 @tagged('ir_actions')
+@tagged('at_install', '-post_install')  # LEGACY at_install
 class TestServerAction(SMSCommon, TestSMSRecipients):
 
     @classmethod
@@ -30,7 +31,7 @@ class TestServerAction(SMSCommon, TestSMSRecipients):
             'state': 'sms',
             'sms_method': 'sms',
             'sms_template_id': cls.sms_template.id,
-            'groups_id': cls.env.ref('base.group_user'),
+            'group_ids': cls.env.ref('base.group_user'),
         })
 
     def test_action_sms(self):

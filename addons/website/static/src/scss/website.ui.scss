@@ -8,7 +8,8 @@ $-mini-nav-size: 40px;
 .o_frontend_to_backend_nav {
     @include o-position-absolute(0, auto, auto, 0);
     z-index: $zindex-modal;
-    font-size: $o-font-size-base;
+    @include font-size($o-font-size-base);
+    font-family: $o-we-font-family;
 
     &::before {
         content: "";
@@ -40,7 +41,7 @@ $-mini-nav-size: 40px;
     }
 
     .o_frontend_to_backend_apps_menu {
-        font-size: $o-font-size-base;
+        @include font-size($o-font-size-base);
         max-height: 70vh;
         overflow: auto;
     }
@@ -61,7 +62,7 @@ $-mini-nav-size: 40px;
         border-radius: 0.25rem;
     }
 
-    &:hover {
+    &:hover, &:focus-within {
         &:before, .o_frontend_to_backend_icon {
             transform: scale(.3);
             transition-delay: 0ms;
@@ -107,8 +108,16 @@ body {
         display: none;
     }
 }
-[data-publish='off'] > *:not(.css_options) {
-    opacity: 0.5;
+[data-publish='off'] {
+    &:where(:not(:hover)) > *:not(.o_unpublished_badge),
+    &:where(:hover) .o_unpublished_badge {
+        pointer-events: none;
+        opacity: 0.5;
+    }
+}
+
+.js_publish_management > .js_publish_btn.btn-success {
+    border-radius: var(--btn-border-radius);
 }
 
 // Do not show path behind the links in browser printing
@@ -124,7 +133,7 @@ body {
 }
 
 // Mobile preview
-#wrapwrap.o_is_mobile {
+.o_is_mobile {
     // Scrollbar
     &, .modal {
         $-foreground-color: #999;

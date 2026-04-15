@@ -1,24 +1,27 @@
-# -*- coding: utf-8 -*-
 # Part of Odoo. See LICENSE file for full copyright and licensing details.
 
 import logging
-import pytz
+from datetime import datetime, date, UTC
+from zoneinfo import ZoneInfo
 
-from datetime import datetime, date
 from dateutil.relativedelta import relativedelta
 from markupsafe import Markup
-from werkzeug.urls import url_join
+from werkzeug.urls import url_encode
 
-from odoo import api, fields, models, tools, _
+from odoo import api, fields, models, modules, tools, _
 from odoo.addons.base.models.ir_mail_server import MailDeliveryException
 from odoo.exceptions import AccessError
-from odoo.osv import expression
+from odoo.fields import Domain
 from odoo.tools.float_utils import float_round
+from odoo.tools.urls import urljoin as url_join
 
 _logger = logging.getLogger(__name__)
 
+ODOO_ICONS_CDN_URL = 'https://download.odoocdn.com/icons'
+OVERRIDDEN_ICON_BY_MODULE = {'base': '/base/static/description/settings.png'}
 
-class Digest(models.Model):
+
+class DigestDigest(models.Model):
     _name = 'digest.digest'
     _description = 'Digest'
 
@@ -68,21 +71,31 @@ class Digest(models.Model):
             companies,
         )
 
+    def _raise_if_not_member_of(self, *group_names):
+        """ Raise an exception if the current user has not one of the group specified.
+
+        ``_compute_kpis`` of digest catches access errors and skip the kpi the user has no
+        access to, hence providing an easy-skip for users without sufficient rights
+        """
+        if not any(self.env.user.has_group(group_name) for group_name in group_names):
+            raise AccessError(_("Do not have access, skip this data for user's digest email"))
+
     def _compute_kpi_res_users_connected_value(self):
-        self._calculate_company_based_kpi(
+        self._raise_if_not_member_of('base.group_system')
+        self._calculate_kpi(
             'res.users',
             'kpi_res_users_connected_value',
             date_field='login_date',
         )
 
     def _compute_kpi_mail_message_total_value(self):
-        start, end, __ = self._get_kpi_compute_parameters()
-        self.kpi_mail_message_total_value = self.env['mail.message'].search_count([
-            ('create_date', '>=', start),
-            ('create_date', '<', end),
-            ('subtype_id', '=', self.env.ref('mail.mt_comment').id),
-            ('message_type', 'in', ('comment', 'email')),
-        ])
+        self._raise_if_not_member_of('base.group_system')
+        self._calculate_kpi(
+            'mail.message',
+            'kpi_mail_message_total_value',
+            additional_domain=[('subtype_id', '=', self.env.ref('mail.mt_comment').id),
+                               ('message_type', 'in', ('comment', 'email', 'email_outgoing'))],
+            is_cross_company=True)
 
     @api.onchange('periodicity')
     def _onchange_periodicity(self):
@@ -133,7 +146,7 @@ class Digest(models.Model):
 
     def action_send_manual(self):
         """ Manually send digests emails to all registered users. In that case
-        do not update periodicity as this is not an automated action that could
+        do not update periodicity as this is not an automation rule that could
         be considered as unwanted spam. """
         return self._action_send(update_periodicity=False)
 
@@ -152,12 +165,21 @@ class Digest(models.Model):
                     digest_slowdown=digest in to_slowdown,
                     lang=user.lang
                 )._action_send_to_user(user, tips_count=1)
+            if digest in to_slowdown:
+                digest.periodicity = digest._get_next_periodicity()[0]
             digest.next_run_date = digest._get_next_run_date()
 
-        for digest in to_slowdown:
-            digest.periodicity = digest._get_next_periodicity()[0]
+        return {
+            'type': 'ir.actions.client',
+            'tag': 'display_notification',
+            'params': {
+                'message': _('Digest sent!'),
+                'type': 'info',
+                'sticky': False,
+            }
+        }
 
-    def _action_send_to_user(self, user, tips_count=1, consume_tips=True):
+    def _action_send_to_user(self, user, tips_count=1, consume_tips=True, force_send=False):
         unsubscribe_token = self._get_unsubscribe_token(user.id)
 
         rendered_body = self.env['mail.render.mixin']._render_template(
@@ -173,7 +195,7 @@ class Digest(models.Model):
                 'user': user,
                 'unsubscribe_token': unsubscribe_token,
                 'tips_count': tips_count,
-                'formatted_date': datetime.today().strftime('%B %d, %Y'),
+                'formatted_date': tools.format_date(self.env, datetime.today(), date_format='MMMM dd, yyyy'),
                 'display_mobile_banner': True,
                 'kpi_data': self._compute_kpis(user.company_id, user),
                 'tips': self._compute_tips(user.company_id, user, tips_count=tips_count, consumed=consume_tips),
@@ -193,8 +215,14 @@ class Digest(models.Model):
             },
         )
         # create a mail_mail based on values, without attachments
-        unsub_url = url_join(self.get_base_url(),
-                             f'/digest/{self.id}/unsubscribe?token={unsubscribe_token}&user_id={user.id}&one_click=1')
+        unsub_params = url_encode({
+            "token": unsubscribe_token,
+            "user_id": user.id,
+        })
+        unsub_url = url_join(
+            self.get_base_url(),
+            f'/digest/{self.id}/unsubscribe_oneclik?{unsub_params}'
+        )
         mail_values = {
             'auto_delete': True,
             'author_id': self.env.user.partner_id.id,
@@ -214,8 +242,21 @@ class Digest(models.Model):
             'state': 'outgoing',
             'subject': '%s: %s' % (user.company_id.name, self.name),
         }
-        self.env['mail.mail'].sudo().create(mail_values)
+        mail = self.env['mail.mail'].sudo().create(mail_values)
+        if force_send:
+            mail.send()
         return True
+
+    def action_launch_test_wizard(self):
+        self.ensure_one()
+        return {
+            'context': dict(self.env.context, default_digest_id=self.id, dialog_size='medium'),
+            'name': _('Test Digest'),
+            'res_model': 'digest.test',
+            'target': 'new',
+            'type': 'ir.actions.act_window',
+            'view_mode': 'form',
+        }
 
     @api.model
     def _cron_send_digest_email(self):
@@ -242,7 +283,7 @@ class Digest(models.Model):
         """ Compute KPIs to display in the digest template. It is expected to be
         a list of KPIs, each containing values for 3 columns display.
 
-        :return list: result [{
+        :return: result [{
             'kpi_name': 'kpi_mail_message',
             'kpi_fullname': 'Messages',  # translated
             'kpi_action': 'crm.crm_lead_action_pipeline',  # xml id of an action to execute
@@ -255,10 +296,31 @@ class Digest(models.Model):
             'kpi_col3':  { ... },
         }, { ... }] """
         self.ensure_one()
-        digest_fields = self._get_kpi_fields()
+        all_digest_fields = self._get_all_kpi_fields()
+        kpi_settings = self._get_kpi_custom_settings(company, user)
+        kpi_settings_module = kpi_settings['kpi_module']
+        kpi_settings_sequence = kpi_settings['kpi_sequence']
+        kpi_settings_is_cross_company = kpi_settings['is_cross_company']
+        kpis_actions = kpi_settings['kpi_action']
+        if wrong_fields := (kpi_settings_is_cross_company | set(kpi_settings_module.keys())) - set(all_digest_fields):
+            _logger.warning('Invalid field (%s) in kpi custom settings.', ', '.join(wrong_fields))
+
+        digest_fields = [field_name for field_name in all_digest_fields if self[field_name]]
+        module_by_digest_field = {field_name: self._fields[field_name]._module for field_name in digest_fields}
+        module_by_digest_field.update(kpi_settings_module)
+        icon_by_digest_field = {
+            field_name: f"{ODOO_ICONS_CDN_URL}{OVERRIDDEN_ICON_BY_MODULE.get(module_name)
+                                               or modules.module.get_module_icon(module_name)}"
+            for field_name, module_name in module_by_digest_field.items()
+        }
+        # Sort by kpi sequence defined in _get_kpi_custom_settings (and then by module name if not defined)
+        digest_fields = sorted(digest_fields, key=lambda field_name: (kpi_settings_sequence.get(field_name, 10000000),
+                                                                      module_by_digest_field.get(field_name)))
         invalid_fields = []
         kpis = [
             dict(kpi_name=field_name,
+                 kpi_icon=icon_by_digest_field[field_name],
+                 kpi_is_cross_company=field_name in kpi_settings_is_cross_company,
                  kpi_fullname=self.env['ir.model.fields']._get(self._name, field_name).field_description,
                  kpi_action=False,
                  kpi_col1=dict(),
@@ -267,7 +329,6 @@ class Digest(models.Model):
                  )
             for field_name in digest_fields
         ]
-        kpis_actions = self._compute_kpis_actions(company, user)
 
         for col_index, (tf_name, tf) in enumerate(self._compute_timeframes(company)):
             digest = self.with_context(start_datetime=tf[0][0], end_datetime=tf[0][1]).with_user(user).with_company(company)
@@ -287,7 +348,7 @@ class Digest(models.Model):
                     continue
                 margin = self._get_margin_value(compute_value, previous_value)
                 if self._fields['%s_value' % field_name].type == 'monetary':
-                    converted_amount = tools.format_decimalized_amount(compute_value)
+                    converted_amount = tools.misc.format_decimalized_amount(compute_value)
                     compute_value = self._format_currency_amount(converted_amount, company.currency_id)
                 elif self._fields['%s_value' % field_name].type == 'float':
                     compute_value = "%.2f" % compute_value
@@ -304,7 +365,7 @@ class Digest(models.Model):
     def _compute_tips(self, company, user, tips_count=1, consumed=True):
         tips = self.env['digest.tip'].search([
             ('user_ids', '!=', user.id),
-            '|', ('group_id', 'in', user.groups_id.ids), ('group_id', '=', False)
+            '|', ('group_id', 'in', user.all_group_ids.ids), ('group_id', '=', False)
         ], limit=tips_count)
         tip_descriptions = [
             tools.html_sanitize(
@@ -322,36 +383,29 @@ class Digest(models.Model):
             tips.user_ids += user
         return tip_descriptions
 
-    def _compute_kpis_actions(self, company, user):
-        """ Give an optional action to display in digest email linked to some KPIs.
-
-        :return dict: key: kpi name (field name), value: an action that will be
-          concatenated with /web#action={action}
-        """
-        return {}
-
     def _compute_preferences(self, company, user):
         """ Give an optional text for preferences, like a shortcut for configuration.
 
-        :return string: html to put in template
+        :returns: html to put in template
+        :rtype: str
         """
         preferences = []
-        if self._context.get('digest_slowdown'):
+        if self.env.context.get('digest_slowdown'):
             _dummy, new_perioridicy_str = self._get_next_periodicity()
             preferences.append(
                 _("We have noticed you did not connect these last few days. We have automatically switched your preference to %(new_perioridicy_str)s Digests.",
                   new_perioridicy_str=new_perioridicy_str)
             )
         elif self.periodicity == 'daily' and user.has_group('base.group_erp_manager'):
-            preferences.append(Markup('<p>%s<br /><a href="%s" target="_blank" style="color:#875A7B; font-weight: bold;">%s</a></p>') % (
+            preferences.append(Markup('<p>%s<br /><a href="%s" target="_blank" style="color:#017e84; font-weight: bold;">%s</a></p>') % (
                 _('Prefer a broader overview?'),
                 f'/digest/{self.id:d}/set_periodicity?periodicity=weekly',
                 _('Switch to weekly Digests')
             ))
         if user.has_group('base.group_erp_manager'):
-            preferences.append(Markup('<p>%s<br /><a href="%s" target="_blank" style="color:#875A7B; font-weight: bold;">%s</a></p>') % (
+            preferences.append(Markup('<p>%s<br /><a href="%s" target="_blank" style="color:#017e84; font-weight: bold;">%s</a></p>') % (
                 _('Want to customize this email?'),
-                f'/web#view_type=form&amp;model={self._name}&amp;id={self.id:d}',
+                f'/odoo/{self._name}/{self.id:d}',
                 _('Choose the metrics you care about')
             ))
 
@@ -361,19 +415,19 @@ class Digest(models.Model):
         self.ensure_one()
         if self.periodicity == 'daily':
             delta = relativedelta(days=1)
-        if self.periodicity == 'weekly':
+        elif self.periodicity == 'weekly':
             delta = relativedelta(weeks=1)
         elif self.periodicity == 'monthly':
             delta = relativedelta(months=1)
-        elif self.periodicity == 'quarterly':
+        else:
             delta = relativedelta(months=3)
         return date.today() + delta
 
     def _compute_timeframes(self, company):
-        start_datetime = datetime.utcnow()
-        tz_name = company.resource_calendar_id.tz
+        start_datetime = datetime.now(UTC)
+        tz_name = company.tz
         if tz_name:
-            start_datetime = pytz.timezone(tz_name).localize(start_datetime)
+            start_datetime = start_datetime.replace(tzinfo=ZoneInfo(tz_name))
         return [
             (_('Last 24 hours'), (
                 (start_datetime + relativedelta(days=-1), start_datetime),
@@ -391,8 +445,8 @@ class Digest(models.Model):
     # FORMATTING / TOOLS
     # ------------------------------------------------------------
 
-    def _calculate_company_based_kpi(self, model, digest_kpi_field, date_field='create_date',
-                                     additional_domain=None, sum_field=None):
+    def _calculate_kpi(self, model, digest_kpi_field, date_field='create_date',
+                       additional_domain=None, sum_field=None, is_cross_company=False):
         """Generic method that computes the KPI on a given model.
 
         :param model: Model on which we will compute the KPI
@@ -402,33 +456,74 @@ class Digest(models.Model):
         :param additional_domain: Additional domain
         :param sum_field: Field to sum to obtain the KPI,
             if None it will count the number of records
+        :param is_cross_company: whether the KPI must be computed across
+            all companies or per company (default)
         """
         start, end, companies = self._get_kpi_compute_parameters()
 
-        base_domain = [
-            ('company_id', 'in', companies.ids),
+        base_domain = Domain([
             (date_field, '>=', start),
             (date_field, '<', end),
-        ]
-
+        ])
+        if not is_cross_company:
+            base_domain &= Domain('company_id', 'in', companies.ids)
         if additional_domain:
-            base_domain = expression.AND([base_domain, additional_domain])
+            base_domain &= Domain(additional_domain)
 
         values = self.env[model]._read_group(
             domain=base_domain,
-            groupby=['company_id'],
+            groupby=[] if is_cross_company else ['company_id'],
             aggregates=[f'{sum_field}:sum'] if sum_field else ['__count'],
         )
 
-        values_per_company = {company.id: agg for company, agg in values}
-        for digest in self:
-            company = digest.company_id or self.env.company
-            digest[digest_kpi_field] = values_per_company.get(company.id, 0)
+        if is_cross_company:
+            value = values[0][0] or 0
+            for digest in self:
+                digest[digest_kpi_field] = value
+        else:
+            values_per_company = {company.id: agg for company, agg in values}
+            for digest in self:
+                company = digest.company_id or self.env.company
+                digest[digest_kpi_field] = values_per_company.get(company.id, 0)
 
-    def _get_kpi_fields(self):
+    @api.model
+    def _get_all_kpi_fields(self):
         return [field_name for field_name, field in self._fields.items()
-                if field.type == 'boolean' and field_name.startswith(('kpi_', 'x_kpi_', 'x_studio_kpi_')) and self[field_name]
-               ]
+                if field.type == 'boolean' and field_name.startswith(('kpi_', 'x_kpi_', 'x_studio_kpi_'))]
+
+    @api.model
+    def _get_kpi_custom_settings(self, company, user):
+        """Allow to override kpi default settings (module and is_cross_company).
+
+        Under the kpi_action key (dict), you can define per kpi, an optional action to display in digest email.
+        The value will be concatenated with /odoo/action-{action} to build the action URL.
+
+        Under the kpi_module key (dict), you can override the kpi module (by default where it is defined).
+        The module is used to display the module icon next to the kpi.
+        For example, if you want a kpi defined in stock_account use the stock or account module icon.
+
+        Under the kpi_sequence key (dict), you can define the kpi order (field name -> sequence number).
+
+        Under the is_cross_company key (set), add kpi that are cross company (considered as by company if not there).
+
+        :rtype: dict[str, dict]
+        :return: dict of custom settings (see example below)
+        """
+        return {
+            'kpi_action': {
+                'kpi_res_users_connected': f"base.action_res_users?menu_id={self.env.ref('base.menu_administration').id}",
+                'kpi_mail_message_total': f"mail.action_discuss?menu_id={self.env.ref('mail.menu_root_discuss').id}",
+            },
+            'kpi_module': {
+                'kpi_mail_message_total': 'mail',
+                'kpi_res_users_connected': 'base',
+            },
+            'kpi_sequence': {
+                'kpi_mail_message_total': 15500,
+                'kpi_res_users_connected': 15505,
+            },
+            'is_cross_company': {'kpi_mail_message_total'}
+        }
 
     def _get_margin_value(self, value, previous_value=0.0):
         margin = 0.0
@@ -439,13 +534,13 @@ class Digest(models.Model):
     def _check_daily_logs(self):
         """ Badly named method that checks user logs and slowdown the sending
         of digest emails based on recipients being away. """
-        today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+        today = datetime.now().replace(microsecond=0)
         to_slowdown = self.env['digest.digest']
         for digest in self:
-            if digest.periodicity == 'daily':  # 3 days ago
-                limit_dt = today - relativedelta(days=3)
-            elif digest.periodicity == 'weekly':  # 2 weeks ago
-                limit_dt = today - relativedelta(days=14)
+            if digest.periodicity == 'daily':  # 2 days ago
+                limit_dt = today - relativedelta(days=2)
+            elif digest.periodicity == 'weekly':  # 1 week ago
+                limit_dt = today - relativedelta(days=7)
             elif digest.periodicity == 'monthly':  # 1 month ago
                 limit_dt = today - relativedelta(months=1)
             elif digest.periodicity == 'quarterly':  # 3 month ago
@@ -459,11 +554,11 @@ class Digest(models.Model):
         return to_slowdown
 
     def _get_next_periodicity(self):
+        if self.periodicity == 'daily':
+            return 'weekly', _('weekly')
         if self.periodicity == 'weekly':
             return 'monthly', _('monthly')
-        if self.periodicity == 'monthly':
-            return 'quarterly', _('quarterly')
-        return 'weekly', _('weekly')
+        return 'quarterly', _('quarterly')
 
     def _format_currency_amount(self, amount, currency_id):
         pre = currency_id.position == 'before'

@@ -1,19 +1,11 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <templates xml:space="preserve">
 
-    <t t-name="web.BooleanFavoriteField" owl="1">
-        <div class="o_favorite" t-on-click.prevent.stop="update">
-            <a href="#">
-                <i
-                    class="fa"
-                    role="img"
-                    t-att-class="props.record.data[props.name] ? 'fa-star' : 'fa-star-o'"
-                    t-att-title="props.record.data[props.name] ? 'Remove from Favorites' : 'Add to Favorites'"
-                    t-att-aria-label="props.record.data[props.name] ? 'Remove from Favorites' : 'Add to Favorites'"
-                />
-                <t t-if="!props.noLabel"> <t t-esc="props.record.data[props.name] ? 'Remove from Favorites' : 'Add to Favorites'" /></t>
-            </a>
-        </div>
+    <t t-name="web.BooleanFavoriteField">
+        <button class="o_favorite btn btn-link btn-link-inline" t-att-class="{'pe-none o_disabled' : this.props.readonly}" t-on-click.prevent.stop="this.update" data-available-offline="">
+            <i t-att-class="this.iconClass" role="img" t-att-title="this.label" t-att-aria-label="this.label"/>
+            <t t-if="!this.props.readonly and !this.props.noLabel" t-out="this.label"/>
+        </button>
     </t>
 
 </templates>

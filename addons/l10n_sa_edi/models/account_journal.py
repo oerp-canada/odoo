@@ -1,20 +1,20 @@
 import json
-import requests
-from markupsafe import Markup
-from lxml import etree
+import logging
+from base64 import b64decode, b64encode
 from datetime import datetime
-from base64 import b64encode, b64decode
-from odoo import models, fields, service, _, api
-from odoo.exceptions import UserError
-from odoo.modules.module import get_module_resource
+
+import requests
+from lxml import etree
+from markupsafe import Markup
 from requests.exceptions import HTTPError, RequestException
-from cryptography import x509
-from cryptography.x509 import ObjectIdentifier, load_der_x509_certificate
-from cryptography.x509.oid import NameOID
-from cryptography.hazmat.backends import default_backend
-from cryptography.hazmat.primitives import hashes
-from cryptography.hazmat.primitives.serialization import Encoding, load_pem_private_key
-from urllib.parse import urljoin
+
+from odoo import _, fields, models
+from odoo.exceptions import UserError
+from odoo.tools import BinaryBytes, file_open
+from odoo.tools.translate import LazyTranslate
+from odoo.tools.urls import urljoin
+
+_lt = LazyTranslate(__name__)
 
 ZATCA_API_URLS = {
     "sandbox": "https://gw-fatoora.zatca.gov.sa/e-invoicing/developer-portal/",
@@ -29,16 +29,16 @@ ZATCA_API_URLS = {
     }
 }
 
-CERT_TEMPLATE_NAME = {
-    'prod': b'\x0c\x12ZATCA-Code-Signing',
-    'sandbox': b'\x13\x15PREZATCA-Code-Signing',
-    'preprod': b'\x13\x15PREZATCA-Code-Signing',
-}
 # This SANDBOX_AUTH is only used for testing purposes, and is shared to all users of the sandbox environment
 SANDBOX_AUTH = {
+    # the security token has a double base64 encoding
     'binarySecurityToken': "TUlJRDFEQ0NBM21nQXdJQkFnSVRid0FBZTNVQVlWVTM0SS8rNVFBQkFBQjdkVEFLQmdncWhrak9QUVFEQWpCak1SVXdFd1lLQ1pJbWlaUHlMR1FCR1JZRmJHOWpZV3d4RXpBUkJnb0praWFKay9Jc1pBRVpGZ05uYjNZeEZ6QVZCZ29Ka2lhSmsvSXNaQUVaRmdkbGVIUm5ZWHAwTVJ3d0dnWURWUVFERXhOVVUxcEZTVTVXVDBsRFJTMVRkV0pEUVMweE1CNFhEVEl5TURZeE1qRTNOREExTWxvWERUSTBNRFl4TVRFM05EQTFNbG93U1RFTE1Ba0dBMVVFQmhNQ1UwRXhEakFNQmdOVkJBb1RCV0ZuYVd4bE1SWXdGQVlEVlFRTEV3MW9ZWGxoSUhsaFoyaHRiM1Z5TVJJd0VBWURWUVFERXdreE1qY3VNQzR3TGpFd1ZqQVFCZ2NxaGtqT1BRSUJCZ1VyZ1FRQUNnTkNBQVRUQUs5bHJUVmtvOXJrcTZaWWNjOUhEUlpQNGI5UzR6QTRLbTdZWEorc25UVmhMa3pVMEhzbVNYOVVuOGpEaFJUT0hES2FmdDhDL3V1VVk5MzR2dU1ObzRJQ0p6Q0NBaU13Z1lnR0ExVWRFUVNCZ0RCK3BId3dlakViTUJrR0ExVUVCQXdTTVMxb1lYbGhmREl0TWpNMGZETXRNVEV5TVI4d0hRWUtDWkltaVpQeUxHUUJBUXdQTXpBd01EYzFOVGc0TnpBd01EQXpNUTB3Q3dZRFZRUU1EQVF4TVRBd01SRXdEd1lEVlFRYURBaGFZWFJqWVNBeE1qRVlNQllHQTFVRUR3d1BSbTl2WkNCQ2RYTnphVzVsYzNNek1CMEdBMVVkRGdRV0JCU2dtSVdENmJQZmJiS2ttVHdPSlJYdkliSDlIakFmQmdOVkhTTUVHREFXZ0JSMllJejdCcUNzWjFjMW5jK2FyS2NybVRXMUx6Qk9CZ05WSFI4RVJ6QkZNRU9nUWFBL2hqMW9kSFJ3T2k4dmRITjBZM0pzTG5waGRHTmhMbWR2ZGk1ellTOURaWEowUlc1eWIyeHNMMVJUV2tWSlRsWlBTVU5GTFZOMVlrTkJMVEV1WTNKc01JR3RCZ2dyQmdFRkJRY0JBUVNCb0RDQm5UQnVCZ2dyQmdFRkJRY3dBWVppYUhSMGNEb3ZMM1J6ZEdOeWJDNTZZWFJqWVM1bmIzWXVjMkV2UTJWeWRFVnVjbTlzYkM5VVUxcEZhVzUyYjJsalpWTkRRVEV1WlhoMFoyRjZkQzVuYjNZdWJHOWpZV3hmVkZOYVJVbE9WazlKUTBVdFUzVmlRMEV0TVNneEtTNWpjblF3S3dZSUt3WUJCUVVITUFHR0gyaDBkSEE2THk5MGMzUmpjbXd1ZW1GMFkyRXVaMjkyTG5OaEwyOWpjM0F3RGdZRFZSMFBBUUgvQkFRREFnZUFNQjBHQTFVZEpRUVdNQlFHQ0NzR0FRVUZCd01DQmdnckJnRUZCUWNEQXpBbkJna3JCZ0VFQVlJM0ZRb0VHakFZTUFvR0NDc0dBUVVGQndNQ01Bb0dDQ3NHQVFVRkJ3TURNQW9HQ0NxR1NNNDlCQU1DQTBrQU1FWUNJUUNWd0RNY3E2UE8rTWNtc0JYVXovdjFHZGhHcDdycVNhMkF4VEtTdjgzOElBSWhBT0JOREJ0OSszRFNsaWpvVmZ4enJkRGg1MjhXQzM3c21FZG9HV1ZyU3BHMQ==",
     'secret': "Xlj15LyMCgSC66ObnEO/qVPfhSbs3kDTjWnGheYhfSs="
 }
+
+ERROR_MESSAGE = _lt("Something went wrong. Please onboard the journal again.")
+
+_logger = logging.getLogger(__name__)
 
 
 class AccountJournal(models.Model):
@@ -74,22 +74,33 @@ class AccountJournal(models.Model):
     l10n_sa_compliance_csid_json = fields.Char("CCSID JSON", copy=False, groups="base.group_system",
                                                help="Compliance CSID data received from the Compliance CSID API "
                                                     "in dumped json format")
+    l10n_sa_production_csid_certificate_id = fields.Many2one(string="PCSID Certificate", comodel_name="certificate.certificate",
+                                                          domain=[('is_valid', '=', True)])
     l10n_sa_production_csid_json = fields.Char("PCSID JSON", copy=False, groups="base.group_system",
                                                help="Production CSID data received from the Production CSID API "
                                                     "in dumped json format")
-    l10n_sa_production_csid_validity = fields.Datetime("PCSID Expiration", help="Production CSID expiration date",
-                                                       compute="_l10n_sa_compute_production_csid_validity", store=True)
+    l10n_sa_production_csid_validity = fields.Datetime(related="l10n_sa_production_csid_certificate_id.date_end")
+    l10n_sa_compliance_csid_certificate_id = fields.Many2one(string="CCSID certificate", comodel_name="certificate.certificate",
+                                                          domain=[('is_valid', '=', True)])
     l10n_sa_compliance_checks_passed = fields.Boolean("Compliance Checks Done", default=False, copy=False,
                                                       help="Specifies if the Compliance Checks have been completed successfully")
 
     l10n_sa_chain_sequence_id = fields.Many2one('ir.sequence', string='ZATCA account.move chain sequence',
                                                 readonly=True, copy=False)
 
-    l10n_sa_serial_number = fields.Char("Serial Number", copy=False,
-                                        help="The serial number of the Taxpayer solution unit. Provided by ZATCA")
-
     l10n_sa_latest_submission_hash = fields.Char("Latest Submission Hash", copy=False,
                                                  help="Hash of the latest submitted invoice to be used as the Previous Invoice Hash (KSA-13)")
+
+    def _l10n_sa_reset_chain_head_error(self):
+        """
+            Reset the chain head error from the journal's stuck invoices
+        """
+        stuck_invoices = self.env['account.move'].search([
+            ('l10n_sa_edi_chain_head_id', '!=', False),
+            ('journal_id', 'in', self.ids),
+        ])
+        # We only need to remove blocking errors, so webservices do not need to be triggered
+        stuck_invoices._retry_edi_documents_error()
 
     # ====== Utility Functions =======
 
@@ -101,84 +112,27 @@ class AccountJournal(models.Model):
         self.ensure_one()
         return self.sudo().l10n_sa_production_csid_json
 
+    def _l10n_sa_api_onboard_sanity_checks(self):
+        """
+            Perform a sanity check to validate that the journal is ready to be onboarded
+        """
+
+        # If the invoice wasn't sent to ZATCA because of a timeout, it will retain its existing chain index
+        # Make sure there are no opened invoices with the journal's existing sequence
+        has_stuck_moves = self.env['account.edi.document'].search([
+            ('move_id.journal_id', '=', self.id),
+            ('move_id.l10n_sa_chain_index', '!=', 0),
+            ('edi_format_id.code', '=', 'sa_zatca'),
+            ('state', '=', 'to_send'),
+        ], limit=1)
+        if has_stuck_moves:
+            raise UserError(_("Oops! The journal is stuck. Please submit the pending invoices to ZATCA and try again."))
+
     # ====== CSR Generation =======
 
     def _l10n_sa_csr_required_fields(self):
         """ Return the list of fields required to generate a valid CSR as per ZATCA requirements """
-        return ['l10n_sa_private_key', 'vat', 'name', 'city', 'country_id', 'state_id']
-
-    def _l10n_sa_get_csr_str(self):
-        """
-            Return s string representation of a ZATCA compliant CSR that will be sent to the Compliance API in order to get back
-            a signed X509 certificate
-        """
-        self.ensure_one()
-
-        def _encode(s):
-            """
-                Some of the information included in the CSR could be in arabic, and thus needs to be encoded in a
-                specific format in order to be compliant with the ZATCA CCSID/PCSID APIs
-            """
-            return s.encode().decode('CP1252')
-
-        company_id = self.company_id
-        version_info = service.common.exp_version()
-        builder = x509.CertificateSigningRequestBuilder()
-        subject_names = (
-            # Country Name
-            (NameOID.COUNTRY_NAME, company_id.country_id.code),
-            # Organization Unit Name
-            (NameOID.ORGANIZATIONAL_UNIT_NAME, (company_id.vat or '')[:10]),
-            # Organization Name
-            (NameOID.ORGANIZATION_NAME, _encode(company_id.name)),
-            # Subject Common Name
-            (NameOID.COMMON_NAME, _encode(company_id.name)),
-            # Organization Identifier
-            (ObjectIdentifier('2.5.4.97'), company_id.vat),
-            # State/Province Name
-            (NameOID.STATE_OR_PROVINCE_NAME, _encode(company_id.state_id.name)),
-            # Locality Name
-            (NameOID.LOCALITY_NAME, _encode(company_id.city)),
-        )
-        # The CertificateSigningRequestBuilder instances are immutable, which is why everytime we modify one,
-        # we have to assign it back to itself to keep track of the changes
-        builder = builder.subject_name(x509.Name([
-            x509.NameAttribute(n[0], u'%s' % n[1]) for n in subject_names
-        ]))
-
-        x509_alt_names_extension = x509.SubjectAlternativeName([
-            x509.DirectoryName(x509.Name([
-                # EGS Serial Number. Manufacturer or Solution Provider Name, Model or Version and Serial Number.
-                # To be written in the following format: "1-... |2-... |3-..."
-                x509.NameAttribute(ObjectIdentifier('2.5.4.4'), '1-Odoo|2-%s|3-%s' % (
-                    version_info['server_version_info'][0], self.l10n_sa_serial_number)),
-                # Organisation Identifier (UID)
-                x509.NameAttribute(NameOID.USER_ID, company_id.vat),
-                # Invoice Type. 4-digit numerical input using 0 & 1
-                x509.NameAttribute(NameOID.TITLE, company_id._l10n_sa_get_csr_invoice_type()),
-                # Location
-                x509.NameAttribute(ObjectIdentifier('2.5.4.26'), _encode(company_id.street)),
-                # Industry
-                x509.NameAttribute(ObjectIdentifier('2.5.4.15'),
-                                   _encode(company_id.partner_id.industry_id.name or 'Other')),
-            ]))
-        ])
-
-        x509_extensions = (
-            # Add Certificate template name extension
-            (x509.UnrecognizedExtension(ObjectIdentifier('1.3.6.1.4.1.311.20.2'),
-                                        CERT_TEMPLATE_NAME[company_id.l10n_sa_api_mode]), False),
-            # Add alternative names extension
-            (x509_alt_names_extension, False),
-        )
-
-        for ext in x509_extensions:
-            builder = builder.add_extension(ext[0], critical=ext[1])
-
-        private_key = load_pem_private_key(company_id.l10n_sa_private_key, password=None, backend=default_backend())
-        request = builder.sign(private_key, hashes.SHA256(), default_backend())
-
-        return b64encode(request.public_bytes(Encoding.PEM)).decode()
+        return ['l10n_sa_private_key_id', 'vat', 'name', 'city', 'country_id', 'state_id', 'street']
 
     def _l10n_sa_generate_csr(self):
         """
@@ -186,25 +140,42 @@ class AccountJournal(models.Model):
         """
         self.ensure_one()
         if any(not self.company_id[f] for f in self._l10n_sa_csr_required_fields()):
-            raise UserError(_("Please, make sure all the following fields have been correctly set on the Company: \n")
-                            + "\n".join(
-                " - %s" % self.company_id._fields[f].string for f in self._l10n_sa_csr_required_fields() if
-                not self.company_id[f]))
+            raise UserError(
+                _(
+                    "Please set the following on %(company_name)s: %(fields)s",
+                    company_name=self.company_id.name,
+                    fields=", ".join(
+                        self.company_id._fields[f].string
+                        for f in self._l10n_sa_csr_required_fields()
+                        if not self.company_id[f]
+                    ),
+                ),
+            )
         self._l10n_sa_reset_certificates()
-        self.l10n_sa_csr = self._l10n_sa_get_csr_str()
+        self.l10n_sa_csr = BinaryBytes(self.env['certificate.certificate'].sudo()._l10n_sa_get_csr_bin(self))
 
     # ====== Certificate Methods =======
 
-    @api.depends('l10n_sa_production_csid_json')
-    def _l10n_sa_compute_production_csid_validity(self):
+    def _l10n_sa_get_csid_error(self, csid):
         """
-            Compute the expiration date of the Production certificate
+            Return a formatted error string if the CSID response has an 'error' or 'errors'
+            key or doesn't have a 'binarySecurityToken'
         """
-        for journal in self:
-            journal.l10n_sa_production_csid_validity = False
-            if journal.l10n_sa_production_csid_json:
-                journal.l10n_sa_production_csid_validity = self._l10n_sa_get_pcsid_validity(
-                    json.loads(journal.l10n_sa_production_csid_json))
+        error_msg = ""
+        unknown_error_msg = _("Unknown response returned from ZATCA. Please check the logs.")
+        if error := csid.get('error'):
+            error_msg = error
+        elif errors := csid.get('errors'):
+            error_msg = " <br/>" + " <br/>- ".join([err['message'] if isinstance(err, dict) else err for err in errors])
+        elif 'error' in [csid.get('type', "").lower(), csid.get('status', "").lower()]:
+            error_msg = csid.get('message') or unknown_error_msg
+        elif not csid.get('binarySecurityToken'):
+            error_msg = unknown_error_msg
+
+        if error_msg:
+            _logger.warning("Failed to obtain CSID: %s", csid)
+
+        return error_msg
 
     def _l10n_sa_reset_certificates(self):
         """
@@ -224,11 +195,17 @@ class AccountJournal(models.Model):
                 3.  Get the Production CSID
         """
         self.ensure_one()
+        # we want to perform sanity checks to ensure that the journal is ready to be onboarded
+        # If the check fails, we do not want to revoke the existing PCSID because the user might still need it to post hanging invoices
+        self._l10n_sa_api_onboard_sanity_checks()
+
         try:
             # If the company does not have a private key, we generate it.
             # The private key is used to generate the CSR but also to sign the invoices
-            if not self.company_id.l10n_sa_private_key:
-                self.company_id.l10n_sa_private_key = self.company_id._l10n_sa_generate_private_key()
+            ec_private_key_sudo = self.company_id.sudo().l10n_sa_private_key_id
+            if not ec_private_key_sudo:
+                ec_private_key_sudo = self.env['certificate.key'].sudo()._generate_ec_private_key(self.company_id, name='CCSID private key')
+                self.company_id.l10n_sa_private_key_id = ec_private_key_sudo
             self._l10n_sa_generate_csr()
             # STEP 1: The first step of the process is to get the CCSID
             self._l10n_sa_get_compliance_CSID(otp)
@@ -238,6 +215,8 @@ class AccountJournal(models.Model):
             self._l10n_sa_get_production_CSID()
             # Once all three steps are completed, we set the errors field to False
             self.l10n_sa_csr_errors = False
+            # Regenerate a new chain sequence
+            self._l10n_sa_edi_icv_onboarding()
         except (RequestException, HTTPError, UserError) as e:
             # In case of an exception returned from ZATCA (not timeout), we will need to regenerate the CSR
             # As the same CSR cannot be used twice for the same CCSID request
@@ -249,10 +228,18 @@ class AccountJournal(models.Model):
             Request a Compliance Cryptographic Stamp Identifier (CCSID) from ZATCA
         """
         CCSID_data = self._l10n_sa_api_get_compliance_CSID(otp)
-        if CCSID_data.get('error'):
-            raise UserError(_("Could not obtain Compliance CSID: %s") % CCSID_data['error'])
+        if error := self._l10n_sa_get_csid_error(CCSID_data):
+            raise UserError(_("Please check the details below and onboard the journal again: %s", error))
+
+        cert_id = self.env['certificate.certificate'].sudo().create({
+            'name': 'CCSID Certificate',
+            'content': BinaryBytes(b64decode(b64decode(CCSID_data['binarySecurityToken']))),
+            'private_key_id': self.company_id.sudo().l10n_sa_private_key_id.id,
+            'company_id': self.company_id.id,
+        }).id
         self.sudo().write({
             'l10n_sa_compliance_csid_json': json.dumps(CCSID_data),
+            'l10n_sa_compliance_csid_certificate_id': cert_id,
             'l10n_sa_production_csid_json': False,
             'l10n_sa_compliance_checks_passed': False,
         })
@@ -264,26 +251,30 @@ class AccountJournal(models.Model):
 
         self_sudo = self.sudo()
 
-        if not self_sudo.l10n_sa_compliance_csid_json:
-            raise UserError(_("Cannot request a Production CSID before requesting a CCSID first"))
-        elif not self_sudo.l10n_sa_compliance_checks_passed:
-            raise UserError(_("Cannot request a Production CSID before completing the Compliance Checks"))
+        if not self_sudo.l10n_sa_compliance_csid_json or not self_sudo.l10n_sa_compliance_csid_certificate_id or not self_sudo.l10n_sa_compliance_checks_passed:
+            raise UserError(str(ERROR_MESSAGE))
 
         renew = False
         zatca_format = self.env.ref('l10n_sa_edi.edi_sa_zatca')
 
         if self_sudo.l10n_sa_production_csid_json:
             time_now = zatca_format._l10n_sa_get_zatca_datetime(datetime.now())
-            if zatca_format._l10n_sa_get_zatca_datetime(self_sudo.l10n_sa_production_csid_validity) < time_now:
+            validity_time = self_sudo.l10n_sa_production_csid_validity
+            if zatca_format._l10n_sa_get_zatca_datetime(validity_time) < time_now:
                 renew = True
             else:
-                raise UserError(_("The Production CSID is still valid. You can only renew it once it has expired."))
+                raise UserError(_("The Journal is valid until (%s) and can only be renewed upon expiry.", validity_time))
 
         CCSID_data = json.loads(self_sudo.l10n_sa_compliance_csid_json)
         PCSID_data = self_sudo._l10n_sa_request_production_csid(CCSID_data, renew, OTP)
-        if PCSID_data.get('error'):
-            raise UserError(_("Could not obtain Production CSID: %s") % PCSID_data['error'])
+        if error := self._l10n_sa_get_csid_error(PCSID_data):
+            raise UserError(_("Could not obtain Production CSID: %s", error))
         self_sudo.l10n_sa_production_csid_json = json.dumps(PCSID_data)
+        pcsid_certificate = self_sudo.env['certificate.certificate'].create({
+            'name': 'PCSID Certificate',
+            'content': BinaryBytes(b64decode(b64decode(PCSID_data['binarySecurityToken']))),
+        })
+        self.l10n_sa_production_csid_certificate_id = pcsid_certificate
 
     # ====== Compliance Checks =======
 
@@ -296,8 +287,8 @@ class AccountJournal(models.Model):
             'simplified/invoice.xml', 'simplified/credit.xml', 'simplified/debit.xml',
         ], {}
         for file in file_names:
-            fpath = get_module_resource('l10n_sa_edi', 'tests/compliance', file)
-            with open(fpath, 'rb') as ip:
+            fpath = f'l10n_sa_edi/tests/compliance/{file}'
+            with file_open(fpath, 'rb', filter_ext=('.xml',)) as ip:
                 compliance_files[file] = ip.read().decode()
         return compliance_files
 
@@ -317,38 +308,34 @@ class AccountJournal(models.Model):
         self.ensure_one()
         self_sudo = self.sudo()
         if self.country_code != 'SA':
-            raise UserError(_("Compliance checks can only be run for companies operating from KSA"))
-        if not self_sudo.l10n_sa_compliance_csid_json:
-            raise UserError(_("You need to request the CCSID first before you can proceed"))
+            raise UserError(_("Please change the (%s)'s country to Saudi Arabia and try again.", self.company_id.name))
+        if not self_sudo.l10n_sa_compliance_csid_json or not self_sudo.l10n_sa_compliance_csid_certificate_id:
+            raise UserError(str(ERROR_MESSAGE))
         CCSID_data = json.loads(self_sudo.l10n_sa_compliance_csid_json)
         compliance_files = self._l10n_sa_get_compliance_files()
         for fname, fval in compliance_files.items():
             invoice_hash_hex = self.env['account.edi.xml.ubl_21.zatca']._l10n_sa_generate_invoice_xml_hash(
                 fval).decode()
             digital_signature = self.env.ref('l10n_sa_edi.edi_sa_zatca')._l10n_sa_get_digital_signature(self.company_id, invoice_hash_hex).decode()
-            prepared_xml = self._l10n_sa_prepare_compliance_xml(fname, fval, CCSID_data['binarySecurityToken'],
-                                                                digital_signature)
+            prepared_xml = self._l10n_sa_prepare_compliance_xml(fname, fval, self_sudo.l10n_sa_compliance_csid_certificate_id, digital_signature)
             result = self._l10n_sa_api_compliance_checks(prepared_xml.decode(), CCSID_data)
             if result.get('error'):
-                raise UserError(Markup("<p class='mb-0'>%s <b>%s</b></p>") % (_("Could not complete Compliance Checks for the following file:"), fname))
+                raise UserError(Markup("<p class='mb-0'>%s</p>") % (str(ERROR_MESSAGE)))
             if result['validationResults']['status'] == 'WARNING':
-                warnings = "".join(Markup("<li><b>%s</b>: %s </li>") % (e['code'], e['message']) for e in result['validationResults']['warningMessages'])
+                warnings = Markup().join(Markup("<li><b>%(code)s</b>: %(message)s </li>") % e for e in result['validationResults']['warningMessages'])
                 self.l10n_sa_csr_errors = Markup("<br/><br/><ul class='pl-3'><b>%s</b>%s</ul>") % (_("Warnings:"), warnings)
             elif result['validationResults']['status'] != 'PASS':
-                errors = "".join(Markup("<li><b>%s</b>: %s </li>") % (e['code'], e['message']) for e in result['validationResults']['errorMessages'])
-                raise UserError(Markup("<p class='mb-0'>%s <b>%s</b> %s</p>")
-                                % (_("Could not complete Compliance Checks for the following file:"), fname, Markup("<br/><br/><ul class='pl-3'><b>%s</b>%s</ul>") % (_("Errors:"), errors)))
+                raise UserError(Markup("<p class='mb-0'>%s</p>") % (str(ERROR_MESSAGE)))
         self.l10n_sa_compliance_checks_passed = True
 
-    def _l10n_sa_prepare_compliance_xml(self, xml_name, xml_raw, PCSID, signature):
+    def _l10n_sa_prepare_compliance_xml(self, xml_name, xml_raw, certificate, signature):
         """
             Prepare XML content to be used for Compliance checks
         """
         xml_content = self._l10n_sa_prepare_invoice_xml(xml_raw)
-        signed_xml = self.env.ref('l10n_sa_edi.edi_sa_zatca')._l10n_sa_sign_xml(xml_content, PCSID, signature)
+        signed_xml = self.env.ref('l10n_sa_edi.edi_sa_zatca')._l10n_sa_sign_xml(xml_content, certificate, signature)
         if xml_name.startswith('simplified'):
-            qr_code_str = self.env['account.move']._l10n_sa_get_qr_code(self, signed_xml, b64decode(PCSID).decode(),
-                                                                        signature, True)
+            qr_code_str = self.env['account.move']._l10n_sa_get_qr_code(self.company_id, signed_xml, certificate, signature, True)
             root = etree.fromstring(signed_xml)
             qr_node = root.xpath('//*[local-name()="ID"][text()="QR"]/following-sibling::*/*')[0]
             qr_node.text = b64encode(qr_code_str).decode()
@@ -380,16 +367,32 @@ class AccountJournal(models.Model):
         return etree.tostring(root)
 
     # ====== Index Chain & Previous Invoice Calculation =======
+    def _l10n_sa_edi_icv_onboarding(self):
+        """
+            Onboarding method to create or reset ICV sequence for the journal
+        """
+        self.ensure_one()
+        if self.l10n_sa_chain_sequence_id:
+            self.l10n_sa_chain_sequence_id.number_next = 1
+            message = _("Journal re-onboarded with ZATCA successfully")
+        else:
+            self.l10n_sa_chain_sequence_id = self._l10n_sa_edi_create_new_chain()
+            message = _("Journal onboarded with ZATCA successfully")
+        self.message_post(body=message)
+
+    def _l10n_sa_edi_create_new_chain(self):
+        self.ensure_one()
+        return self.env['ir.sequence'].create({
+            'name': f'ZATCA journal entry sequence for Journal {self.name} (id: {self.id})',
+            'code': f'l10n_sa_edi.account.move.{self.id}',
+            'implementation': 'no_gap',
+            'company_id': self.company_id.id,
+        })
 
     def _l10n_sa_edi_get_next_chain_index(self):
         self.ensure_one()
         if not self.l10n_sa_chain_sequence_id:
-            self.l10n_sa_chain_sequence_id = self.env['ir.sequence'].create({
-                'name': f'ZATCA account move sequence for Journal {self.name} (id: {self.id})',
-                'code': f'l10n_sa_edi.account.move.{self.id}',
-                'implementation': 'no_gap',
-                'company_id': self.company_id.id,
-            })
+            self.l10n_sa_chain_sequence_id = self._l10n_sa_edi_create_new_chain()
         return self.l10n_sa_chain_sequence_id.next_by_id()
 
     def _l10n_sa_get_last_posted_invoice(self):
@@ -416,9 +419,9 @@ class AccountJournal(models.Model):
         """
         self.ensure_one()
         if not otp:
-            raise UserError(_("Please, set a valid OTP to be used for Onboarding"))
+            raise UserError(_("The OTP is invalid. Please try again."))
         if not self.l10n_sa_csr:
-            raise UserError(_("Please, generate a CSR before requesting a CCSID"))
+            raise UserError(str(ERROR_MESSAGE))
         request_data = {
             'body': json.dumps({'csr': self.l10n_sa_csr.decode()}),
             'header': {'OTP': otp}
@@ -514,14 +517,6 @@ class AccountJournal(models.Model):
 
     # ====== Certificate Methods =======
 
-    def _l10n_sa_get_pcsid_validity(self, PCSID_data):
-        """
-            Return PCSID expiry date
-        """
-        b64_decoded_pcsid = b64decode(PCSID_data['binarySecurityToken'])
-        x509_certificate = load_der_x509_certificate(b64decode(b64_decoded_pcsid.decode()), default_backend())
-        return x509_certificate.not_valid_after
-
     def _l10n_sa_request_production_csid(self, csid_data, renew=False, otp=None):
         """
             Generate company Production CSID data
@@ -538,14 +533,13 @@ class AccountJournal(models.Model):
             Get CSIDs required to perform ZATCA api calls, and regenerate them if they need to be regenerated.
         """
         self.ensure_one()
-        if not self.l10n_sa_production_csid_json:
-            raise UserError(_("Please, make a request to obtain the Compliance CSID and Production CSID before sending "
-                            "documents to ZATCA"))
-        pcsid_validity = self.env.ref('l10n_sa_edi.edi_sa_zatca')._l10n_sa_get_zatca_datetime(self.l10n_sa_production_csid_validity)
-        time_now = self.env.ref('l10n_sa_edi.edi_sa_zatca')._l10n_sa_get_zatca_datetime(datetime.now())
-        if pcsid_validity < time_now and self.company_id.l10n_sa_api_mode != 'sandbox':
-            raise UserError(_("Production certificate has expired, please renew the PCSID before proceeding"))
-        return json.loads(self.l10n_sa_production_csid_json)
+        self_sudo = self.sudo()
+        if not self_sudo.l10n_sa_production_csid_json or not self_sudo.l10n_sa_production_csid_certificate_id:
+            raise UserError(str(ERROR_MESSAGE))
+        certificate = self_sudo.l10n_sa_production_csid_certificate_id
+        if not certificate.is_valid and self.company_id.l10n_sa_api_mode != 'sandbox':
+            raise UserError(_("The Journal is not valid anymore. Please Renew it."))
+        return json.loads(self_sudo.l10n_sa_production_csid_json), certificate.id
 
     # ====== API Helper Methods =======
 
@@ -553,25 +547,36 @@ class AccountJournal(models.Model):
         """
             Helper function to make api calls to the ZATCA API Endpoint
         """
-        api_url = ZATCA_API_URLS[self.env.company.l10n_sa_api_mode]
+        api_url = ZATCA_API_URLS[self.company_id.l10n_sa_api_mode]
         request_url = urljoin(api_url, request_url)
+        status_code = False
         try:
             request_response = requests.request(method, request_url, data=request_data.get('body'),
                                                 headers={
                                                     **self._l10n_sa_api_headers(),
                                                     **request_data.get('header')
-                                                }, timeout=(30, 30))
+                                                }, timeout=30)
             request_response.raise_for_status()
         except (ValueError, HTTPError) as ex:
-            # In the case of an explicit error from ZATCA, i.e we got a response but the code of the response is not 2xx
-            return {
-                'error': _("Server returned an unexpected error: ") + (request_response.text or str(ex)),
-                'blocking_level': 'error'
-            }
+            # The 400 case means that it is rejected by ZATCA, but we need to update the hash as done for accepted.
+            # In the 401+ cases, it is like the server is overloaded e.g. and we still need to resend later.  We do not
+            # erase the index chain (excepted) because for ZATCA, one ICV (index chain) needs to correspond to one invoice.
+            if (status_code := ex.response.status_code) not in {400, 409}:
+                return {
+                    'error': (Markup("<b>[%s]</b>") % status_code) + _("Server returned an unexpected error: %(error)s",
+                               error=(request_response.text or str(ex))),
+                    'blocking_level': 'warning',
+                    'status_code': status_code,
+                    'excepted': True,
+                }
         except RequestException as ex:
             # Usually only happens if a Timeout occurs. In this case we're not sure if the invoice was accepted or
             # rejected, or if it even made it to ZATCA
             return {'error': str(ex), 'blocking_level': 'warning', 'excepted': True}
+
+        if request_response.status_code == '303':
+            return {'error': _('Clearance and reporting seem to have been mixed up. '),
+                    'blocking_level': 'warning', 'excepted': True}
 
         try:
             response_data = request_response.json()
@@ -580,17 +585,25 @@ class AccountJournal(models.Model):
                 'error': _("JSON response from ZATCA could not be decoded"),
                 'blocking_level': 'error'
             }
+        response_data['status_code'] = request_response.status_code
 
-        if not request_response.ok and (response_data.get('errors') or response_data.get('warnings')):
-            if isinstance(response_data, dict) and response_data.get('errors'):
+        if status_code == 409:
+            return response_data
+
+        val_res = response_data.get('validationResults', {})
+        if not request_response.ok and (val_res.get('errorMessages') or val_res.get('warningMessages')):
+            error = "" if not status_code else Markup("<b>[%s]</b>") % (status_code)
+            if isinstance(response_data, dict) and val_res.get('errorMessages'):
+                error += _("Invoice submission to ZATCA returned errors")
                 return {
-                    'error': _("Invoice submission to ZATCA returned errors"),
-                    'json_errors': response_data['errors'],
+                    'error': error,
+                    'json_errors': response_data,
                     'blocking_level': 'error',
                 }
+            error += request_response.reason
             return {
-                'error': request_response.reason,
-                'blocking_level': 'error'
+                'error': error,
+                'blocking_level': 'error',
             }
         return response_data
 
@@ -612,13 +625,19 @@ class AccountJournal(models.Model):
         auth_str = "%s:%s" % (auth_data['binarySecurityToken'], auth_data['secret'])
         return 'Basic ' + b64encode(auth_str.encode()).decode()
 
-    def _l10n_sa_load_edi_demo_data(self):
+    def _l10n_sa_load_edi_test_data(self):
+        """
+            Populate the journal and company with test EDI data for Saudi Arabia compliance.
+            This method is intended for use in tests and development environments where
+            external HTTP requests to ZATCA or other validation services are not allowed.
+            It generates a private key, sets a dummy CSR, and populates CSID JSON fields
+            with example data.
+        """
         self.ensure_one()
-        self.company_id.l10n_sa_private_key = self.company_id._l10n_sa_generate_private_key()
+        self.company_id.l10n_sa_private_key_id = self.env['certificate.key']._generate_ec_private_key(self.company_id)
         self.write({
-            'l10n_sa_serial_number': 'SIDI3-CBMPR-L2D8X-KM0KN-X4ISJ',
             'l10n_sa_compliance_checks_passed': True,
-            'l10n_sa_csr': b'LS0tLS1CRUdJTiBDRVJUSUZJQ0FURSBSRVFVRVNULS0tLS0KTUlJQ2NqQ0NBaGNDQVFBd2djRXhDekFKQmdOVkJBWVRBbE5CTVJNd0VRWURWUVFMREFvek1UQXhOelV6T1RjMApNUk13RVFZRFZRUUtEQXBUUVNCRGIyMXdZVzU1TVJNd0VRWURWUVFEREFwVFFTQkRiMjF3WVc1NU1SZ3dGZ1lEClZRUmhEQTh6TVRBeE56VXpPVGMwTURBd01ETXhEekFOQmdOVkJBZ01CbEpwZVdGa2FERklNRVlHQTFVRUJ3dy8KdzVqQ3A4T1o0b0NldzVuaWdLYkRtTUt2dzVuRm9NT1o0b0NndzVqQ3FTRERtTUtudzVuaWdKN0RtZUtBcHNPWgo0b0NndzVuTGhzT1l3ckhEbU1LcE1GWXdFQVlIS29aSXpqMENBUVlGSzRFRUFBb0RRZ0FFN2ZpZWZWQ21HcTlzCmV0OVl4aWdQNzZWUmJxZlh0VWNtTk1VN3FkTlBiSm5NNGh5R1QwanpPcXUrSWNXWW5IelFJYmxJVmsydENPQnQKYjExanY4MGVwcUNCOVRDQjhnWUpLb1pJaHZjTkFRa09NWUhrTUlIaE1DUUdDU3NHQVFRQmdqY1VBZ1FYRXhWUQpVa1ZhUVZSRFFTMURiMlJsTFZOcFoyNXBibWN3Z2JnR0ExVWRFUVNCc0RDQnJhU0JxakNCcHpFME1ESUdBMVVFCkJBd3JNUzFQWkc5dmZESXRNVFY4TXkxVFNVUkpNeTFEUWsxUVVpMU1Na1E0V0MxTFRUQkxUaTFZTkVsVFNqRWYKTUIwR0NnbVNKb21UOGl4a0FRRU1Eek14TURFM05UTTVOelF3TURBd016RU5NQXNHQTFVRURBd0VNVEV3TURFdgpNQzBHQTFVRUdnd21RV3dnUVcxcGNpQk5iMmhoYlcxbFpDQkNhVzRnUVdKa2RXd2dRWHBwZWlCVGRISmxaWFF4CkRqQU1CZ05WQkE4TUJVOTBhR1Z5TUFvR0NDcUdTTTQ5QkFNQ0Ewa0FNRVlDSVFEb3VCeXhZRDRuQ2pUQ2V6TkYKczV6SmlVWW1QZVBRNnFWNDdZemRHeWRla1FJaEFPRjNVTWF4UFZuc29zOTRFMlNkT2JJcTVYYVAvKzlFYWs5TgozMUtWRUkvTQotLS0tLUVORCBDRVJUSUZJQ0FURSBSRVFVRVNULS0tLS0K',
-            'l10n_sa_compliance_csid_json': """{"requestID": 1234567890123, "dispositionMessage": "ISSUED", "binarySecurityToken": "TUlJQ2xUQ0NBanVnQXdJQkFnSUdBWWgydEhlOU1Bb0dDQ3FHU000OUJBTUNNQlV4RXpBUkJnTlZCQU1NQ21WSmJuWnZhV05wYm1jd0hoY05Nak13TmpBeE1URXlOVEV6V2hjTk1qZ3dOVE14TWpFd01EQXdXakNCd1RFTE1Ba0dBMVVFQmhNQ1UwRXhFekFSQmdOVkJBc01Dak14TURFM05UTTVOelF4RXpBUkJnTlZCQW9NQ2xOQklFTnZiWEJoYm5reEV6QVJCZ05WQkFNTUNsTkJJRU52YlhCaGJua3hHREFXQmdOVkJHRU1Eek14TURFM05UTTVOelF3TURBd016RVBNQTBHQTFVRUNBd0dVbWw1WVdSb01VZ3dSZ1lEVlFRSEREL0RtTUtudzVuaWdKN0RtZUtBcHNPWXdxL0RtY1dndzVuaWdLRERtTUtwSU1PWXdxZkRtZUtBbnNPWjRvQ213NW5pZ0tERG1jdUd3NWpDc2NPWXdxa3dWakFRQmdjcWhrak9QUUlCQmdVcmdRUUFDZ05DQUFUdCtKNTlVS1lhcjJ4NjMxakdLQS92cFZGdXA5ZTFSeVkweFR1cDAwOXNtY3ppSElaUFNQTTZxNzRoeFppY2ZOQWh1VWhXVGEwSTRHMXZYV08velI2bW80SE1NSUhKTUF3R0ExVWRFd0VCL3dRQ01BQXdnYmdHQTFVZEVRU0JzRENCcmFTQnFqQ0JwekUwTURJR0ExVUVCQXdyTVMxUFpHOXZmREl0TVRWOE15MVRTVVJKTXkxRFFrMVFVaTFNTWtRNFdDMUxUVEJMVGkxWU5FbFRTakVmTUIwR0NnbVNKb21UOGl4a0FRRU1Eek14TURFM05UTTVOelF3TURBd016RU5NQXNHQTFVRURBd0VNVEV3TURFdk1DMEdBMVVFR2d3bVFXd2dRVzFwY2lCTmIyaGhiVzFsWkNCQ2FXNGdRV0prZFd3Z1FYcHBlaUJUZEhKbFpYUXhEakFNQmdOVkJBOE1CVTkwYUdWeU1Bb0dDQ3FHU000OUJBTUNBMGdBTUVVQ0lRQ2FBNlNKMXBXWDQ4UUE1V1pZVEQ4VmJpODFwZExSY01iZm1NQStZMmNBWlFJZ0NqbXp6Uzh4TnNDWllvWTFoWGIrN3R2NUpKRDVWeUVMR3hER1lyRHFpa2c9", "secret": "dBwSQ1ykNStUO6XRQAQhuDAWAdg/GgNZYNmiwClAGcQ=", "errors": null}""",
-            'l10n_sa_production_csid_json': """{"requestID": 30368, "tokenType": "http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-x509-token-profile-1.0#X509v3", "dispositionMessage": "ISSUED", "binarySecurityToken": "TUlJRDJ6Q0NBNENnQXdJQkFnSVRid0FBZHFEbUlocXNqcG01Q3dBQkFBQjJvREFLQmdncWhrak9QUVFEQWpCak1SVXdFd1lLQ1pJbWlaUHlMR1FCR1JZRmJHOWpZV3d4RXpBUkJnb0praWFKay9Jc1pBRVpGZ05uYjNZeEZ6QVZCZ29Ka2lhSmsvSXNaQUVaRmdkbGVIUm5ZWHAwTVJ3d0dnWURWUVFERXhOVVUxcEZTVTVXVDBsRFJTMVRkV0pEUVMweE1CNFhEVEl5TURNeU9ERTFORFl6TWxvWERUSXlNRE16TURFMU5EWXpNbG93VFRFTE1Ba0dBMVVFQmhNQ1UwRXhEakFNQmdOVkJBb1RCVXBoY21seU1Sb3dHQVlEVlFRTEV4RktaV1JrWVdnZ1FuSmhibU5vTVRJek5ERVNNQkFHQTFVRUF4TUpNVEkzTGpBdU1DNHhNRll3RUFZSEtvWkl6ajBDQVFZRks0RUVBQW9EUWdBRUQvd2IybGhCdkJJQzhDbm5adm91bzZPelJ5bXltVTlOV1JoSXlhTWhHUkVCQ0VaQjRFQVZyQnVWMnhYaXhZNHFCWWY5ZGRlcnprVzlEd2RvM0lsSGdxT0NBaW93Z2dJbU1JR0xCZ05WSFJFRWdZTXdnWUNrZmpCOE1Sd3dHZ1lEVlFRRURCTXlNakl5TWpNeU5EUTBNelF6YW1abU5ETXlNUjh3SFFZS0NaSW1pWlB5TEdRQkFRd1BNekV3TVRjMU16azNOREF3TURBek1RMHdDd1lEVlFRTURBUXhNREV4TVJFd0R3WURWUVFhREFoVFlXMXdiR1VnUlRFWk1CY0dBMVVFRHd3UVUyRnRjR3hsSUVKMWMzTnBibVZ6Y3pBZEJnTlZIUTRFRmdRVWhXY3NiYkpoakQ1WldPa3dCSUxDK3dOVmZLWXdId1lEVlIwakJCZ3dGb0FVZG1DTSt3YWdyR2RYTlozUG1xeW5LNWsxdFM4d1RnWURWUjBmQkVjd1JUQkRvRUdnUDRZOWFIUjBjRG92TDNSemRHTnliQzU2WVhSallTNW5iM1l1YzJFdlEyVnlkRVZ1Y205c2JDOVVVMXBGU1U1V1QwbERSUzFUZFdKRFFTMHhMbU55YkRDQnJRWUlLd1lCQlFVSEFRRUVnYUF3Z1owd2JnWUlLd1lCQlFVSE1BR0dZbWgwZEhBNkx5OTBjM1JqY213dWVtRjBZMkV1WjI5MkxuTmhMME5sY25SRmJuSnZiR3d2VkZOYVJXbHVkbTlwWTJWVFEwRXhMbVY0ZEdkaGVuUXVaMjkyTG14dlkyRnNYMVJUV2tWSlRsWlBTVU5GTFZOMVlrTkJMVEVvTVNrdVkzSjBNQ3NHQ0NzR0FRVUZCekFCaGg5b2RIUndPaTh2ZEhOMFkzSnNMbnBoZEdOaExtZHZkaTV6WVM5dlkzTndNQTRHQTFVZER3RUIvd1FFQXdJSGdEQWRCZ05WSFNVRUZqQVVCZ2dyQmdFRkJRY0RBZ1lJS3dZQkJRVUhBd013SndZSkt3WUJCQUdDTnhVS0JCb3dHREFLQmdnckJnRUZCUWNEQWpBS0JnZ3JCZ0VGQlFjREF6QUtCZ2dxaGtqT1BRUURBZ05KQURCR0FpRUF5Tmh5Y1EzYk5sTEZkT1BscVlUNlJWUVRXZ25LMUdoME5IZGNTWTRQZkMwQ0lRQ1NBdGhYdnY3dGV0VUw2OVdqcDhCeG5MTE13ZXJ4WmhCbmV3by9nRjNFSkE9PQ==", "secret": "f9YRhopN/G7x0TECOY6nKSCHLNYlb5riAHSFPICo4qw="}"""
+            'l10n_sa_csr': BinaryBytes(b'LS0tLS1CRUdJTiBDRVJUSUZJQ0FURSBSRVFVRVNULS0tLS0KTUlJQ2NqQ0NBaGNDQVFBd2djRXhDekFKQmdOVkJBWVRBbE5CTVJNd0VRWURWUVFMREFvek1UQXhOelV6T1RjMApNUk13RVFZRFZRUUtEQXBUUVNCRGIyMXdZVzU1TVJNd0VRWURWUVFEREFwVFFTQkRiMjF3WVc1NU1SZ3dGZ1lEClZRUmhEQTh6TVRBeE56VXpPVGMwTURBd01ETXhEekFOQmdOVkJBZ01CbEpwZVdGa2FERklNRVlHQTFVRUJ3dy8KdzVqQ3A4T1o0b0NldzVuaWdLYkRtTUt2dzVuRm9NT1o0b0NndzVqQ3FTRERtTUtudzVuaWdKN0RtZUtBcHNPWgo0b0NndzVuTGhzT1l3ckhEbU1LcE1GWXdFQVlIS29aSXpqMENBUVlGSzRFRUFBb0RRZ0FFN2ZpZWZWQ21HcTlzCmV0OVl4aWdQNzZWUmJxZlh0VWNtTk1VN3FkTlBiSm5NNGh5R1QwanpPcXUrSWNXWW5IelFJYmxJVmsydENPQnQKYjExanY4MGVwcUNCOVRDQjhnWUpLb1pJaHZjTkFRa09NWUhrTUlIaE1DUUdDU3NHQVFRQmdqY1VBZ1FYRXhWUQpVa1ZhUVZSRFFTMURiMlJsTFZOcFoyNXBibWN3Z2JnR0ExVWRFUVNCc0RDQnJhU0JxakNCcHpFME1ESUdBMVVFCkJBd3JNUzFQWkc5dmZESXRNVFY4TXkxVFNVUkpNeTFEUWsxUVVpMU1Na1E0V0MxTFRUQkxUaTFZTkVsVFNqRWYKTUIwR0NnbVNKb21UOGl4a0FRRU1Eek14TURFM05UTTVOelF3TURBd016RU5NQXNHQTFVRURBd0VNVEV3TURFdgpNQzBHQTFVRUdnd21RV3dnUVcxcGNpQk5iMmhoYlcxbFpDQkNhVzRnUVdKa2RXd2dRWHBwZWlCVGRISmxaWFF4CkRqQU1CZ05WQkE4TUJVOTBhR1Z5TUFvR0NDcUdTTTQ5QkFNQ0Ewa0FNRVlDSVFEb3VCeXhZRDRuQ2pUQ2V6TkYKczV6SmlVWW1QZVBRNnFWNDdZemRHeWRla1FJaEFPRjNVTWF4UFZuc29zOTRFMlNkT2JJcTVYYVAvKzlFYWs5TgozMUtWRUkvTQotLS0tLUVORCBDRVJUSUZJQ0FURSBSRVFVRVNULS0tLS0K'),
+            'l10n_sa_compliance_csid_json': """{"requestID": 1234567890123, "dispositionMessage": "ISSUED", "binarySecurityToken": "TUlJQ2N6Q0NBaG1nQXdJQkFnSUdBWStWTmxza01Bb0dDQ3FHU000OUJBTUNNQlV4RXpBUkJnTlZCQU1NQ21WSmJuWnZhV05wYm1jd0hoY05NalF3TlRJd01EZzFOVEV6V2hjTk1qa3dOVEU1TWpFd01EQXdXakNCbnpFTE1Ba0dBMVVFQmhNQ1UwRXhFekFSQmdOVkJBc01Dak01T1RrNU9UazVPVGt4RXpBUkJnTlZCQW9NQ2xOQklFTnZiWEJoYm5reEV6QVJCZ05WQkFNTUNsTkJJRU52YlhCaGJua3hHREFXQmdOVkJHRU1Eek01T1RrNU9UazVPVGt3TURBd016RVBNQTBHQTFVRUNBd0dVbWw1WVdSb01TWXdKQVlEVlFRSERCM1lwOW1FMllYWXI5bUsyWWJZcVNEWXA5bUUyWVhaaHRtSTJMSFlxVEJXTUJBR0J5cUdTTTQ5QWdFR0JTdUJCQUFLQTBJQUJOVlB3N0hGNjhUVWtQTkJQb29uT0Y2NnRPMm5IcmxUNlRMcmk3MEpLY1MvYmVMWitoRVE0MmdXdUtYckp5RmxnWm9kUVJzTFQyMEtQZnE0Q3N2YlFJMmpnY3d3Z2Nrd0RBWURWUjBUQVFIL0JBSXdBRENCdUFZRFZSMFJCSUd3TUlHdHBJR3FNSUduTVRRd01nWURWUVFFRENzeExVOWtiMjk4TWkweE5Yd3pMVk5KUkVrekxVTkNUVkJTTFV3eVJEaFlMVXROTUV0T0xWZzBTVk5LTVI4d0hRWUtDWkltaVpQeUxHUUJBUXdQTXprNU9UazVPVGs1T1RBd01EQXpNUTB3Q3dZRFZRUU1EQVF4TVRBd01TOHdMUVlEVlFRYURDWkJiQ0JCYldseUlFMXZhR0Z0YldWa0lFSnBiaUJCWW1SMWJDQkJlbWw2SUZOMGNtVmxkREVPTUF3R0ExVUVEd3dGVDNSb1pYSXdDZ1lJS29aSXpqMEVBd0lEU0FBd1JRSWdTeVhlZExqOUtMVTRUMWFBbVQvL09GZDBGWWxLQnIraFFIeGNDM0c2ajc4Q0lRRGdlNjNsQkVqTU1ETktqTm1pTklaQlBWSnlHRzl5bVJaSHdvUzV5TEQyZXc9PQ==", "secret": "uMpSz85cV0h/e/uqpJ+FaZkdYZ76uoaRYOevGufcup0=", "errors": null}""",
+            'l10n_sa_production_csid_json': """{"requestID": 30368, "tokenType": "http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-x509-token-profile-1.0#X509v3", "dispositionMessage": "ISSUED", "binarySecurityToken": "TUlJRDNqQ0NBNFNnQXdJQkFnSVRFUUFBT0FQRjkwQWpzL3hjWHdBQkFBQTRBekFLQmdncWhrak9QUVFEQWpCaU1SVXdFd1lLQ1pJbWlaUHlMR1FCR1JZRmJHOWpZV3d4RXpBUkJnb0praWFKay9Jc1pBRVpGZ05uYjNZeEZ6QVZCZ29Ka2lhSmsvSXNaQUVaRmdkbGVIUm5ZWHAwTVJzd0dRWURWUVFERXhKUVVscEZTVTVXVDBsRFJWTkRRVFF0UTBFd0hoY05NalF3TVRFeE1Ea3hPVE13V2hjTk1qa3dNVEE1TURreE9UTXdXakIxTVFzd0NRWURWUVFHRXdKVFFURW1NQ1FHQTFVRUNoTWRUV0Y0YVcxMWJTQlRjR1ZsWkNCVVpXTm9JRk4xY0hCc2VTQk1WRVF4RmpBVUJnTlZCQXNURFZKcGVXRmthQ0JDY21GdVkyZ3hKakFrQmdOVkJBTVRIVlJUVkMwNE9EWTBNekV4TkRVdE16azVPVGs1T1RrNU9UQXdNREF6TUZZd0VBWUhLb1pJemowQ0FRWUZLNEVFQUFvRFFnQUVvV0NLYTBTYTlGSUVyVE92MHVBa0MxVklLWHhVOW5QcHgydmxmNHloTWVqeThjMDJYSmJsRHE3dFB5ZG84bXEwYWhPTW1Obzhnd25pN1h0MUtUOVVlS09DQWdjd2dnSURNSUd0QmdOVkhSRUVnYVV3Z2FLa2daOHdnWnd4T3pBNUJnTlZCQVFNTWpFdFZGTlVmREl0VkZOVWZETXRaV1F5TW1ZeFpEZ3RaVFpoTWkweE1URTRMVGxpTlRndFpEbGhPR1l4TVdVME5EVm1NUjh3SFFZS0NaSW1pWlB5TEdRQkFRd1BNems1T1RrNU9UazVPVEF3TURBek1RMHdDd1lEVlFRTURBUXhNVEF3TVJFd0R3WURWUVFhREFoU1VsSkVNamt5T1RFYU1CZ0dBMVVFRHd3UlUzVndjR3g1SUdGamRHbDJhWFJwWlhNd0hRWURWUjBPQkJZRUZFWCtZdm1tdG5Zb0RmOUJHYktvN29jVEtZSzFNQjhHQTFVZEl3UVlNQmFBRkp2S3FxTHRtcXdza0lGelZ2cFAyUHhUKzlObk1Ic0dDQ3NHQVFVRkJ3RUJCRzh3YlRCckJnZ3JCZ0VGQlFjd0FvWmZhSFIwY0RvdkwyRnBZVFF1ZW1GMFkyRXVaMjkyTG5OaEwwTmxjblJGYm5KdmJHd3ZVRkphUlVsdWRtOXBZMlZUUTBFMExtVjRkR2RoZW5RdVoyOTJMbXh2WTJGc1gxQlNXa1ZKVGxaUFNVTkZVME5CTkMxRFFTZ3hLUzVqY25Rd0RnWURWUjBQQVFIL0JBUURBZ2VBTUR3R0NTc0dBUVFCZ2pjVkJ3UXZNQzBHSlNzR0FRUUJnamNWQ0lHR3FCMkUwUHNTaHUyZEpJZk8reG5Ud0ZWbWgvcWxaWVhaaEQ0Q0FXUUNBUkl3SFFZRFZSMGxCQll3RkFZSUt3WUJCUVVIQXdNR0NDc0dBUVVGQndNQ01DY0dDU3NHQVFRQmdqY1ZDZ1FhTUJnd0NnWUlLd1lCQlFVSEF3TXdDZ1lJS3dZQkJRVUhBd0l3Q2dZSUtvWkl6ajBFQXdJRFNBQXdSUUloQUxFL2ljaG1uV1hDVUtVYmNhM3ljaThvcXdhTHZGZEhWalFydmVJOXVxQWJBaUE5aEM0TThqZ01CQURQU3ptZDJ1aVBKQTZnS1IzTEUwM1U3NWVxYkMvclhBPT0=", "secret": "CkYsEXfV8c1gFHAtFWoZv73pGMvh/Qyo4LzKM2h/8Hg="}"""
         })

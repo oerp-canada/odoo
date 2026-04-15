@@ -1,225 +1,123 @@
-/* @odoo-module */
-
+import { partnerCompareRegistry } from "@mail/core/common/partner_compare";
 import { cleanTerm } from "@mail/utils/common/format";
+import { toRaw } from "@odoo/owl";
+import { emojiLoader } from "@web/core/emoji_picker/emoji_loader";
 
 import { registry } from "@web/core/registry";
+import { fuzzyLookup } from "@web/core/utils/search";
 
 export class SuggestionService {
+    /**
+     * @param {import("@web/env").OdooEnv} env
+     * @param {import("services").ServiceFactories} services
+     */
     constructor(env, services) {
+        this.env = env;
         this.orm = services.orm;
-        /** @type {import("@mail/core/common/store_service").Store} */
         this.store = services["mail.store"];
-        /** @type {import("@mail/core/common/thread_service").ThreadService} */
-        this.threadService = services["mail.thread"];
-        /** @type {import("@mail/core/common/persona_service").PersonaService} */
-        this.personaService = services["mail.persona"];
-        /** @type {import("@mail/core/common/channel_member_service").ChannelMemberService} */
-        this.channelMemberService = services["discuss.channel.member"];
+        this.composer = services["mail.composer"];
     }
 
-    getSupportedDelimiters(thread) {
-        return [["@"], ["#"]];
+    /**
+     * Returns list of supported delimiters, each supported
+     * delimiter is in an array [a, b, c] where:
+     * - a: chars to trigger
+     * - b: (optional) if set, the exact position in composer text input to allow using this delimiter
+     * - c: (optional) if set, this is the minimum amount of extra char after delimiter to allow using this delimiter
+     *
+     * @param {import('models').Thread} thread
+     * @returns {Array<[string, number, number]>}
+     */
+    getSupportedDelimiters(thread, env) {
+        return [["@"], ["#"], ["::"], [":", undefined, 2]];
     }
 
-    async fetchSuggestions({ delimiter, term }, { thread, onFetched } = {}) {
+    async fetchSuggestions({ delimiter, term }, { thread, abortSignal } = {}) {
         const cleanedSearchTerm = cleanTerm(term);
         switch (delimiter) {
-            case "@": {
-                this.fetchPartners(cleanedSearchTerm, thread).then(onFetched);
+            case "@":
+                await this.fetchPartnersRoles(cleanedSearchTerm, thread, { abortSignal });
+                break;
+            case "#":
+                await this.fetchThreads(cleanedSearchTerm, { abortSignal });
+                break;
+            case "::":
+                await this.store.cannedReponses.fetch();
+                break;
+            case ":": {
+                await emojiLoader.load();
                 break;
             }
-            case "#":
-                this.fetchThreads(cleanedSearchTerm).then(onFetched);
-                break;
         }
+    }
+
+    /**
+     * Make an ORM call with a cancellable signal. Usefull to abort fetch
+     * requests from outside of the suggestion service.
+     *
+     * @param {String} model
+     * @param {String} method
+     * @param {Array} args
+     * @param {Object} kwargs
+     * @param {Object} options
+     * @param {AbortSignal} options.abortSignal
+     */
+    makeOrmCall(model, method, args, kwargs, { abortSignal } = {}) {
+        return new Promise((res, rej) => {
+            const req = this.orm.silent.call(model, method, args, kwargs);
+            const onAbort = () => {
+                try {
+                    req.abort();
+                } catch (e) {
+                    rej(e);
+                }
+            };
+            abortSignal?.addEventListener("abort", onAbort);
+            req.then(res)
+                .catch(rej)
+                .finally(() => abortSignal?.removeEventListener("abort", onAbort));
+        });
+    }
+    /**
+     * @param {string} term
+     * @param {import("models").Thread} [thread]
+     */
+    async fetchPartnersRoles(term, thread, { abortSignal } = {}) {
+        const kwargs = { search: term };
+        if (thread?.channel) {
+            kwargs.channel_id = thread.id;
+        }
+        const data = await this.makeOrmCall(
+            "res.partner",
+            thread?.channel ? "get_mention_suggestions_from_channel" : "get_mention_suggestions",
+            [],
+            kwargs,
+            { abortSignal }
+        );
+        this.store.insert(data);
     }
 
     /**
      * @param {string} term
-     * @param {import("@mail/core/common/thread_model").Thread} thread
      */
-    async fetchPartners(term, thread) {
-        const kwargs = { search: term };
-        if (thread.model === "discuss.channel") {
-            kwargs.channel_id = thread.id;
-        }
-        const suggestedPartners = await this.orm.silent.call(
-            "res.partner",
-            thread.model === "discuss.channel"
-                ? "get_mention_suggestions_from_channel"
-                : "get_mention_suggestions",
-            [],
-            kwargs
-        );
-        suggestedPartners.map((data) => {
-            this.personaService.insert({ ...data, type: "partner" });
-            if (data.persona?.channelMembers) {
-                this.channelMemberService.insert(...data.persona.channelMembers);
-            }
-        });
-    }
-
-    async fetchThreads(term) {
-        const suggestedThreads = await this.orm.silent.call(
+    async fetchThreads(term, { abortSignal } = {}) {
+        const data = await this.makeOrmCall(
             "discuss.channel",
             "get_mention_suggestions",
             [],
-            { search: term }
+            { search: term },
+            { abortSignal }
         );
-        suggestedThreads.map((data) => {
-            this.threadService.insert({
-                model: "discuss.channel",
-                ...data,
-            });
-        });
+        this.store.insert(data);
     }
 
-    /**
-     * Returns suggestions that match the given search term from specified type.
-     *
-     * @param {Object} [param0={}]
-     * @param {String} [param0.delimiter] can be one one of the following: ["@", "#"]
-     * @param {String} [param0.term]
-     * @param {Object} [options={}]
-     * @param {Integer} [options.thread] prioritize and/or restrict
-     *  result in the context of given thread
-     * @returns {[mainSuggestion[], extraSuggestion[]]}
-     */
-    searchSuggestions({ delimiter, term }, { thread } = {}, sort = false) {
-        const cleanedSearchTerm = cleanTerm(term);
-        switch (delimiter) {
-            case "@": {
-                return this.searchPartnerSuggestions(cleanedSearchTerm, thread, sort);
-            }
-            case "#":
-                return this.searchChannelSuggestions(cleanedSearchTerm, thread, sort);
-        }
-        return {
-            type: undefined,
-            mainSuggestions: [],
-            extraSuggestions: [],
-        };
-    }
-
-    searchPartnerSuggestions(cleanedSearchTerm, thread, sort) {
-        let partners;
-        const isNonPublicChannel =
-            thread &&
-            (thread.type === "group" ||
-                thread.type === "chat" ||
-                (thread.type === "channel" && thread.group_based_subscription));
-        if (isNonPublicChannel) {
-            // Only return the channel members when in the context of a
-            // group restricted channel. Indeed, the message with the mention
-            // would be notified to the mentioned partner, so this prevents
-            // from inadvertently leaking the private message to the
-            // mentioned partner.
-            partners = thread.channelMembers
-                .map((member) => member.persona)
-                .filter((persona) => persona.type === "partner");
-        } else {
-            partners = Object.values(this.store.personas).filter(
-                (persona) => persona.type === "partner"
-            );
-        }
-        const mainSuggestionList = [];
-        const extraSuggestionList = [];
-        for (const partner of partners) {
-            if (partner === this.store.odoobot) {
-                // ignore archived partners (except OdooBot)
-                continue;
-            }
-            if (!partner.name) {
-                continue;
-            }
-            if (
-                cleanTerm(partner.name).includes(cleanedSearchTerm) ||
-                (partner.email && cleanTerm(partner.email).includes(cleanedSearchTerm))
-            ) {
-                if (partner.user) {
-                    mainSuggestionList.push(partner);
-                } else {
-                    extraSuggestionList.push(partner);
-                }
-            }
-        }
-        return {
-            type: "Partner",
-            mainSuggestions: sort
-                ? this.sortPartnerSuggestions(mainSuggestionList, cleanedSearchTerm, thread)
-                : mainSuggestionList,
-            extraSuggestions: sort
-                ? this.sortPartnerSuggestions(extraSuggestionList, cleanedSearchTerm, thread)
-                : extraSuggestionList,
-        };
-    }
-
-    /**
-     * @param {[import("@mail/core/common/persona_model").Persona]} [partners]
-     * @param {String} [searchTerm]
-     * @param {import("@mail/core/common/thread_model").Thread} thread
-     * @returns {[import("@mail/core/common/persona_model").Persona]}
-     */
-    sortPartnerSuggestions(partners, searchTerm = "", thread = undefined) {
-        const cleanedSearchTerm = cleanTerm(searchTerm);
-        /**
-         * Ordering:
-         * - recent chat partners
-         * - internal users
-         * - channel members
-         * - thread followers
-         * - longgest match of name, alphabetically if having same length of match
-         * - longgest match of email, alphabetically if having same length of match
-         * - id
-         */
-        return partners.sort((p1, p2) => {
-            const recentChatPartnerIds = this.personaService.getRecentChatPartnerIds();
-            const recentChatIndex_p1 = recentChatPartnerIds.findIndex(
-                (partnerId) => partnerId === p1.id
-            );
-            const recentChatIndex_p2 = recentChatPartnerIds.findIndex(
-                (partnerId) => partnerId === p2.id
-            );
-            if (recentChatIndex_p1 !== -1 && recentChatIndex_p2 === -1) {
-                return -1;
-            } else if (recentChatIndex_p1 === -1 && recentChatIndex_p2 !== -1) {
-                return 1;
-            } else if (recentChatIndex_p1 < recentChatIndex_p2) {
-                return -1;
-            } else if (recentChatIndex_p1 > recentChatIndex_p2) {
-                return 1;
-            }
-            const isAInternalUser = p1.user?.isInternalUser;
-            const isBInternalUser = p2.user?.isInternalUser;
-            if (isAInternalUser && !isBInternalUser) {
-                return -1;
-            }
-            if (!isAInternalUser && isBInternalUser) {
-                return 1;
-            }
-            if (thread?.model === "discuss.channel") {
-                const isMember1 = thread.channelMembers.some((member) => member.persona === p1);
-                const isMember2 = thread.channelMembers.some((member) => member.persona === p2);
-                if (isMember1 && !isMember2) {
-                    return -1;
-                }
-                if (!isMember1 && isMember2) {
-                    return 1;
-                }
-            }
-            if (thread) {
-                const followerList = [...thread.followers];
-                const isFollower1 = followerList.some((follower) => follower.partner === p1);
-                const isFollower2 = followerList.some((follower) => follower.partner === p2);
-                if (isFollower1 && !isFollower2) {
-                    return -1;
-                }
-                if (!isFollower1 && isFollower2) {
-                    return 1;
-                }
-            }
-            const cleanedName1 = cleanTerm(p1.name ?? "");
-            const cleanedName2 = cleanTerm(p2.name ?? "");
+    searchCannedResponseSuggestions(cleanedSearchTerm) {
+        const cannedResponses = Object.values(this.store["mail.canned.response"].records).filter(
+            (cannedResponse) => cleanTerm(cannedResponse.source).includes(cleanedSearchTerm)
+        );
+        const sortFunc = (c1, c2) => {
+            const cleanedName1 = cleanTerm(c1.source);
+            const cleanedName2 = cleanTerm(c2.source);
             if (
                 cleanedName1.startsWith(cleanedSearchTerm) &&
                 !cleanedName2.startsWith(cleanedSearchTerm)
@@ -238,70 +136,198 @@ export class SuggestionService {
             if (cleanedName1 > cleanedName2) {
                 return 1;
             }
-            const cleanedEmail1 = cleanTerm(p1.email ?? "");
-            const cleanedEmail2 = cleanTerm(p2.email ?? "");
+            return c1.id - c2.id;
+        };
+        return {
+            type: "mail.canned.response",
+            suggestions: cannedResponses.sort(sortFunc),
+        };
+    }
+
+    searchEmojisSuggestions(cleanedSearchTerm) {
+        let emojis = [];
+        if (emojiLoader.loaded && cleanedSearchTerm) {
+            emojis = fuzzyLookup(
+                cleanedSearchTerm,
+                emojiLoader.emojis,
+                (emoji) => emoji.shortcodes
+            );
+        }
+        return {
+            type: "emoji",
+            suggestions: emojis,
+        };
+    }
+
+    /**
+     * Returns suggestions that match the given search term from specified type.
+     *
+     * @param {Object} [param0={}]
+     * @param {String} [param0.delimiter] can be one one of the following: ["@", "#"]
+     * @param {String} [param0.term]
+     * @param {Object} [options={}]
+     * @param {import("models").Thread} [options.thread] prioritize and/or restrict
+     *  result in the context of given thread
+     * @returns {{ type: String, suggestions: Array }}
+     */
+    searchSuggestions({ delimiter, term }, { thread } = {}) {
+        thread = toRaw(thread);
+        const cleanedSearchTerm = cleanTerm(term);
+        switch (delimiter) {
+            case "@": {
+                const partners = this.searchPartnerSuggestions(cleanedSearchTerm, thread);
+                const roles = this.searchRoleSuggestions(cleanedSearchTerm);
+                return {
+                    type: "Partner",
+                    suggestions: [...partners.suggestions, ...roles.suggestions],
+                };
+            }
+            case "#":
+                return this.searchChannelSuggestions(cleanedSearchTerm);
+            case "::":
+                return this.searchCannedResponseSuggestions(cleanedSearchTerm);
+            case ":":
+                return this.searchEmojisSuggestions(cleanedSearchTerm);
+        }
+        return {
+            type: undefined,
+            suggestions: [],
+        };
+    }
+
+    searchRoleSuggestions(cleanedSearchTerm) {
+        const roles = Object.values(this.store["res.role"].records).filter((role) =>
+            cleanTerm(role.name).includes(cleanedSearchTerm)
+        );
+        const sortFunc = (r1, r2) => {
+            const cleanedName1 = cleanTerm(r1.name);
+            const cleanedName2 = cleanTerm(r2.name);
             if (
-                cleanedEmail1.startsWith(cleanedSearchTerm) &&
-                !cleanedEmail1.startsWith(cleanedSearchTerm)
+                cleanedName1.startsWith(cleanedSearchTerm) &&
+                !cleanedName2.startsWith(cleanedSearchTerm)
             ) {
                 return -1;
             }
             if (
-                !cleanedEmail2.startsWith(cleanedSearchTerm) &&
-                cleanedEmail2.startsWith(cleanedSearchTerm)
+                !cleanedName1.startsWith(cleanedSearchTerm) &&
+                cleanedName2.startsWith(cleanedSearchTerm)
             ) {
                 return 1;
             }
-            if (cleanedEmail1 < cleanedEmail2) {
+            if (cleanedName1 < cleanedName2) {
                 return -1;
             }
-            if (cleanedEmail1 > cleanedEmail2) {
+            if (cleanedName1 > cleanedName2) {
                 return 1;
             }
-            return p1.id - p2.id;
+            return r1.id - r2.id;
+        };
+        return {
+            suggestions: roles.sort(sortFunc),
+        };
+    }
+
+    isSuggestionValid(partner, thread) {
+        return (
+            (this.store.self_user?.share === false || partner.mention_token) &&
+            partner.notEq(this.store.odoobot)
+        );
+    }
+
+    getPartnerSuggestions(thread) {
+        return Object.values(this.store["res.partner"].records).filter((partner) =>
+            this.isSuggestionValid(partner, thread)
+        );
+    }
+
+    searchPartnerSuggestions(cleanedSearchTerm, thread) {
+        const partners = this.getPartnerSuggestions(thread);
+        const suggestions = [];
+        for (const partner of partners) {
+            if (!partner.name) {
+                continue;
+            }
+            if (
+                cleanTerm(partner.name).includes(cleanedSearchTerm) ||
+                (partner.email && cleanTerm(partner.email).includes(cleanedSearchTerm))
+            ) {
+                suggestions.push(partner);
+            }
+        }
+        suggestions.push(
+            ...this.store.specialMentions.filter(
+                (special) =>
+                    thread &&
+                    special.channel_types.includes(thread.channel?.channel_type) &&
+                    cleanedSearchTerm.length >= Math.min(4, special.label.length) &&
+                    (special.label.startsWith(cleanedSearchTerm) ||
+                        cleanTerm(special.description.toString()).includes(cleanedSearchTerm))
+            )
+        );
+        return {
+            type: "Partner",
+            suggestions: [...this.sortPartnerSuggestions(suggestions, cleanedSearchTerm, thread)],
+        };
+    }
+
+    /**
+     * @param {[import("models").Persona | import("@mail/core/common/store_service").SpecialMention]} [partners]
+     * @param {String} [searchTerm]
+     * @param {import("models").Thread} thread
+     * @returns {[import("models").Persona]}
+     */
+    sortPartnerSuggestions(partners, searchTerm = "", thread = undefined) {
+        const cleanedSearchTerm = cleanTerm(searchTerm);
+        const compareFunctions = partnerCompareRegistry.getAll();
+        const context = this.sortPartnerSuggestionsContext(thread);
+        return partners.sort((p1, p2) => {
+            p1 = toRaw(p1);
+            p2 = toRaw(p2);
+            if (p1.isSpecial || p2.isSpecial) {
+                return 0;
+            }
+            for (const fn of compareFunctions) {
+                const result = fn(p1, p2, {
+                    store: this.store,
+                    searchTerm: cleanedSearchTerm,
+                    thread,
+                    context,
+                });
+                if (result !== undefined) {
+                    return result;
+                }
+            }
         });
     }
 
-    searchChannelSuggestions(cleanedSearchTerm, thread, sort) {
-        let threads;
-        if (
-            thread &&
-            (thread.type === "group" ||
-                thread.type === "chat" ||
-                (thread.type === "channel" && thread.authorizedGroupFullName))
-        ) {
-            // Only return the current channel when in the context of a
-            // group restricted channel or group or chat. Indeed, the message with the mention
-            // would appear in the target channel, so this prevents from
-            // inadvertently leaking the private message into the mentioned
-            // channel.
-            threads = [thread];
-        } else {
-            threads = Object.values(this.store.threads);
-        }
-        const suggestionList = threads.filter(
-            (thread) =>
-                thread.type === "channel" &&
-                thread.displayName &&
-                cleanTerm(thread.displayName).includes(cleanedSearchTerm)
+    sortPartnerSuggestionsContext() {
+        return {};
+    }
+
+    searchChannelSuggestions(cleanedSearchTerm) {
+        const suggestionList = Object.values(this.store["discuss.channel"].records).filter(
+            (channel) =>
+                channel.channel_type === "channel" &&
+                channel.displayName &&
+                cleanTerm(channel.displayName).includes(cleanedSearchTerm)
         );
         const sortFunc = (c1, c2) => {
-            const isPublicChannel1 = c1.type === "channel" && !c2.authorizedGroupFullName;
-            const isPublicChannel2 = c2.type === "channel" && !c2.authorizedGroupFullName;
+            const isPublicChannel1 = c1.channel_type === "channel" && !c2.group_public_id;
+            const isPublicChannel2 = c2.channel_type === "channel" && !c2.group_public_id;
             if (isPublicChannel1 && !isPublicChannel2) {
                 return -1;
             }
             if (!isPublicChannel1 && isPublicChannel2) {
                 return 1;
             }
-            if (c1.hasSelfAsMember && !c2.hasSelfAsMember) {
+            if (c1.self_member_id && !c2.self_member_id) {
                 return -1;
             }
-            if (!c1.hasSelfAsMember && c2.hasSelfAsMember) {
+            if (!c1.self_member_id && c2.self_member_id) {
                 return 1;
             }
-            const cleanedDisplayName1 = cleanTerm(c1.displayName ?? "");
-            const cleanedDisplayName2 = cleanTerm(c2.displayName ?? "");
+            const cleanedDisplayName1 = cleanTerm(c1.displayName);
+            const cleanedDisplayName2 = cleanTerm(c2.displayName);
             if (
                 cleanedDisplayName1.startsWith(cleanedSearchTerm) &&
                 !cleanedDisplayName2.startsWith(cleanedSearchTerm)
@@ -323,14 +349,18 @@ export class SuggestionService {
             return c1.id - c2.id;
         };
         return {
-            type: "Thread",
-            mainSuggestions: sort ? suggestionList.sort(sortFunc) : suggestionList,
+            type: "discuss.channel",
+            suggestions: suggestionList.sort(sortFunc),
         };
     }
 }
 
 export const suggestionService = {
-    dependencies: ["orm", "mail.store", "mail.thread", "mail.persona", "discuss.channel.member"],
+    dependencies: ["orm", "mail.store", "mail.composer"],
+    /**
+     * @param {import("@web/env").OdooEnv} env
+     * @param {import("services").ServiceFactories} services
+     */
     start(env, services) {
         return new SuggestionService(env, services);
     },

@@ -1,9 +1,7 @@
-# -*- coding: utf-8 -*-
 # Part of Odoo. See LICENSE file for full copyright and licensing details.
 
 {
     'name': 'Dashboards',
-    'version': '1.0',
     'category': 'Productivity',
     'sequence': 225,
     'summary': 'Build your own dashboards',
@@ -24,13 +22,10 @@ Allows users to create custom dashboard.
             'board/static/src/**/*.js',
             'board/static/src/**/*.xml',
         ],
-        'web.qunit_suite_tests': [
-            'board/static/tests/**/*',
-            ('remove', 'board/static/tests/mobile/**/*'), # mobile test
-        ],
-        'web.qunit_mobile_suite_tests': [
-            'board/static/tests/mobile/**/*',
+        'web.assets_unit_tests': [
+            'board/static/tests/**/*.test.js',
         ],
     },
+    'author': 'Odoo S.A.',
     'license': 'LGPL-3',
 }

@@ -1,5 +1,5 @@
 # Part of Odoo. See LICENSE file for full copyright and licensing details.
-from odoo import models
+from odoo import models, _
 from odoo.addons.account.models.chart_template import template
 
 
@@ -9,9 +9,10 @@ class AccountChartTemplate(models.AbstractModel):
     @template('ar_ex')
     def _get_ar_ex_template_data(self):
         return {
-            'name': 'Argentine Generic Chart of Accounts for Exempt Individuals',
+            'name': _('Argentine Generic Chart of Accounts for Exempt Individuals'),
             'parent': 'ar_base',
             'code_digits': '12',
+            'sequence': 2,
         }
 
     @template('ar_ex', 'res.company')
@@ -25,5 +26,6 @@ class AccountChartTemplate(models.AbstractModel):
                 'account_default_pos_receivable_account_id': 'base_deudores_por_ventas_pos',
                 'income_currency_exchange_account_id': 'base_diferencias_de_cambio',
                 'expense_currency_exchange_account_id': 'base_diferencias_de_cambio',
+                'display_invoice_tax_company_currency': False,
             },
         }

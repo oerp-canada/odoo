@@ -8,12 +8,7 @@ class AccountChartTemplate(models.AbstractModel):
 
     @template('cr')
     def _get_cr_template_data(self):
-        return {
-            'property_account_receivable_id': 'account_account_template_0_112001',
-            'property_account_payable_id': 'account_account_template_0_211001',
-            'property_account_income_categ_id': 'account_account_template_0_410001',
-            'property_account_expense_categ_id': 'account_account_template_0_511301',
-        }
+        return {}
 
     @template('cr', 'res.company')
     def _get_cr_res_company(self):
@@ -26,5 +21,21 @@ class AccountChartTemplate(models.AbstractModel):
                 'account_default_pos_receivable_account_id': 'account_account_template_0_112011',
                 'income_currency_exchange_account_id': 'account_account_template_0_450001',
                 'expense_currency_exchange_account_id': 'account_account_template_0_530004',
+                'account_sale_tax_id': 'account_tax_template_IV_0',
+                'account_purchase_tax_id': 'account_tax_template_IV_1',
+                'income_account_id': 'account_account_template_0_410001',
+                'expense_account_id': 'account_account_template_0_511301',
+                'receivable_account_id': 'account_account_template_0_112001',
+                'payable_account_id': 'account_account_template_0_211001',
+                'account_stock_valuation_id': 'account_account_template_0_113101',
+            },
+        }
+
+    @template('cr', 'account.account')
+    def _get_cr_account_account(self):
+        return {
+            'account_account_template_0_113101': {
+                'account_stock_expense_id': 'account_account_template_0_511302',
+                'account_stock_variation_id': 'account_account_template_0_520001',
             },
         }

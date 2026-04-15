@@ -5,6 +5,8 @@ import logging
 from datetime import date
 
 from odoo import api, fields, models, _, exceptions
+from odoo.tools import SQL
+
 
 _logger = logging.getLogger(__name__)
 
@@ -93,37 +95,21 @@ class GamificationBadge(models.Model):
             'granted_users_count': 0,
             'unique_owner_ids': [],
         }
-        if not self.ids:
+        if not self:
             self.update(defaults)
             return
 
-        Users = self.env["res.users"]
-        query = Users._where_calc([])
-        Users._apply_ir_rules(query)
-        badge_alias = query.join("res_users", "id", "gamification_badge_user", "user_id", "badges")
-
-        tables, where_clauses, where_params = query.get_sql()
-
-        self.env.cr.execute(
-            f"""
-              SELECT {badge_alias}.badge_id, count(res_users.id) as stat_count,
-                     count(distinct(res_users.id)) as stat_count_distinct,
-                     array_agg(distinct(res_users.id)) as unique_owner_ids
-                FROM {tables}
-               WHERE {where_clauses}
-                 AND {badge_alias}.badge_id IN %s
-            GROUP BY {badge_alias}.badge_id
-            """,
-            [*where_params, tuple(self.ids)]
-        )
-
+        rows = self.env['gamification.badge.user']._read_group([
+            ('badge_id', 'in', self.ids),
+            ('user_id', 'any', []),
+        ], ['badge_id'], ['user_id:count', 'user_id:recordset'])
         mapping = {
-            badge_id: {
+            badge.id: {
                 'granted_count': count,
-                'granted_users_count': distinct_count,
-                'unique_owner_ids': owner_ids,
+                'granted_users_count': len(owners),
+                'unique_owner_ids': owners.ids,
             }
-            for (badge_id, count, distinct_count, owner_ids) in self.env.cr._obj
+            for (badge, count, owners) in rows
         }
         for badge in self:
             badge.update(mapping.get(badge.id, defaults))
@@ -195,8 +181,6 @@ class GamificationBadge(models.Model):
     def _can_grant_badge(self):
         """Check if a user can grant a badge to another user
 
-        :param uid: the id of the res.users trying to send the badge
-        :param badge_id: the granted badge id
         :return: integer representing the permission.
         """
         if self.env.is_admin():

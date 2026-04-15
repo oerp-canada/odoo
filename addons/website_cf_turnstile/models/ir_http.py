@@ -10,7 +10,7 @@ from odoo.exceptions import UserError, ValidationError
 logger = logging.getLogger(__name__)
 
 
-class Http(models.AbstractModel):
+class IrHttp(models.AbstractModel):
     _inherit = 'ir.http'
 
     @api.model
@@ -18,7 +18,7 @@ class Http(models.AbstractModel):
         """Add the Turnstile public key to the given session_info object"""
         session = super().get_frontend_session_info()
 
-        site_key = self.env['ir.config_parameter'].sudo().get_param('cf.turnstile_site_key')
+        site_key = self.env['ir.config_parameter'].sudo().get_str('cf.turnstile_site_key')
         if site_key:
             session['turnstile_site_key'] = site_key
 
@@ -30,16 +30,12 @@ class Http(models.AbstractModel):
             If no recaptcha private key is set the recaptcha verification
             is considered inactive and this method will return True.
         """
-        res = super()._verify_request_recaptcha_token(action)
-
-        if not res:
-            return res
-
+        super()._verify_request_recaptcha_token(action)
         ip_addr = request.httprequest.remote_addr
         token = request.params.pop('turnstile_captcha', False)
         turnstile_result = request.env['ir.http']._verify_turnstile_token(ip_addr, token, action)
         if turnstile_result in ['is_human', 'no_secret']:
-            return True
+            return
         if turnstile_result == 'wrong_secret':
             raise ValidationError(_("The Cloudflare turnstile private key is invalid."))
         elif turnstile_result == 'wrong_token':
@@ -49,7 +45,7 @@ class Http(models.AbstractModel):
         elif turnstile_result == 'bad_request':
             raise UserError(_("The request is invalid or malformed."))
         else:  # wrong_action e.g.
-            return False
+            raise UserError(_("Suspicious activity detected by Turnstile CAPTCHA."))
 
     @api.model
     def _verify_turnstile_token(self, ip_addr, token, action=False):
@@ -69,7 +65,7 @@ class Http(models.AbstractModel):
                      internal-error: The request failed.
             :rtype: str
         """
-        private_key = request.env['ir.config_parameter'].sudo().get_param('cf.turnstile_secret_key')
+        private_key = request.env['ir.config_parameter'].sudo().get_str('cf.turnstile_secret_key')
         if not private_key:
             return 'no_secret'
         try:

@@ -1,7 +1,5 @@
-/** @odoo-module **/
-
 import { registry } from "@web/core/registry";
-import { _lt } from "@web/core/l10n/translation";
+import { _t } from "@web/core/l10n/translation";
 import { useInputField } from "../input_field_hook";
 import { standardFieldProps } from "../standard_field_props";
 
@@ -17,20 +15,18 @@ export class UrlField extends Component {
     };
 
     setup() {
-        useInputField({ getValue: () => this.props.record.data[this.props.name] || "" });
+        useInputField({ getValue: () => this.value });
+    }
+
+    get value() {
+        return this.props.record.data[this.props.name] || "";
     }
 
     get formattedHref() {
-        let value = "";
-        if (typeof this.props.record.data[this.props.name] === "string") {
-            const shouldaddPrefix = !(
-                this.props.websitePath ||
-                this.props.record.data[this.props.name].includes("://") ||
-                /^\//.test(this.props.record.data[this.props.name])
-            );
-            value = shouldaddPrefix
-                ? `http://${this.props.record.data[this.props.name]}`
-                : this.props.record.data[this.props.name];
+        let value = this.props.record.data[this.props.name];
+        if (value && !this.props.websitePath) {
+            const regex = /^((ftp|http)s?:\/)?\//i; // http(s)://... ftp(s)://... /...
+            value = !regex.test(value) ? `http://${value}` : value;
         }
         return value;
     }
@@ -38,12 +34,26 @@ export class UrlField extends Component {
 
 export const urlField = {
     component: UrlField,
-    displayName: _lt("URL"),
+    displayName: _t("URL"),
+    supportedOptions: [
+        {
+            label: _t("Is a website path"),
+            name: "website_path",
+            type: "boolean",
+            help: _t("If True, the url will be used as it is, without any prefix added to it."),
+        },
+        {
+            label: _t("Dynamic Placeholder"),
+            name: "placeholder_field",
+            type: "field",
+            availableTypes: ["char"],
+        },
+    ],
     supportedTypes: ["char"],
-    extractProps: ({ attrs, options }) => ({
+    extractProps: ({ attrs, options, placeholder }) => ({
+        placeholder,
         text: attrs.text,
         websitePath: options.website_path,
-        placeholder: attrs.placeholder,
     }),
 };
 

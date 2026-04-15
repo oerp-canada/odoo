@@ -1,12 +1,9 @@
-/** @odoo-module **/
-
 import { Component } from "@odoo/owl";
 import { useCommand } from "@web/core/commands/command_hook";
 import { Dropdown } from "@web/core/dropdown/dropdown";
-import { DropdownItem } from "@web/core/dropdown/dropdown_item";
-import { _lt } from "@web/core/l10n/translation";
+import { CheckboxItem } from "@web/core/dropdown/checkbox_item";
+import { _t } from "@web/core/l10n/translation";
 import { registry } from "@web/core/registry";
-import { sprintf } from "@web/core/utils/strings";
 import { formatSelection } from "../formatters";
 import { standardFieldProps } from "../standard_field_props";
 
@@ -14,7 +11,7 @@ export class StateSelectionField extends Component {
     static template = "web.StateSelectionField";
     static components = {
         Dropdown,
-        DropdownItem,
+        CheckboxItem,
     };
     static props = {
         ...standardFieldProps,
@@ -36,13 +33,13 @@ export class StateSelectionField extends Component {
             const hotkeys = ["D", "F", "G"];
             for (const [index, [value, label]] of this.options.entries()) {
                 useCommand(
-                    sprintf(this.env._t("Set kanban state as %s"), label),
+                    _t("Set kanban state as %s", label),
                     () => {
                         this.updateRecord(value);
                     },
                     {
                         category: "smart_action",
-                        hotkey: "alt+" + hotkeys[index],
+                        hotkey: hotkeys[index] && "alt+" + hotkeys[index],
                         isAvailable: () => this.props.record.data[this.props.name] !== value,
                     }
                 );
@@ -72,20 +69,33 @@ export class StateSelectionField extends Component {
     }
 
     async updateRecord(value) {
-        await this.props.record.update({ [this.props.name]: value });
-        if (this.props.autosave) {
-            return this.props.record.save();
-        }
+        await this.props.record.update({ [this.props.name]: value }, { save: this.props.autosave });
     }
 }
 
 export const stateSelectionField = {
     component: StateSelectionField,
-    displayName: _lt("Label Selection"),
+    displayName: _t("Label Selection"),
+    supportedOptions: [
+        {
+            label: _t("Autosave"),
+            name: "autosave",
+            type: "boolean",
+            default: true,
+            help: _t(
+                "If checked, the record will be saved immediately when the field is modified."
+            ),
+        },
+        {
+            label: _t("Hide label"),
+            name: "hide_label",
+            type: "boolean",
+        },
+    ],
     supportedTypes: ["selection"],
     extractProps({ options, viewType }, dynamicInfo) {
         return {
-            showLabel: viewType === "list" && !options.hide_label,
+            showLabel: 'hide_label' in options ? !options.hide_label : false,
             withCommand: viewType === "form",
             readonly: dynamicInfo.readonly,
             autosave: "autosave" in options ? !!options.autosave : true,
@@ -94,4 +104,3 @@ export const stateSelectionField = {
 };
 
 registry.category("fields").add("state_selection", stateSelectionField);
-registry.category("fields").add("list.state_selection", stateSelectionField);

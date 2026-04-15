@@ -1,16 +1,15 @@
-/** @odoo-module alias=website_event_booth_exhibitor.tour_steps **/
-    
-    import core from "web.core";
+class FinalSteps {
 
-    var FinalSteps = core.Class.extend({
+    _getSteps() {
+        return [{
+            content: "Click on confirm button",
+            trigger: "button.o_wbooth_registration_confirm",
+            run: "click",
+        }, {
+            trigger: 'h4:contains("Booth Registration completed!")',
+        }];
+    }
 
-        _getSteps: function () {
-            return [{
-                trigger: 'h3:contains("Booth Registration completed!")',
-                run: function() {},
-            }];
-        },
+}
 
-    });
-
-    export default FinalSteps;
+export default FinalSteps;

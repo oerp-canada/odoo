@@ -1,8 +1,5 @@
-/** @odoo-module **/
-
-import { deepCopy } from "@web/core/utils/objects";
+import { rpcBus } from "@web/core/network/rpc";
 import { registry } from "@web/core/registry";
-import { generateLegacyLoadViewsResult } from "@web/legacy/legacy_load_views";
 import { UPDATE_METHODS } from "@web/core/orm_service";
 
 /**
@@ -16,6 +13,8 @@ import { UPDATE_METHODS } from "@web/core/orm_service";
  * @property {boolean} is_default
  * @property {string} model_id
  * @property {[number, string] | false} action_id
+ * @property {number | false} embedded_action_id
+ * @property {number | false} embedded_parent_res_id
  */
 
 /**
@@ -43,22 +42,13 @@ import { UPDATE_METHODS } from "@web/core/orm_service";
 
 export const viewService = {
     dependencies: ["orm"],
+    async: ["loadViews"],
     start(env, { orm }) {
-        let cache = {};
-
-        function clearCache() {
-            cache = {};
-            const processedArchs = registry.category("__processed_archs__");
-            processedArchs.content = {};
-            processedArchs.trigger("UPDATE");
-        }
-
-        env.bus.addEventListener("CLEAR-CACHES", clearCache);
-        env.bus.addEventListener("RPC:RESPONSE", (ev) => {
+        rpcBus.addEventListener("RPC:RESPONSE", (ev) => {
             const { model, method } = ev.detail.data.params;
-            if (["ir.ui.view", "ir.filters"].includes(model)) {
+            if (["ir.ui.view", "ir.filters"].includes(model) && !ev.detail.error) {
                 if (UPDATE_METHODS.includes(method)) {
-                    clearCache();
+                    rpcBus.trigger("CLEAR-CACHES", "get_views");
                 }
             }
         });
@@ -72,50 +62,61 @@ export const viewService = {
          * @returns {Promise<ViewDescriptions>}
          */
         async function loadViews(params, options = {}) {
+            const { context, resModel, views } = params;
             const loadViewsOptions = {
                 action_id: options.actionId || false,
+                embedded_action_id: options.embeddedActionId || false,
+                embedded_parent_res_id: options.embeddedParentResId || false,
                 load_filters: options.loadIrFilters || false,
-                toolbar: options.loadActionMenus || false,
+                toolbar: (!context?.disable_toolbar && options.loadActionMenus) || false,
             };
+            for (const key in options) {
+                if (
+                    ![
+                        "actionId",
+                        "embeddedActionId",
+                        "embeddedParentResId",
+                        "loadIrFilters",
+                        "loadActionMenus",
+                    ].includes(key)
+                ) {
+                    loadViewsOptions[key] = options[key];
+                }
+            }
             if (env.isSmall) {
                 loadViewsOptions.mobile = true;
             }
-            const { context, resModel, views } = params;
-            const filteredContext = Object.fromEntries(
-                Object.entries(context || {}).filter((k, v) => !String(k).startsWith("default_"))
-            );
-            const key = JSON.stringify([resModel, views, filteredContext, loadViewsOptions]);
-            if (!cache[key]) {
-                cache[key] = orm
-                    .call(resModel, "get_views", [], { context, views, options: loadViewsOptions })
-                    .then((result) => {
-                        const { models, views } = result;
-                        const modelsCopy = deepCopy(models); // for legacy views
-                        const viewDescriptions = {
-                            __legacy__: generateLegacyLoadViewsResult(resModel, views, modelsCopy),
-                            fields: models[resModel],
-                            relatedModels: models,
-                            views: {},
-                        };
-                        for (const viewType in views) {
-                            const { arch, toolbar, id, filters, custom_view_id } = views[viewType];
-                            const viewDescription = { arch, id, custom_view_id };
-                            if (toolbar) {
-                                viewDescription.actionMenus = toolbar;
-                            }
-                            if (filters) {
-                                viewDescription.irFilters = filters;
-                            }
-                            viewDescriptions.views[viewType] = viewDescription;
-                        }
-                        return viewDescriptions;
-                    })
-                    .catch((error) => {
-                        delete cache[key];
-                        return Promise.reject(error);
-                    });
+            if (env.debug) {
+                loadViewsOptions.debug = true;
             }
-            return cache[key];
+            const filteredContext = Object.fromEntries(
+                Object.entries(context || {}).filter(
+                    ([k, v]) => k == "lang" || k.endsWith("_view_ref")
+                )
+            );
+
+            const result = await orm.cache({ type: "disk" }).call(resModel, "get_views", [], {
+                context: filteredContext,
+                views,
+                options: loadViewsOptions,
+            });
+            const viewDescriptions = {
+                fields: result.models[resModel].fields,
+                relatedModels: result.models,
+                views: {},
+            };
+            for (const viewType in result.views) {
+                const { arch, toolbar, id, filters, custom_view_id } = result.views[viewType];
+                const viewDescription = { arch, id, custom_view_id };
+                if (toolbar) {
+                    viewDescription.actionMenus = toolbar;
+                }
+                if (filters) {
+                    viewDescription.irFilters = filters;
+                }
+                viewDescriptions.views[viewType] = viewDescription;
+            }
+            return viewDescriptions;
         }
         return { loadViews };
     },

@@ -20,6 +20,9 @@
     &.o_color_bubble_23 {
         background-color: $o-danger;
     }
+    &.o_color_bubble_24 {
+        background-color: $primary;
+    }
 }
 
 .o_status_with_color {
@@ -37,10 +40,6 @@
     cursor: pointer;
 }
 
-.o_kanban_project_tasks .o_kanban_renderer .o_field_many2manytags{
-    margin: 0px;
-}
-
 .o_project_m2m_avatar {
     width: 20px;
     height: 20px;
@@ -56,17 +55,10 @@
     }
 }
 
-.o_state_container {
-    width: 20%;
-    @media only screen and (max-width: 650px) {
-        width: 5%;
-    }
-}
-
 .o_field_project_state_selection {
     .dropdown-toggle .o_status {
-        width: 19px;
-        height: 19px;
+        width: $font-size-base * 1.36;
+        height: $font-size-base * 1.36;
         text-align: center;
     }
 }

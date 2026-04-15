@@ -1,16 +1,13 @@
-/* @odoo-module */
-
 import { busParametersService } from "@bus/bus_parameters_service";
 
-import { serverUrl } from "@im_livechat/embed/livechat_data";
-
 import { patch } from "@web/core/utils/patch";
+import { session } from "@web/session";
 
-patch(busParametersService, "im_livechat", {
+patch(busParametersService, {
     start() {
         return {
-            ...this._super(...arguments),
-            serverURL: serverUrl.replace(/\/+$/, ""),
+            ...super.start(...arguments),
+            serverURL: session.livechatData.serverUrl.replace(/\/+$/, ""),
         };
     },
 });

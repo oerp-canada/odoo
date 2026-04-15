@@ -58,10 +58,22 @@
         padding: 0 4px;
         padding-right: 2mm;
     }
+    strong.o_label_unit_medium {
+        font-size: 0.8em;
+        padding: 0;
+    }
+    strong.o_label_unit_small {
+        font-size: 0.4em;
+        padding: 0;
+    }
     div.o_label_extra_data {
         overflow: hidden;
         height: 2.5em;
         padding: 0;
+        .img {
+            max-height: 100%;
+            max-width: 100%;
+        }
     }
     div.o_label_clear {
         clear: both;
@@ -72,8 +84,8 @@
         padding:0;
         line-height:1;
         font-size:55%;
-        overflow:visible;
-        white-space:normal;
-        word-wrap: break-word;
+        overflow:hidden;
+        white-space:nowrap;
+        text-overflow: ellipsis;
     }
 }

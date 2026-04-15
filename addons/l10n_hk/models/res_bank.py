@@ -18,18 +18,24 @@ class ResPartnerBank(models.Model):
         auto_mobn_re = re.compile(r"^[+]\d{1,3}-\d{6,12}$")
         for bank in self.filtered(lambda b: b.country_code == 'HK'):
             if bank.proxy_type not in ['id', 'mobile', 'email', 'none', False]:
-                raise ValidationError(_("The FPS Type must be either ID, Mobile or Email to generate a FPS QR code for account number %s.", bank.acc_number))
+                raise ValidationError(_("The FPS Type must be either ID, Mobile or Email to generate a FPS QR code for account number %s.", bank.account_number))
             if bank.proxy_type == 'id' and (not bank.proxy_value or len(bank.proxy_value) not in [7, 9]):
-                raise ValidationError(_("Invalid FPS ID! Please enter a valid FPS ID with length 7 or 9 for account number %s.", bank.acc_number))
+                raise ValidationError(_("Invalid FPS ID! Please enter a valid FPS ID with length 7 or 9 for account number %s.", bank.account_number))
             if bank.proxy_type == 'mobile' and (not bank.proxy_value or not auto_mobn_re.match(bank.proxy_value)):
-                raise ValidationError(_("Invalid Mobile! Please enter a valid mobile number with format +852-67891234 for account number %s.", bank.acc_number))
+                raise ValidationError(_("Invalid Mobile! Please enter a valid mobile number with format +852-67891234 for account number %s.", bank.account_number))
             if bank.proxy_type == 'email' and (not bank.proxy_value or not single_email_re.match(bank.proxy_value)):
-                raise ValidationError(_("Invalid Email! Please enter a valid email address for account number %s.", bank.acc_number))
+                raise ValidationError(_("Invalid Email! Please enter a valid email address for account number %s.", bank.account_number))
+
+    @api.depends('country_code')
+    def _compute_country_proxy_keys(self):
+        bank_hk = self.filtered(lambda b: b.country_code == 'HK')
+        bank_hk.country_proxy_keys = 'id,mobile,email'
+        super(ResPartnerBank, self - bank_hk)._compute_country_proxy_keys()
 
     @api.depends('country_code')
     def _compute_display_qr_setting(self):
         bank_hk = self.filtered(lambda b: b.country_code == 'HK')
-        bank_hk.display_qr_setting = self.env.company.qr_code
+        bank_hk.display_qr_setting = True
         super(ResPartnerBank, self - bank_hk)._compute_display_qr_setting()
 
     # Follow the documentation of FPS QR Code Standard [1]
@@ -47,7 +53,7 @@ class ResPartnerBank(models.Model):
                 (fps_type, self.proxy_value),                        # Proxy Type and Proxy Value
             ]
             merchant_account_info = ''.join([self._serialize(*val) for val in merchant_account_vals])
-            return merchant_account_info
+            return (26, merchant_account_info)
         return super()._get_merchant_account_info()
 
     def _get_additional_data_field(self, comment):

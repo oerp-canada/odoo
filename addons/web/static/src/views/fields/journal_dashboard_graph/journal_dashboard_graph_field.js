@@ -1,13 +1,15 @@
-/** @odoo-module **/
-
-import { loadJS } from "@web/core/assets";
+import { useLayoutEffect, useRef } from "@web/owl2/utils";
+import { loadBundle } from "@web/core/assets";
 import { registry } from "@web/core/registry";
-import { getColor, hexToRGBA } from "@web/core/colors/colors";
+import { getColor, hexToRGBA, getCustomColor } from "@web/core/colors/colors";
 import { standardFieldProps } from "../standard_field_props";
-import { useService } from "@web/core/utils/hooks";
 
-import { Component, onWillStart, useEffect, useRef } from "@odoo/owl";
+import { Component, onWillStart } from "@odoo/owl";
+import { cookie } from "@web/core/browser/cookie";
 
+const colorScheme = cookie.get("color_scheme");
+const GRAPH_GRID_COLOR = getCustomColor(colorScheme, "#d8dadd", "#3C3E4B");
+const GRAPH_LABEL_COLOR = getCustomColor(colorScheme, "#111827", "#E4E4E4");
 export class JournalDashboardGraphField extends Component {
     static template = "web.JournalDashboardGraphField";
     static props = {
@@ -17,13 +19,12 @@ export class JournalDashboardGraphField extends Component {
 
     setup() {
         this.chart = null;
-        this.cookies = useService("cookie");
         this.canvasRef = useRef("canvas");
         this.data = JSON.parse(this.props.record.data[this.props.name]);
 
-        onWillStart(() => loadJS("/web/static/lib/Chart/Chart.js"));
+        onWillStart(async () => await loadBundle("web.chartjs_lib"));
 
-        useEffect(() => {
+        useLayoutEffect(() => {
             this.renderChart();
             return () => {
                 if (this.chart) {
@@ -48,17 +49,13 @@ export class JournalDashboardGraphField extends Component {
             config = this.getBarChartConfig();
         }
         this.chart = new Chart(this.canvasRef.el, config);
-        // To perform its animations, ChartJS will perform each animation
-        // step in the next animation frame. The initial rendering itself
-        // is delayed for consistency. We can avoid this by manually
-        // advancing the animation service.
-        Chart.animationService.advance();
     }
     getLineChartConfig() {
         const labels = this.data[0].values.map(function (pt) {
             return pt.x;
         });
-        const color10 = getColor(10, this.cookies.current.color_scheme);
+
+        const color10 = getColor(3, cookie.get("color_scheme"), "odoo");
         const borderColor = this.data[0].is_sample_data ? hexToRGBA(color10, 0.1) : color10;
         const backgroundColor = this.data[0].is_sample_data
             ? hexToRGBA(color10, 0.05)
@@ -71,18 +68,51 @@ export class JournalDashboardGraphField extends Component {
                     {
                         backgroundColor,
                         borderColor,
+                        pointBackgroundColor: (ctx) => {
+                            const index = ctx.index;
+                            const length = this.data[0].values.length;
+                            if (index === 0 || index === length - 1) {
+                                return "transparent";
+                            }
+                            return borderColor;
+                        },
+                        pointBorderColor: "transparent",
+                        hoverBackgroundColor: borderColor,
+                        pointHoverBorderColor: borderColor,
                         data: this.data[0].values,
                         fill: "start",
                         label: this.data[0].key,
                         borderWidth: 2,
+                        cubicInterpolationMode: "monotone",
                     },
                 ],
             },
             options: {
-                legend: { display: false },
+                layout: {
+                    autoPadding: false,
+                },
+                plugins: {
+                    legend: { display: false },
+                    tooltip: {
+                        enabled: !this.data[0].is_sample_data,
+                        intersect: false,
+                        position: "average",
+                        caretSize: 0,
+                        usePointStyle: true,
+                        callbacks: {
+                            labelColor: (context) => ({
+                                backgroundColor: borderColor,
+                            }),
+                        },
+                    },
+                },
                 scales: {
-                    yAxes: [{ display: false }],
-                    xAxes: [{ display: false }],
+                    y: {
+                        display: false,
+                    },
+                    x: {
+                        display: false,
+                    },
                 },
                 maintainAspectRatio: false,
                 elements: {
@@ -90,10 +120,9 @@ export class JournalDashboardGraphField extends Component {
                         tension: 0.000001,
                     },
                 },
-                tooltips: {
+                interaction: {
                     intersect: false,
-                    position: "nearest",
-                    caretSize: 0,
+                    mode: "index",
                 },
             },
         };
@@ -104,8 +133,8 @@ export class JournalDashboardGraphField extends Component {
         const labels = [];
         const backgroundColor = [];
 
-        const color13 = getColor(13, this.cookies.current.color_scheme);
-        const color19 = getColor(19, this.cookies.current.color_scheme);
+        const color13 = getColor(2, cookie.get("color_scheme"), "odoo");
+        const color19 = getColor(1, cookie.get("color_scheme"), "odoo");
         this.data[0].values.forEach((pt) => {
             data.push(pt.value);
             labels.push(pt.label);
@@ -114,7 +143,7 @@ export class JournalDashboardGraphField extends Component {
             } else if (pt.type === "future") {
                 backgroundColor.push(color19);
             } else {
-                backgroundColor.push("#ebebeb");
+                backgroundColor.push(getCustomColor(colorScheme, "#ebebeb", "#3C3E4B"));
             }
         });
         return {
@@ -131,15 +160,42 @@ export class JournalDashboardGraphField extends Component {
                 ],
             },
             options: {
-                legend: { display: false },
+                plugins: {
+                    legend: { display: false },
+                    tooltip: {
+                        enabled: !this.data[0].is_sample_data,
+                        intersect: false,
+                        position: "nearest",
+                        caretSize: 0,
+                    },
+                },
                 scales: {
-                    yAxes: [{ display: false }],
+                    y: {
+                        display: false,
+                    },
+                    x: {
+                        grid: {
+                            color: (ctx) => {
+                                const index = ctx.tick?.value;
+                                const length = this.data[0].length;
+                                if (index === 0 || index === length) {
+                                    return "transparent";
+                                }
+                                return GRAPH_GRID_COLOR;
+                            },
+                        },
+                        ticks: {
+                            color: GRAPH_LABEL_COLOR,
+                        },
+                        border: {
+                            color: GRAPH_GRID_COLOR,
+                        },
+                    },
                 },
                 maintainAspectRatio: false,
-                tooltips: {
+                interaction: {
                     intersect: false,
-                    position: "nearest",
-                    caretSize: 0,
+                    mode: "index",
                 },
                 elements: {
                     line: {

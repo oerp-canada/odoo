@@ -1,34 +1,138 @@
-/* @odoo-module */
+import { useState, useSubEnv } from "@web/owl2/utils";
+import { Action, ACTION_TAGS } from "@mail/core/common/action";
+import { ActionList } from "@mail/core/common/action_list";
+import {
+    acceptWithCamera,
+    CallAction,
+    joinAction,
+    rejectAction,
+} from "@mail/discuss/call/common/call_actions";
+import { CallPreview } from "@mail/discuss/call/common/call_preview";
 
 import { Component } from "@odoo/owl";
 
+import { _t } from "@web/core/l10n/translation";
 import { useService } from "@web/core/utils/hooks";
 
 export class CallInvitation extends Component {
-    static props = ["thread"];
+    static props = ["channel"];
     static template = "discuss.CallInvitation";
+    static components = { ActionList, CallPreview };
 
     setup() {
-        this.threadService = useService("mail.thread");
+        super.setup();
         this.rtc = useService("discuss.rtc");
+        this.store = useService("mail.store");
+        this.ui = useService("ui");
+        this.state = useState({
+            activateCamera: 0,
+            activateMicrophone: 0,
+            showCameraPreview: false,
+            hasCamera: false,
+            hasMicrophone: this.rtc.microphonePermission === "granted",
+        });
+        useSubEnv({ inCallInvitation: true });
     }
 
-    async onClickAccept(ev) {
-        this.threadService.open(this.props.thread);
-        if (this.rtc.state.hasPendingRequest) {
-            return;
+    joinCall() {
+        this.props.channel.open({ focus: true });
+        this.rtc.toggleCall(this.props.channel, {
+            audio: this.state.hasMicrophone,
+            camera: this.state.hasCamera,
+        });
+    }
+
+    get acceptOrRejectActions() {
+        const joinUpdated = {
+            ...joinAction,
+            btnClass: joinAction.btnClass + " o-me-0_5",
+            onSelected: () => this.joinCall(),
+        };
+        const acceptWithCameraUpdated = {
+            ...acceptWithCamera,
+            btnClass: acceptWithCamera.btnClass + " o-me-0_5",
+            onSelected: () => {
+                this.state.hasCamera = true;
+                this.joinCall();
+            },
+            condition: true,
+        };
+        return [
+            new CallAction({
+                id: "accept-with-camera",
+                definition: acceptWithCameraUpdated,
+                owner: this,
+                store: this.store,
+                channel: this.props.channel,
+            }),
+            new CallAction({
+                id: "join",
+                definition: joinUpdated,
+                owner: this,
+                store: this.store,
+                channel: this.props.channel,
+            }),
+            new CallAction({
+                id: "reject",
+                definition: rejectAction,
+                owner: this,
+                store: this.store,
+                channel: this.props.channel,
+            }),
+        ];
+    }
+
+    get otherActions() {
+        return [
+            new Action({
+                id: "toggle-camera-preview",
+                definition: {
+                    name: () =>
+                        this.state.showCameraPreview
+                            ? _t("Hide camera preview")
+                            : _t("Show camera preview"),
+                    icon: () =>
+                        this.state.showCameraPreview ? "fa fa-chevron-up" : "fa fa-chevron-down",
+                    onSelected: () => {
+                        this.state.showCameraPreview = !this.state.showCameraPreview;
+                        if (this.state.showCameraPreview) {
+                            if (this.rtc.cameraPermission !== "denied") {
+                                this.state.activateCamera++;
+                            }
+                            if (this.state.hasMicrophone) {
+                                this.state.activateMicrophone++;
+                            }
+                            this.props.channel.self_member_id?.cancelInvitationTimeout();
+                        } else {
+                            this.props.channel.self_member_id?.startInvitationTimeout();
+                        }
+                    },
+                    tags: () => [ACTION_TAGS.CALL_LAYOUT],
+                },
+                store: this.store,
+            }),
+        ];
+    }
+
+    get avatarTitle() {
+        const channelName = this.props.channel.displayName;
+        if (this.props.channel.channel_type === "chat") {
+            return _t("View chat with %(channel_name)s", { channel_name: channelName });
         }
-        await this.rtc.toggleCall(this.props.thread);
+        return _t("View the %(channel_name)s channel", { channel_name: channelName });
     }
 
-    onClickAvatar(ev) {
-        this.threadService.open(this.props.thread);
+    get inviter() {
+        return this.props.channel.self_member_id?.rtc_inviting_session_id?.channel_member_id;
     }
 
-    onClickRefuse(ev) {
-        if (this.rtc.state.hasPendingRequest) {
-            return;
+    /** @param {{ microphone?: boolean, camera?: boolean }} settings */
+    onCallSettingsChanged(settings) {
+        if (settings.microphone !== undefined) {
+            this.state.hasMicrophone = settings.microphone;
         }
-        this.rtc.leaveCall(this.props.thread);
+        if (settings.camera !== undefined) {
+            this.state.hasCamera = settings.camera;
+        }
     }
 }

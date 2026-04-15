@@ -3,7 +3,9 @@ import itertools
 import os
 
 from . import lint_case
+from odoo.tests import tagged
 
+from odoo.tools.misc import file_open
 
 class OnchangeChecker(lint_case.NodeVisitor):
     def matches_onchange(self, node):
@@ -20,11 +22,11 @@ class OnchangeChecker(lint_case.NodeVisitor):
         # domains or does not
         return itertools.islice((
             n for n in walker
-            if isinstance(n, getattr(ast, 'Str', type(None))) and n.s == 'domain'
-            or isinstance(n, getattr(ast, 'Constant', type(None))) and n.value == 'domain'
+            if isinstance(n, ast.Constant) and n.value == 'domain'
         ), 1)
 
 
+@tagged('at_install', '-post_install')  # LEGACY at_install
 class TestOnchangeDomains(lint_case.LintCase):
     """ Would ideally have been a pylint module but that's slow as molasses
     (takes minutes to run, and can blow up entirely depending on the pylint
@@ -37,7 +39,7 @@ class TestOnchangeDomains(lint_case.LintCase):
         checker = OnchangeChecker()
         rs = []
         for path in self.iter_module_files('*.py'):
-            with open(path, 'rb') as f:
+            with file_open(path, 'rb') as f:
                 t = ast.parse(f.read(), path)
             rs.extend(zip(itertools.repeat(os.path.relpath(path)), checker.visit(t)))
 

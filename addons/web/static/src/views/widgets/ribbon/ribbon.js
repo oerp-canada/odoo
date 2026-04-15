@@ -1,5 +1,4 @@
-/** @odoo-module */
-
+import { _t } from "@web/core/l10n/translation";
 import { registry } from "@web/core/registry";
 import { standardWidgetProps } from "../standard_widget_props";
 
@@ -18,10 +17,11 @@ import { Component } from "@odoo/owl";
  *        If you don't specify the bg_color prop the bg-success class will be used
  *        by default.
  */
-class RibbonWidget extends Component {
+export class RibbonWidget extends Component {
     static template = "web.Ribbon";
     static props = {
         ...standardWidgetProps,
+        record: { type: Object, optional: true },
         text: { type: String },
         title: { type: String, optional: true },
         bgClass: { type: String, optional: true },
@@ -44,13 +44,28 @@ class RibbonWidget extends Component {
 
 export const ribbonWidget = {
     component: RibbonWidget,
-    extractProps: ({ attrs }) => {
-        return {
-            text: attrs.title || attrs.text,
-            title: attrs.tooltip,
-            bgClass: attrs.bg_color,
-        };
-    },
+    extractProps: ({ attrs }) => ({
+        text: attrs.title || attrs.text,
+        title: attrs.tooltip,
+        bgClass: attrs.bg_color,
+    }),
+    supportedAttributes: [
+        {
+            label: _t("Title"),
+            name: "title",
+            type: "string",
+        },
+        {
+            label: _t("Background color"),
+            name: "bg_color",
+            type: "string",
+        },
+        {
+            label: _t("Tooltip"),
+            name: "tooltip",
+            type: "string",
+        },
+    ],
 };
 
 registry.category("view_widgets").add("web_ribbon", ribbonWidget);

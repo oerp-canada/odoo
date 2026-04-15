@@ -11,8 +11,9 @@ class TestL10nSGEmvQrCode(AccountTestInvoicingCommon):
     """ Test the generation of the EMV QR Code on invoices """
 
     @classmethod
-    def setUpClass(cls, chart_template_ref='sg'):
-        super().setUpClass(chart_template_ref=chart_template_ref)
+    @AccountTestInvoicingCommon.setup_country('sg')
+    def setUpClass(cls):
+        super().setUpClass()
         cls.company_data['company'].qr_code = True
         cls.company_data['company'].partner_id.update({
             'country_id': cls.env.ref('base.sg').id,
@@ -20,7 +21,7 @@ class TestL10nSGEmvQrCode(AccountTestInvoicingCommon):
         })
 
         cls.acc_emv_sg = cls.env['res.partner.bank'].create({
-            'acc_number': '123456789012345678',
+            'account_number': '123456789012345678',
             'partner_id': cls.company_data['company'].partner_id.id,
             'proxy_type': 'uen',
             'proxy_value': '200002150HWCF',
@@ -28,7 +29,7 @@ class TestL10nSGEmvQrCode(AccountTestInvoicingCommon):
         })
 
         cls.acc_emv_sg_without_paynow_info = cls.env['res.partner.bank'].create({
-            'acc_number': '1234567890',
+            'account_number': '1234567890',
             'partner_id': cls.company_data['company'].partner_id.id,
         })
 
@@ -45,13 +46,7 @@ class TestL10nSGEmvQrCode(AccountTestInvoicingCommon):
         self.emv_qr_invoice.qr_code_method = 'emv_qr'
         self.emv_qr_invoice._generate_qr_code()
 
-        # Using bank account with non Singapore Partner should fail
-        self.company_data['company'].partner_id.country_id = False
-        with self.assertRaises(UserError, msg="The chosen QR-code type is not eligible for this invoice."):
-            self.emv_qr_invoice._generate_qr_code()
-
         # Using invoice currency other than SGD should fail
-        self.company_data['company'].partner_id.country_id = self.env.ref('base.sg')
         self.emv_qr_invoice.currency_id = self.env.ref('base.USD')
         with self.assertRaises(UserError, msg="The chosen QR-code type is not eligible for this invoice."):
             self.emv_qr_invoice._generate_qr_code()
@@ -81,4 +76,4 @@ class TestL10nSGEmvQrCode(AccountTestInvoicingCommon):
         )
 
         # Check the whole qr code string
-        self.assertEqual(emv_qr_vals, '00020101021226400009SG.PAYNOW010120213200002150HWCF030105204000053037025405100.05802SG5914company_1_data6009Singapore62170113INV/TEST/00016304FBD5')
+        self.assertEqual(emv_qr_vals, '00020101021226400009SG.PAYNOW010120213200002150HWCF0301052040000530370254031005802SG5914company_1_data6009Singapore62170113INV/TEST/0001630416C8')

@@ -1,104 +1,23 @@
-/** @odoo-module **/
-
-import { formatDate, formatDateTime } from "@web/core/l10n/dates";
+import {
+    formatDate as _formatDate,
+    formatDateTime as _formatDateTime,
+    toLocaleDateString,
+    toLocaleDateTimeString,
+} from "@web/core/l10n/dates";
 import { localization as l10n } from "@web/core/l10n/localization";
 import { _t } from "@web/core/l10n/translation";
 import { registry } from "@web/core/registry";
-import { escape, intersperse, nbsp, sprintf } from "@web/core/utils/strings";
-import { isBinarySize } from "@web/core/utils/binary";
+import { humanSize, isBinarySize } from "@web/core/utils/binary";
+import {
+    formatFloat as formatFloatNumber,
+    humanNumber,
+    insertThousandsSep,
+} from "@web/core/utils/numbers";
+import { exprToBoolean } from "@web/core/utils/strings";
 
 import { markup } from "@odoo/owl";
-import { getCurrency } from "@web/core/currency";
-
-// -----------------------------------------------------------------------------
-// Helpers
-// -----------------------------------------------------------------------------
-
-/**
- * Inserts "thousands" separators in the provided number.
- *
- * @private
- * @param {string} string representing integer number
- * @param {string} [thousandsSep=","] the separator to insert
- * @param {number[]} [grouping=[]]
- *   array of relative offsets at which to insert `thousandsSep`.
- *   See `strings.intersperse` method.
- * @returns {string}
- */
-function insertThousandsSep(number, thousandsSep = ",", grouping = []) {
-    const negative = number[0] === "-";
-    number = negative ? number.slice(1) : number;
-    return (negative ? "-" : "") + intersperse(number, grouping, thousandsSep);
-}
-
-/**
- * Format a number to a human readable format. For example, 3000 could become 3k.
- * Or massive number can use the scientific exponential notation.
- *
- * @private
- * @param {number} number to format
- * @param {Object} [options] Options to format
- * @param {number} [options.decimals=0] number of decimals to use
- *    if minDigits > 1 is used and effective on the number then decimals
- *    will be shrunk to zero, to avoid displaying irrelevant figures ( 0.01 compared to 1000 )
- * @param {number} [options.minDigits=1]
- *    the minimum number of digits to preserve when switching to another
- *    level of thousands (e.g. with a value of '2', 4321 will still be
- *    represented as 4321 otherwise it will be down to one digit (4k))
- * @returns {string}
- */
-function humanNumber(number, options = { decimals: 0, minDigits: 1 }) {
-    const decimals = options.decimals || 0;
-    const minDigits = options.minDigits || 1;
-    const d2 = Math.pow(10, decimals);
-    const numberMagnitude = +number.toExponential().split("e+")[1];
-    number = Math.round(number * d2) / d2;
-    // the case numberMagnitude >= 21 corresponds to a number
-    // better expressed in the scientific format.
-    if (numberMagnitude >= 21) {
-        // we do not use number.toExponential(decimals) because we want to
-        // avoid the possible useless O decimals: 1e.+24 preferred to 1.0e+24
-        number = Math.round(number * Math.pow(10, decimals - numberMagnitude)) / d2;
-        return `${number}e+${numberMagnitude}`;
-    }
-    // note: we need to call toString here to make sure we manipulate the resulting
-    // string, not an object with a toString method.
-    const unitSymbols = _t("kMGTPE").toString();
-    const sign = Math.sign(number);
-    number = Math.abs(number);
-    let symbol = "";
-    for (let i = unitSymbols.length; i > 0; i--) {
-        const s = Math.pow(10, i * 3);
-        if (s <= number / Math.pow(10, minDigits - 1)) {
-            number = Math.round((number * d2) / s) / d2;
-            symbol = unitSymbols[i - 1];
-            break;
-        }
-    }
-    const { decimalPoint, grouping, thousandsSep } = l10n;
-
-    // determine if we should keep the decimals (we don't want to display 1,020.02k for 1020020)
-    const decimalsToKeep = number >= 1000 ? 0 : decimals;
-    number = sign * number;
-    const [integerPart, decimalPart] = number.toFixed(decimalsToKeep).split(".");
-    const int = insertThousandsSep(integerPart, thousandsSep, grouping);
-    if (!decimalPart) {
-        return int + symbol;
-    }
-    return int + decimalPoint + decimalPart + symbol;
-}
-
-function humanSize(value) {
-    if (!value) {
-        return "";
-    }
-    const suffix = value < 1024 ? " " + _t("Bytes") : "b";
-    return (
-        humanNumber(value, {
-            decimals: 2,
-        }) + suffix
-    );
-}
+import { formatCurrency } from "@web/core/currency";
+import { normalizeTimeStr } from "@web/core/l10n/time";
 
 // -----------------------------------------------------------------------------
 // Exports
@@ -111,8 +30,7 @@ function humanSize(value) {
 export function formatBinary(value) {
     if (!isBinarySize(value)) {
         // Computing approximate size out of base64 encoded string
-        // http://en.wikipedia.org/wiki/Base64#MIME
-        return humanSize(value.length / 1.37);
+        return humanSize(Math.round(value.length * 0.75));
     }
     // already bin_size
     return value;
@@ -123,36 +41,58 @@ export function formatBinary(value) {
  * @returns {string}
  */
 export function formatBoolean(value) {
-    return markup(`
+    return markup`
         <div class="o-checkbox d-inline-block me-2">
             <input id="boolean_checkbox" type="checkbox" class="form-check-input" disabled ${
                 value ? "checked" : ""
             }/>
             <label for="boolean_checkbox" class="form-check-label"/>
-        </div>`);
+        </div>`;
 }
 
 /**
- * Returns a string representing a char.  If the value is false, then we return
- * an empty string.
- *
- * @param {string|false} value
+ * @param {string} value
  * @param {Object} [options] additional options
- * @param {boolean} [options.escape=false] if true, escapes the formatted value
  * @param {boolean} [options.isPassword=false] if true, returns '********'
  *   instead of the formatted value
  * @returns {string}
  */
 export function formatChar(value, options) {
-    value = typeof value === "string" ? value : "";
     if (options && options.isPassword) {
         return "*".repeat(value ? value.length : 0);
     }
-    if (options && options.escape) {
-        value = escape(value);
-    }
-    return value;
+    return value || "";
 }
+formatChar.extractOptions = ({ attrs }) => ({
+    isPassword: exprToBoolean(attrs.password),
+});
+
+export function formatDate(value, options = {}) {
+    if (options.numeric) {
+        return _formatDate(value, options);
+    } else {
+        return toLocaleDateString(value);
+    }
+}
+formatDate.extractOptions = ({ options }) => ({
+    numeric: options.numeric ?? false,
+});
+
+export function formatDateTime(value, options = {}) {
+    if (options.numeric) {
+        if (options.showTime === false) {
+            return _formatDate(value, options);
+        }
+        return _formatDateTime(value, options);
+    } else {
+        return toLocaleDateTimeString(value, options);
+    }
+}
+formatDateTime.extractOptions = ({ attrs, options }) => ({
+    ...formatDate.extractOptions({ attrs, options }),
+    showSeconds: options.show_seconds ?? false,
+    showTime: options.show_time ?? true,
+});
 
 /**
  * Returns a string representing a float.  The result takes into account the
@@ -162,13 +102,16 @@ export function formatChar(value, options) {
  * @param {Object} [options]
  * @param {number[]} [options.digits] the number of digits that should be used,
  *   instead of the default digits precision in the field.
+ * @param {number} [options.minDigits] the minimum number of decimal digits to display.
+ *   Displays maximum 6 decimal places if no precision is provided.
  * @param {boolean} [options.humanReadable] if true, large numbers are formatted
  *   to a human readable format.
  * @param {string} [options.decimalPoint] decimal separating character
  * @param {string} [options.thousandsSep] thousands separator to insert
  * @param {number[]} [options.grouping] array of relative offsets at which to
  *   insert `thousandsSep`. See `insertThousandsSep` method.
- * @param {boolean} [options.noTrailingZeros=false] if true, the decimal part
+ * @param {number} [options.decimals] used for humanNumber formmatter
+ * @param {boolean} [options.trailingZeros=true] if false, the decimal part
  *   won't contain unnecessary trailing zeros.
  * @returns {string}
  */
@@ -176,25 +119,29 @@ export function formatFloat(value, options = {}) {
     if (value === false) {
         return "";
     }
-    if (options.humanReadable) {
-        return humanNumber(value, options);
+    if (!options.digits && options.field) {
+        options.digits = options.field.digits;
     }
-    const grouping = options.grouping || l10n.grouping;
-    const thousandsSep = "thousandsSep" in options ? options.thousandsSep : l10n.thousandsSep;
-    const decimalPoint = "decimalPoint" in options ? options.decimalPoint : l10n.decimalPoint;
-    let precision;
-    if (options.digits && options.digits[1] !== undefined) {
-        precision = options.digits[1];
-    } else {
-        precision = 2;
+    if (!options.minDigits && options.field) {
+        options.minDigits = options.field.min_display_digits;
     }
-    const formatted = (value || 0).toFixed(precision).split(".");
-    formatted[0] = insertThousandsSep(formatted[0], thousandsSep, grouping);
-    if (options.noTrailingZeros) {
-        formatted[1] = formatted[1].replace(/0+$/, "");
-    }
-    return formatted[1] ? formatted.join(decimalPoint) : formatted[0];
+    return formatFloatNumber(value, options);
 }
+formatFloat.extractOptions = ({ attrs, options }) => {
+    // Sadly, digits param was available as an option and an attr.
+    // The option version could be removed with some xml refactoring.
+    let digits;
+    if (attrs.digits) {
+        digits = JSON.parse(attrs.digits);
+    } else if (options.digits) {
+        digits = options.digits;
+    }
+    const minDigits = options.minDigits;
+    const humanReadable = !!options.human_readable;
+    const decimals = options.decimals || 0;
+    const trailingZeros = !options.hide_trailing_zeros;
+    return { decimals, digits, minDigits, humanReadable, trailingZeros };
+};
 
 /**
  * Returns a string representing a float value, from a float converted with a
@@ -210,51 +157,129 @@ export function formatFloatFactor(value, options = {}) {
         return "";
     }
     const factor = options.factor || 1;
-    return formatFloat(value * factor, options);
+    if (!options.digits && options.field) {
+        options.digits = options.field.digits;
+    }
+    return formatFloatNumber(value * factor, options);
+}
+formatFloatFactor.extractOptions = ({ attrs, options }) => ({
+    ...formatFloat.extractOptions({ attrs, options }),
+    factor: options.factor,
+});
+
+/**
+ * Returns a string representing a time value, from a float or a Duration object.
+ * The idea is that we sometimes want to display something like 1h 45m instead of 1.75,
+ * or 0:15 instead of 0.25.
+ *
+ * @param {import("./parsers").Duration} value
+ * @param {Object} [options]
+ * @param {boolean} [options.showSeconds] if true, format like 1h 30m 20s otherwise, format like 1h 30m
+ * @param {boolean} [options.numeric] if true, show the duration in the format set on the language
+ * @param {import("./parsers").UnitOfTime} [options.unit="hours"] The unit of mesure for the duration
+ * @returns {string}
+ */
+function formatDuration(value, options = {}) {
+    if (value === false) {
+        return "";
+    }
+
+    const showSeconds = options.showSeconds || options.unit === "seconds";
+    const unit = options.unit || "hours";
+    let seconds = (value.hours || 0) * 3600 + (value.minutes || 0) * 60 + (value.seconds || 0);
+    let isNegative;
+
+    if (seconds < 0) {
+        isNegative = true;
+        seconds = Math.abs(seconds);
+    }
+
+    const duration = {
+        hours: Math.floor(seconds / 3600),
+        minutes: showSeconds
+            ? Math.floor((seconds % 3600) / 60)
+            : Math.round((seconds % 3600) / 60),
+        seconds: showSeconds ? Math.round(seconds % 60) : 0,
+    };
+
+    if (duration.seconds === 60) {
+        duration.minutes += 1;
+        duration.seconds = 0;
+    }
+
+    if (duration.minutes === 60) {
+        duration.hours += 1;
+        duration.minutes = 0;
+    }
+
+    let durationParts = new Intl.DurationFormat(l10n.locale, {
+        style: options.numeric ? "digital" : "narrow",
+        hoursDisplay: unit === "hours" || options.numeric ? "always" : "auto",
+        minutesDisplay: "always",
+        secondsDisplay: showSeconds ? "always" : "auto",
+    })
+        .formatToParts(duration)
+        .filter((d) => d.type !== "literal");
+
+    let formattedValue = "";
+    if (options.numeric) {
+        formattedValue = durationParts
+            .filter((f) => f.type === "integer")
+            .map((f) => normalizeTimeStr(f.value))
+            .join(":");
+    } else {
+        if (
+            duration.minutes === 0 &&
+            unit !== "minutes" &&
+            (!durationParts.some((d) => d.unit === "hour") ||
+                !durationParts.some((d) => d.unit === "second"))
+        ) {
+            durationParts = durationParts.filter((d) => d.unit !== "minute");
+        }
+        durationParts.forEach((d) => {
+            formattedValue += d.value;
+            if (d.type === "unit") {
+                formattedValue += " ";
+            }
+        });
+        formattedValue = formattedValue.trim();
+    }
+
+    return `${isNegative ? "-" : ""}${formattedValue}`;
 }
 
 /**
+ *
  * Returns a string representing a time value, from a float.  The idea is that
- * we sometimes want to display something like 1:45 instead of 1.75, or 0:15
+ * we sometimes want to display something like 1h 45m instead of 1.75, or 0:15
  * instead of 0.25.
  *
- * @param {number | false} value
+ * @param {number} value
  * @param {Object} [options]
- * @param {boolean} [options.noLeadingZeroHour] if true, format like 1:30 otherwise, format like 01:30
- * @param {boolean} [options.displaySeconds] if true, format like ?1:30:00 otherwise, format like ?1:30
+ * @param {boolean} [options.showSeconds] if true, format like 1:30:00 otherwise, format like 1:30
+ * @param {boolean} [options.numeric] if true, show the duration in the format set on the language
+ * @param {import("./parsers").UnitOfTime} [options.unit="hours"] The unit of mesure for the duration
  * @returns {string}
  */
 export function formatFloatTime(value, options = {}) {
     if (value === false) {
         return "";
     }
-    const isNegative = value < 0;
-    value = Math.abs(value);
 
-    let hour = Math.floor(value);
-    const milliSecLeft = Math.round(value * 3600000) - hour * 3600000;
-    // Although looking quite overkill, the following lines ensures that we do
-    // not have float issues while still considering that 59s is 00:00.
-    let min = milliSecLeft / 60000;
-    if (options.displaySeconds) {
-        min = Math.floor(min);
-    } else {
-        min = Math.round(min);
-    }
-    if (min === 60) {
-        min = 0;
-        hour = hour + 1;
-    }
-    min = String(min).padStart(2, "0");
-    if (!options.noLeadingZeroHour) {
-        hour = String(hour).padStart(2, "0");
-    }
-    let sec = "";
-    if (options.displaySeconds) {
-        sec = ":" + String(Math.floor((milliSecLeft % 60000) / 1000)).padStart(2, "0");
-    }
-    return `${isNegative ? "-" : ""}${hour}:${min}${sec}`;
+    options.unit = options.unit || "hours";
+
+    return formatDuration(
+        {
+            [options.unit]: value,
+        },
+        options
+    );
 }
+formatFloatTime.extractOptions = ({ options }) => ({
+    showSeconds: Boolean(options.show_seconds),
+    numeric: Boolean(options.numeric),
+    unit: options.unit,
+});
 
 /**
  * Returns a string representing an integer.  If the value is false, then we
@@ -267,6 +292,7 @@ export function formatFloatTime(value, options = {}) {
  * @param {boolean} [options.isPassword=false] if returns true, acts like
  * @param {string} [options.thousandsSep] thousands separator to insert
  * @param {number[]} [options.grouping] array of relative offsets at which to
+ * @param {number} [options.decimals] used for humanNumber formmatter
  *   insert `thousandsSep`. See `insertThousandsSep` method.
  * @returns {string}
  */
@@ -284,14 +310,19 @@ export function formatInteger(value, options = {}) {
     const thousandsSep = "thousandsSep" in options ? options.thousandsSep : l10n.thousandsSep;
     return insertThousandsSep(value.toFixed(0), thousandsSep, grouping);
 }
+formatInteger.extractOptions = ({ attrs, options }) => ({
+    decimals: options.decimals || 0,
+    humanReadable: !!options.human_readable,
+    isPassword: exprToBoolean(attrs.password),
+});
 
 /**
  * Returns a string representing a many2one value. The value is expected to be
- * either `false` or an array in the form [id, display_name]. The returned
- * value will then be the display name of the given value, or an empty string
- * if the value is false.
+ * either `false` or an array in the form [id, display_name] or an object
+ * containing at least the key "display_name". The returned value will then be
+ * the display name of the given value, or an empty string if the value is false.
  *
- * @param {[number, string] | false} value
+ * @param {[number, string] | { display_name: string } | false} value
  * @param {Object} [options] additional options
  * @param {boolean} [options.escape=false] if true, escapes the formatted value
  * @returns {string}
@@ -299,8 +330,10 @@ export function formatInteger(value, options = {}) {
 export function formatMany2one(value, options) {
     if (!value) {
         value = "";
+    } else if ("display_name" in value ? value.display_name : value[1]) {
+        value = "display_name" in value ? value.display_name : value[1];
     } else {
-        value = value[1] || "";
+        value = _t("Unnamed");
     }
     if (options && options.escape) {
         value = encodeURIComponent(value);
@@ -323,7 +356,7 @@ export function formatX2many(value) {
     } else if (count === 1) {
         return _t("1 record");
     } else {
-        return sprintf(_t("%s records"), count);
+        return _t("%s records", count);
     }
 }
 
@@ -364,27 +397,15 @@ export function formatMonetary(value, options = {}) {
             (options.field && options.field.currency_field) ||
             "currency_id";
         const dataValue = options.data[currencyField];
-        currencyId = Array.isArray(dataValue) ? dataValue[0] : dataValue;
+        currencyId = dataValue?.id ?? dataValue;
     }
-    const currency = getCurrency(currencyId);
-    const digits = options.digits || (currency && currency.digits);
-
-    let formattedValue;
-    if (options.humanReadable) {
-        formattedValue = humanNumber(value, { decimals: digits ? digits[1] : 2 });
-    } else {
-        formattedValue = formatFloat(value, { digits });
-    }
-
-    if (!currency || options.noSymbol) {
-        return formattedValue;
-    }
-    const formatted = [currency.symbol, formattedValue];
-    if (currency.position === "after") {
-        formatted.reverse();
-    }
-    return formatted.join(nbsp);
+    return formatCurrency(value, currencyId, options);
 }
+formatMonetary.extractOptions = ({ options }) => ({
+    noSymbol: options.no_symbol,
+    currencyField: options.currency_field,
+    trailingZeros: !options.hide_trailing_zeros,
+});
 
 /**
  * Returns a string representing the given value (multiplied by 100)
@@ -397,10 +418,17 @@ export function formatMonetary(value, options = {}) {
  */
 export function formatPercentage(value, options = {}) {
     value = value || 0;
-    options = Object.assign({ noTrailingZeros: true, thousandsSep: "" }, options);
-    const formatted = formatFloat(value * 100, options);
+    options = Object.assign({ trailingZeros: false, thousandsSep: "" }, options);
+    if (!options.digits && options.field) {
+        options.digits = options.field.digits;
+    }
+    const formatted = formatFloatNumber(value * 100, options);
     return `${formatted}${options.noSymbol ? "" : "%"}`;
 }
+formatPercentage.extractOptions = ({ attrs, options }) => ({
+    ...formatFloat.extractOptions({ attrs, options }),
+    noSymbol: options.no_symbol,
+});
 
 /**
  * Returns a string representing the value of the python properties field
@@ -425,11 +453,25 @@ function formatProperties(value, field) {
  * @returns {string}
  */
 export function formatReference(value, options) {
-    return formatMany2one(value ? [value.resId, value.displayName] : false, options);
+    return formatMany2one(
+        value ? { id: value.resId, display_name: value.displayName } : false,
+        options
+    );
+}
+
+/**
+ * Returns a string representing the value of the many2one_reference field.
+ *
+ * @param {Object|false} value Object with keys "resId" and "displayName"
+ * @returns {string}
+ */
+export function formatMany2oneReference(value) {
+    return value ? formatMany2one({ id: value.resId, display_name: value.displayName }) : "";
 }
 
 /**
  * Returns a string of the value of the selection.
+ * If the value is not found in the selection options, falls back to the raw value.
  *
  * @param {Object} [options={}]
  * @param {[string, string][]} [options.selection]
@@ -439,7 +481,7 @@ export function formatReference(value, options) {
 export function formatSelection(value, options = {}) {
     const selection = options.selection || (options.field && options.field.selection) || [];
     const option = selection.find((option) => option[0] === value);
-    return option ? option[1] : "";
+    return option ? option[1] : value || "";
 }
 
 /**
@@ -449,6 +491,17 @@ export function formatSelection(value, options = {}) {
  * @returns {string}
  */
 export function formatText(value) {
+    return value ? value.toString() : "";
+}
+
+/**
+ * Returns the value.
+ * Note that, this function is added to be coherent with the rest of the formatters.
+ *
+ * @param {html} value
+ * @returns {html}
+ */
+export function formatHtml(value) {
     return value || "";
 }
 
@@ -466,11 +519,11 @@ registry
     .add("float", formatFloat)
     .add("float_factor", formatFloatFactor)
     .add("float_time", formatFloatTime)
-    .add("html", (value) => value)
+    .add("html", formatHtml)
     .add("integer", formatInteger)
     .add("json", formatJson)
     .add("many2one", formatMany2one)
-    .add("many2one_reference", formatInteger)
+    .add("many2one_reference", formatMany2oneReference)
     .add("one2many", formatX2many)
     .add("many2many", formatX2many)
     .add("monetary", formatMonetary)

@@ -6,20 +6,16 @@ from odoo.addons.sale.tests.common import TestSaleCommon
 
 class TestSaleProjectCommon(TestSaleCommon):
     @classmethod
-    def setUpClass(cls, chart_template_ref=None):
-        super().setUpClass(chart_template_ref=chart_template_ref)
+    def setUpClass(cls):
+        super().setUpClass()
+        cls.env.user.group_ids += cls.quick_ref('project.group_project_manager')
 
-        cls.env['res.config.settings'] \
-            .create({'group_project_milestone': True}) \
-            .execute()
+        cls.env.user.group_ids |= cls.env.ref('project.group_project_milestone')
 
         cls.uom_hour = cls.env.ref('uom.product_uom_hour')
         cls.account_sale = cls.company_data['default_account_revenue']
 
-        cls.analytic_plan = cls.env['account.analytic.plan'].create({
-            'name': 'Plan Test',
-            'company_id': cls.company_data['company'].id,
-        })
+        cls.analytic_plan, _other_plans = cls.env['account.analytic.plan']._get_all_plans()
         cls.analytic_account_sale = cls.env['account.analytic.account'].create({
             'name': 'Project for selling timesheet - AA',
             'code': 'AA-2030',
@@ -29,7 +25,7 @@ class TestSaleProjectCommon(TestSaleCommon):
         Project = cls.env['project.project'].with_context(tracking_disable=True)
         cls.project_global = Project.create({
             'name': 'Project Global',
-            'analytic_account_id': cls.analytic_account_sale.id,
+            'account_id': cls.analytic_account_sale.id,
             'allow_billable': True,
         })
         cls.project_template = Project.create({
@@ -49,7 +45,6 @@ class TestSaleProjectCommon(TestSaleCommon):
             'type': 'service',
             'invoice_policy': 'delivery',
             'uom_id': cls.uom_hour.id,
-            'uom_po_id': cls.uom_hour.id,
             'default_code': 'SERV-DELI1',
             'service_type': 'manual',
             'service_tracking': 'no',
@@ -64,7 +59,6 @@ class TestSaleProjectCommon(TestSaleCommon):
             'type': 'service',
             'invoice_policy': 'delivery',
             'uom_id': cls.uom_hour.id,
-            'uom_po_id': cls.uom_hour.id,
             'default_code': 'SERV-DELI2',
             'service_type': 'manual',
             'service_tracking': 'task_global_project',
@@ -79,7 +73,6 @@ class TestSaleProjectCommon(TestSaleCommon):
             'type': 'service',
             'invoice_policy': 'delivery',
             'uom_id': cls.uom_hour.id,
-            'uom_po_id': cls.uom_hour.id,
             'default_code': 'SERV-DELI3',
             'service_type': 'manual',
             'service_tracking': 'task_in_project',
@@ -94,7 +87,6 @@ class TestSaleProjectCommon(TestSaleCommon):
             'type': 'service',
             'invoice_policy': 'delivery',
             'uom_id': cls.uom_hour.id,
-            'uom_po_id': cls.uom_hour.id,
             'default_code': 'SERV-DELI4',
             'service_type': 'manual',
             'service_tracking': 'project_only',
@@ -109,7 +101,6 @@ class TestSaleProjectCommon(TestSaleCommon):
             'type': 'service',
             'invoice_policy': 'delivery',
             'uom_id': cls.uom_hour.id,
-            'uom_po_id': cls.uom_hour.id,
             'default_code': 'SERV-DELI4',
             'service_type': 'manual',
             'service_tracking': 'project_only',
@@ -161,7 +152,6 @@ class TestSaleProjectCommon(TestSaleCommon):
             'type': 'service',
             'invoice_policy': 'delivery',
             'uom_id': cls.uom_hour.id,
-            'uom_po_id': cls.uom_hour.id,
             'default_code': 'SERV-MILES',
             'service_type': 'milestones',
             'service_tracking': 'no',
@@ -171,8 +161,3 @@ class TestSaleProjectCommon(TestSaleCommon):
             {**product_milestone_vals, 'name': 'Milestone Product', 'list_price': 20},
             {**product_milestone_vals, 'name': 'Milestone Product 2', 'list_price': 15},
         ])
-
-    def set_project_milestone_feature(self, value):
-        self.env['res.config.settings'] \
-            .create({'group_project_milestone': value}) \
-            .execute()

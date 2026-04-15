@@ -1,11 +1,15 @@
-/* @odoo-module */
+import { useLayoutEffect, useRef, useState } from "@web/owl2/utils";
+import { Component } from "@odoo/owl";
+import { hasTouch } from "@web/core/browser/feature_detection";
+import { useAutofocus, useBackButton, useService } from "@web/core/utils/hooks";
+import { clamp } from "@web/core/utils/numbers";
+import { hidePDFJSButtons } from "@web/core/utils/pdfjs";
 
-import { Component, useExternalListener, useRef, useState } from "@odoo/owl";
-import { useService } from "@web/core/utils/hooks";
+const IMAGE_BUFFER_PADDING = 20;
 
 /**
  * @typedef {Object} File
- * @property {string} displayName
+ * @property {string} name
  * @property {string} downloadUrl
  * @property {boolean} [isImage]
  * @property {boolean} [isPdf]
@@ -31,12 +35,19 @@ export class FileViewer extends Component {
     };
 
     setup() {
+        useAutofocus();
         this.imageRef = useRef("image");
+        this.imageToolbarRef = useRef("imageToolbar");
         this.zoomerRef = useRef("zoomer");
+        this.iframeViewerPdfRef = useRef("iframeViewerPdf");
+        this.hasTouch = hasTouch();
 
         this.isDragging = false;
         this.dragStartX = 0;
         this.dragStartY = 0;
+        this.dragTouchIdentifier = null;
+        this.initialPinchDistance = null;
+        this.initialScale = 1;
 
         this.scrollZoomStep = 0.1;
         this.zoomStep = 0.5;
@@ -48,7 +59,6 @@ export class FileViewer extends Component {
             y: 0,
         };
 
-        useExternalListener(document, "keydown", this.onKeydown);
         this.state = useState({
             index: this.props.startIndex,
             file: this.props.files[this.props.startIndex],
@@ -56,7 +66,19 @@ export class FileViewer extends Component {
             scale: 1,
             angle: 0,
         });
-        this.ui = useState(useService("ui"));
+        this.ui = useService("ui");
+        useLayoutEffect(
+            (el) => {
+                if (el) {
+                    hidePDFJSButtons(this.iframeViewerPdfRef.el, {
+                        hideDownload: true,
+                        hidePrint: true,
+                    });
+                }
+            },
+            () => [this.iframeViewerPdfRef.el]
+        );
+        useBackButton(() => this.close());
     }
 
     onImageLoaded() {
@@ -96,20 +118,22 @@ export class FileViewer extends Component {
             case "q":
                 this.close();
                 break;
-            case "r":
-                this.rotate();
-                break;
-            case "+":
-                this.zoomIn();
-                break;
-            case "-":
-                this.zoomOut();
-                break;
-            case "0":
-                this.resetZoom();
-                break;
-            default:
-                return;
+        }
+        if (this.state.file.isImage) {
+            switch (ev.key) {
+                case "r":
+                    this.rotate();
+                    break;
+                case "+":
+                    this.zoomIn();
+                    break;
+                case "-":
+                    this.zoomOut();
+                    break;
+                case "0":
+                    this.resetZoom();
+                    break;
+            }
         }
     }
 
@@ -124,26 +148,18 @@ export class FileViewer extends Component {
         }
     }
 
-    /**
-     * @param {DragEvent} ev
-     */
-    onMousedownImage(ev) {
-        if (this.isDragging) {
-            return;
-        }
-        if (ev.button !== 0) {
-            return;
-        }
-        this.isDragging = true;
-        this.dragStartX = ev.clientX;
-        this.dragStartY = ev.clientY;
+    startImageDrag({ clientX, clientY }) {
+        this.dragStartX = clientX;
+        this.dragStartY = clientY;
     }
 
-    onMouseupImage() {
-        if (!this.isDragging) {
-            return;
-        }
-        this.isDragging = false;
+    updateImageDrag({ clientX, clientY }) {
+        this.translate.dx = clientX - this.dragStartX;
+        this.translate.dy = clientY - this.dragStartY;
+        this.updateZoomerStyle();
+    }
+
+    endImageDrag() {
         this.translate.x += this.translate.dx;
         this.translate.y += this.translate.dy;
         this.translate.dx = 0;
@@ -151,16 +167,87 @@ export class FileViewer extends Component {
         this.updateZoomerStyle();
     }
 
-    /**
-     * @param {DragEvent}
-     */
-    onMousemoveView(ev) {
+    /** @param {DragEvent} ev */
+    onMouseDownImage(ev) {
+        if (this.isDragging) {
+            return;
+        }
+        if (ev.button !== 0) {
+            return;
+        }
+        this.isDragging = true;
+        this.startImageDrag(ev);
+    }
+
+    /** @param {DragEvent} ev */
+    onMouseMoveImage(ev) {
         if (!this.isDragging) {
             return;
         }
-        this.translate.dx = ev.clientX - this.dragStartX;
-        this.translate.dy = ev.clientY - this.dragStartY;
-        this.updateZoomerStyle();
+        this.updateImageDrag(ev);
+    }
+
+    onMouseUpImage() {
+        if (!this.isDragging) {
+            return;
+        }
+        this.endImageDrag();
+        this.isDragging = false;
+    }
+
+    /** @param {TouchEvent} ev */
+    onTouchStartImage(ev) {
+        if (ev.touches.length === 1) {
+            if (this.dragTouchIdentifier !== null) {
+                return;
+            }
+            this.dragTouchIdentifier = ev.touches[0].identifier;
+            this.startImageDrag(ev.touches[0]);
+        } else if (ev.touches.length === 2) {
+            this.initialPinchDistance = Math.hypot(
+                ev.touches[0].clientX - ev.touches[1].clientX,
+                ev.touches[0].clientY - ev.touches[1].clientY
+            );
+            this.initialScale = this.state.scale;
+        }
+    }
+
+    /** @param {TouchEvent} ev */
+    onTouchMoveImage(ev) {
+        if (!this.state.file.isImage) {
+            return;
+        }
+        if (ev.touches.length === 1) {
+            if (ev.touches[0].identifier !== this.dragTouchIdentifier) {
+                return;
+            }
+            this.updateImageDrag(ev.touches[0]);
+        } else if (ev.touches.length === 2 && this.initialPinchDistance !== null) {
+            const currentPinchDistance = Math.hypot(
+                ev.touches[0].clientX - ev.touches[1].clientX,
+                ev.touches[0].clientY - ev.touches[1].clientY
+            );
+            const scaleFactor = currentPinchDistance / this.initialPinchDistance;
+            this.state.scale = Math.max(this.minScale, this.initialScale * scaleFactor);
+            this.updateZoomerStyle();
+        }
+    }
+
+    /** @param {TouchEvent} ev */
+    onTouchEndImage(ev) {
+        if (ev.touches.length < 2) {
+            this.initialPinchDistance = null;
+        }
+        if (this.dragTouchIdentifier === null) {
+            return;
+        }
+        for (let index = 0; index < ev.touches.length; index++) {
+            if (ev.touches[index].identifier === this.dragTouchIdentifier) {
+                return;
+            }
+        }
+        this.endImageDrag();
+        this.dragTouchIdentifier = null;
     }
 
     resetZoom() {
@@ -170,6 +257,7 @@ export class FileViewer extends Component {
 
     rotate() {
         this.state.angle += 90;
+        this.updateZoomerStyle();
     }
 
     /**
@@ -194,14 +282,28 @@ export class FileViewer extends Component {
     }
 
     updateZoomerStyle() {
-        const tx =
-            this.imageRef.el.offsetWidth * this.state.scale > this.zoomerRef.el.offsetWidth
-                ? this.translate.x + this.translate.dx
-                : 0;
-        const ty =
-            this.imageRef.el.offsetHeight * this.state.scale > this.zoomerRef.el.offsetHeight
-                ? this.translate.y + this.translate.dy
-                : 0;
+        const isImageRotated = this.state.angle % 180 !== 0;
+        const { offsetWidth, offsetHeight } = this.imageRef.el;
+        const imageWidth = (isImageRotated ? offsetHeight : offsetWidth) * this.state.scale;
+        const imageHeight = (isImageRotated ? offsetWidth : offsetHeight) * this.state.scale;
+        const diffX = imageWidth - this.zoomerRef.el.offsetWidth + IMAGE_BUFFER_PADDING;
+        const diffY =
+            imageHeight -
+            this.zoomerRef.el.offsetHeight +
+            2 * this.imageToolbarRef.el.clientHeight +
+            IMAGE_BUFFER_PADDING;
+        let tx = diffX > 0 ? this.translate.x + this.translate.dx : 0;
+        let ty = diffY > 0 ? this.translate.y + this.translate.dy : 0;
+        if (diffX > 0) {
+            const limitX = diffX / 2;
+            tx = clamp(tx, -limitX, limitX);
+            this.translate.dx = tx - this.translate.x;
+        }
+        if (diffY > 0) {
+            const limitY = diffY / 2;
+            ty = clamp(ty, -limitY, limitY);
+            this.translate.dy = ty - this.translate.y;
+        }
         if (tx === 0) {
             this.translate.x = 0;
         }
@@ -222,6 +324,7 @@ export class FileViewer extends Component {
         } else {
             style += "max-height: 100%; max-width: 100%;";
         }
+        style += `background: repeating-conic-gradient(#ccc 0deg 90deg, #fff 90deg 180deg) 50% / 20px 20px;`;
         return style;
     }
 

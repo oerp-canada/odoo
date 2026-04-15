@@ -1,29 +1,33 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <templates xml:space="preserve">
-    <t t-name="mail.MessageInReply" owl="1">
-        <t t-set="message" t-value="props.message"/>
-        <div class="o-mail-MessageInReply" t-att-class="{
-                'me-5': store.discuss.isActive or (env.inChatWindow and !props.alignedRight),
-                'd-flex justify-content-end ms-5': env.inChatWindow and props.alignedRight,
+    <t t-name="mail.MessageInReply">
+        <div class="o-mail-MessageInReply" t-attf-class="{{ this.props.class }}">
+            <small class="o-mail-MessageInReply-core o-mail-Message-bubble o-muted border position-relative d-flex px-2 py-1 rounded-start-0 o-rounded-end-bubble d-inline-flex" t-att-class="{
+                'o-blue': this.props.message.parent_id.bubbleColor === 'blue',
+                'o-green': this.props.message.parent_id.bubbleColor === 'green',
+                'o-orange': this.props.message.parent_id.bubbleColor === 'orange',
             }">
-            <small class="position-relative d-block text-small mb-1" t-attf-class="{{ env.inChatWindow and props.alignedRight ? 'justify-content-end pe-5': 'ps-5' }}" t-on-click="() => this.props.onClick?.()">
-                <span class="o-mail-MessageInReply-corner position-absolute bottom-0 top-50 pe-4 border-top text-300" t-attf-class="{{ env.inChatWindow and props.alignedRight ? 'o-isRightAlign border-end' : 'o-isLeftAlign border-start' }}" t-att-class="{ 'ms-n2': store.discuss.isActive }"/>
-                <span t-if="!message.parentMessage.isEmpty" class="d-inline-flex align-items-center text-muted opacity-75" t-att-class="{ 'cursor-pointer opacity-100-hover': props.onClick }">
-                    <img class="o-mail-MessageInReply-avatar me-2 rounded" t-att-src="authorAvatarUrl" t-att-title="message.parentMessage.author.name" alt="Avatar"/>
-                    <span class="o-mail-MessageInReply-content overflow-hidden">
-                        <b>@<t t-out="message.parentMessage.author.name"/></b>:
-                        <span class="o-mail-MessageInReply-message ms-1 text-break">
-                            <t t-if="!message.parentMessage.isBodyEmpty">
-                                <t t-out="message.parentMessage.body"/>
-                            </t>
-                            <t t-elif="message.parentMessage.attachments.length > 0">
-                                <span class="me-2 fst-italic">Click to see the attachments</span>
-                                <i class="fa fa-image"/>
-                            </t>
+                <span class="d-inline-flex align-items-center" t-att-class="{ 'cursor-pointer': this.props.onClick }" t-on-click="() => this.props.onClick?.()">
+                    <t t-if="!this.props.message.parent_id.isEmpty">
+                        <img class="o-mail-MessageInReply-avatar me-2 rounded object-fit-cover" t-att-src="this.authorAvatarUrl" t-att-title="this.props.message.parent_id.authorName" alt="Avatar"/>
+                        <span class="o-mail-MessageInReply-content overflow-hidden smaller">
+                            <b class="o-mail-MessageInReply-author o-fw-600"><t t-out="this.props.message.parent_id.authorName"/></b>:
+                            <span class="o-mail-MessageInReply-message ms-1 text-break">
+                                <i t-if="this.props.message.parent_id.hasAttachments" class="fa fa-fw me-1" t-att-class="this.props.message.parent_id.previewIcon" />
+                                <t t-if="this.props.message.parent_id.inlineBody">
+                                    <t t-out="this.props.message.parent_id.inlineBody"/>
+                                    <em t-if="this.props.message.parent_id.edited" class="smaller fw-bold text-500"> (edited)</em>
+                                </t>
+                                <span t-else="" class="fst-italic">
+                                    <t t-if="this.props.message.parent_id.attachment_ids.length > 0">
+                                        Click to see the attachments
+                                    </t>
+                                </span>
+                            </span>
                         </span>
-                    </span>
+                    </t>
+                    <i t-else="">Original message was deleted</i>
                 </span>
-                <i t-else="" class="text-muted ms-2">Original message was deleted</i>
             </small>
         </div>
     </t>

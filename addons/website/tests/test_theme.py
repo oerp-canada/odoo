@@ -1,4 +1,3 @@
-# coding: utf-8
 from odoo.tests import common, tagged
 
 
@@ -16,7 +15,7 @@ class TestTheme(common.TransactionCase):
 
     def test_02_disable_view(self):
         """This test ensure only one template header can be active at a time."""
-        website_id = self.env['website'].browse(1)
+        website_id = self.env.ref('website.default_website')
         ThemeUtils = self.env['theme.utils'].with_context(website_id=website_id.id)
 
         ThemeUtils._reset_default_config()
@@ -30,7 +29,7 @@ class TestTheme(common.TransactionCase):
         self.assertEqual(_get_header_template_key(), 'website.template_header_default',
                          "Only the default template should be active.")
 
-        key = 'website.template_header_magazine'
+        key = 'website.template_header_vertical'
         ThemeUtils.enable_view(key)
         self.assertEqual(_get_header_template_key(), key,
                          "Only one template can be active at a time.")

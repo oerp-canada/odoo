@@ -7,19 +7,23 @@
   <cbc:CreditNoteTypeCode>381</cbc:CreditNoteTypeCode>
   <cbc:Note>test narration</cbc:Note>
   <cbc:DocumentCurrencyCode>USD</cbc:DocumentCurrencyCode>
+  <cbc:TaxCurrencyCode>EUR</cbc:TaxCurrencyCode>
   <cbc:BuyerReference>ref_partner_2</cbc:BuyerReference>
   <cac:OrderReference>
     <cbc:ID>ref_move</cbc:ID>
   </cac:OrderReference>
   <cac:AdditionalDocumentReference>
     <cbc:ID>___ignore___</cbc:ID>
-    <cbc:Attachment>
+    <cac:Attachment>
       <cbc:EmbeddedDocumentBinaryObject>___ignore___</cbc:EmbeddedDocumentBinaryObject>
-    </cbc:Attachment>
+    </cac:Attachment>
   </cac:AdditionalDocumentReference>
   <cac:AccountingSupplierParty>
     <cac:Party>
-      <cbc:EndpointID schemeID="9925">BE0202239951</cbc:EndpointID>
+      <cbc:EndpointID schemeID="0208">0202239951</cbc:EndpointID>
+      <cac:PartyIdentification>
+        <cbc:ID schemeID="0208">0202239951</cbc:ID>
+      </cac:PartyIdentification>
       <cac:PartyName>
         <cbc:Name>partner_1</cbc:Name>
       </cac:PartyName>
@@ -39,7 +43,7 @@
       </cac:PartyTaxScheme>
       <cac:PartyLegalEntity>
         <cbc:RegistrationName>partner_1</cbc:RegistrationName>
-        <cbc:CompanyID>BE0202239951</cbc:CompanyID>
+        <cbc:CompanyID schemeID="0208">0202239951</cbc:CompanyID>
       </cac:PartyLegalEntity>
       <cac:Contact>
         <cbc:Name>partner_1</cbc:Name>
@@ -48,7 +52,10 @@
   </cac:AccountingSupplierParty>
   <cac:AccountingCustomerParty>
     <cac:Party>
-      <cbc:EndpointID schemeID="9925">BE0477472701</cbc:EndpointID>
+      <cbc:EndpointID schemeID="0208">0477472701</cbc:EndpointID>
+      <cac:PartyIdentification>
+        <cbc:ID schemeID="0208">0477472701</cbc:ID>
+      </cac:PartyIdentification>
       <cac:PartyName>
         <cbc:Name>partner_2</cbc:Name>
       </cac:PartyName>
@@ -68,7 +75,7 @@
       </cac:PartyTaxScheme>
       <cac:PartyLegalEntity>
         <cbc:RegistrationName>partner_2</cbc:RegistrationName>
-        <cbc:CompanyID>BE0477472701</cbc:CompanyID>
+        <cbc:CompanyID schemeID="0208">0477472701</cbc:CompanyID>
       </cac:PartyLegalEntity>
       <cac:Contact>
         <cbc:Name>partner_2</cbc:Name>
@@ -86,16 +93,21 @@
         </cac:Country>
       </cac:Address>
     </cac:DeliveryLocation>
+    <cac:DeliveryParty>
+      <cac:PartyName>
+        <cbc:Name>partner_2</cbc:Name>
+      </cac:PartyName>
+    </cac:DeliveryParty>
   </cac:Delivery>
   <cac:PaymentMeans>
-    <cbc:PaymentMeansCode name="credit transfer">30</cbc:PaymentMeansCode>
+    <cbc:PaymentMeansCode name="standing agreement">57</cbc:PaymentMeansCode>
     <cbc:PaymentID>RINV/2017/01/0001</cbc:PaymentID>
     <cac:PayeeFinancialAccount>
       <cbc:ID>BE90735788866632</cbc:ID>
     </cac:PayeeFinancialAccount>
   </cac:PaymentMeans>
   <cac:PaymentTerms>
-    <cbc:Note>30% Advance End of Following Month</cbc:Note>
+    <cbc:Note>Payment terms: 30% Advance End of Following Month</cbc:Note>
   </cac:PaymentTerms>
   <cac:TaxTotal>
     <cbc:TaxAmount currencyID="USD">482.22</cbc:TaxAmount>
@@ -122,6 +134,9 @@
       </cac:TaxCategory>
     </cac:TaxSubtotal>
   </cac:TaxTotal>
+  <cac:TaxTotal>
+    <cbc:TaxAmount currencyID="EUR">241.11</cbc:TaxAmount>
+  </cac:TaxTotal>
   <cac:LegalMonetaryTotal>
     <cbc:LineExtensionAmount currencyID="USD">2682.00</cbc:LineExtensionAmount>
     <cbc:TaxExclusiveAmount currencyID="USD">2682.00</cbc:TaxExclusiveAmount>
@@ -136,7 +151,10 @@
     <cac:AllowanceCharge>
       <cbc:ChargeIndicator>false</cbc:ChargeIndicator>
       <cbc:AllowanceChargeReasonCode>95</cbc:AllowanceChargeReasonCode>
+      <cbc:AllowanceChargeReason>Discount</cbc:AllowanceChargeReason>
+      <cbc:MultiplierFactorNumeric>10.0</cbc:MultiplierFactorNumeric>
       <cbc:Amount currencyID="USD">198.00</cbc:Amount>
+      <cbc:BaseAmount currencyID="USD">1980.00</cbc:BaseAmount>
     </cac:AllowanceCharge>
     <cac:Item>
       <cbc:Description>product_a</cbc:Description>
@@ -150,7 +168,7 @@
       </cac:ClassifiedTaxCategory>
     </cac:Item>
     <cac:Price>
-      <cbc:PriceAmount currencyID="USD">990.00</cbc:PriceAmount>
+      <cbc:PriceAmount currencyID="USD">990.0</cbc:PriceAmount>
     </cac:Price>
   </cac:CreditNoteLine>
   <cac:CreditNoteLine>
@@ -169,7 +187,7 @@
       </cac:ClassifiedTaxCategory>
     </cac:Item>
     <cac:Price>
-      <cbc:PriceAmount currencyID="USD">100.00</cbc:PriceAmount>
+      <cbc:PriceAmount currencyID="USD">100.0</cbc:PriceAmount>
     </cac:Price>
   </cac:CreditNoteLine>
   <cac:CreditNoteLine>
@@ -188,7 +206,7 @@
       </cac:ClassifiedTaxCategory>
     </cac:Item>
     <cac:Price>
-      <cbc:PriceAmount currencyID="USD">100.00</cbc:PriceAmount>
+      <cbc:PriceAmount currencyID="USD">100.0</cbc:PriceAmount>
     </cac:Price>
   </cac:CreditNoteLine>
 </CreditNote>

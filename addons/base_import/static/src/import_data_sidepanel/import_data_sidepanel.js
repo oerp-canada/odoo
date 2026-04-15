@@ -1,11 +1,11 @@
-/** @odoo-module **/
-
 import { Component } from "@odoo/owl";
 import { CheckBox } from "@web/core/checkbox/checkbox";
+import { _t } from "@web/core/l10n/translation";
+import { DocumentationLink } from "@web/views/widgets/documentation_link/documentation_link";
 
 export class ImportDataSidepanel extends Component {
     static template = "ImportDataSidepanel";
-    static components = { CheckBox };
+    static components = { CheckBox, DocumentationLink };
     static props = {
         filename: { type: String },
         formattingOptions: { type: Object, optional: true },
@@ -13,7 +13,9 @@ export class ImportDataSidepanel extends Component {
         importTemplates: { type: Array, optional: true },
         isBatched: { type: Boolean, optional: true },
         onOptionChanged: { type: Function },
-        onReload: { type: Function },
+        hasBinaryFields: { type: Boolean },
+        binaryFilesParams: { type: Object },
+        onBinaryFilesParamsChanged: { type: Function },
     };
 
     get fileName() {
@@ -22,6 +24,28 @@ export class ImportDataSidepanel extends Component {
 
     get fileExtension() {
         return "." + this.props.filename.split(".").pop();
+    }
+
+    get attachmentsTooltip() {
+        return _t(
+            "Upload attachments such as images or files that can be mapped with imported data"
+        );
+    }
+
+    get batchLimitTooltip() {
+        return _t(
+            "Defines the number of records that will be imported in one transaction. Reduce the batch size in case of heavy imports"
+        );
+    }
+
+    get headersTooltip() {
+        return _t("If checked, the first row of the sheet will not be imported");
+    }
+
+    get trackingTooltip() {
+        return _t(
+            "If checked, the changes are tracked in the chatter and notifications can be sent to followers, which could slow down the import"
+        );
     }
 
     getOptionValue(name) {
@@ -38,5 +62,14 @@ export class ImportDataSidepanel extends Component {
     // Start at row 1 = skip 0 lines
     onLimitChange(ev) {
         this.props.onOptionChanged("skip", ev.target.value ? ev.target.value - 1 : 0);
+    }
+
+    get binaryFilesLabel() {
+        const files = this.props.binaryFilesParams.binaryFiles.value;
+        const number = Object.keys(files).length;
+        if (number > 0) {
+            return _t("%(number)s file(s) selected", { number });
+        }
+        return _t("No file selected");
     }
 }

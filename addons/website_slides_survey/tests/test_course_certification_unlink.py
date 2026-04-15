@@ -4,15 +4,15 @@
 
 from odoo.addons.website_slides.tests.common import SlidesCase
 from odoo.exceptions import ValidationError
-from odoo.tests.common import users
+from odoo.tests.common import tagged, users
 
 
 class TestSurvey(SlidesCase):
     def setUp(self):
         super(TestSurvey, self).setUp()
 
-        self.survey = self.env['survey.survey'].create({'title': 'TestSurvey'})
-        self.survey2 = self.env['survey.survey'].create({'title': 'TestSurvey'})
+        self.survey = self.env['survey.survey'].create({'title': 'TestSurvey', 'certification': True})
+        self.survey2 = self.env['survey.survey'].create({'title': 'TestSurvey', 'certification': True})
 
     @users('user_manager')
     def test_unlink(self):

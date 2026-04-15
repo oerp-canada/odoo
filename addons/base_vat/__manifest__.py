@@ -1,9 +1,8 @@
-# -*- coding: utf-8 -*-
 # Part of Odoo. See LICENSE file for full copyright and licensing details.
 
 {
     'name': 'VAT Number Validation',
-    'version': '1.0',
+    'version': '2.0',
     'category': 'Accounting/Accounting',
     'description': """
 VAT validation for Partner's VAT numbers.
@@ -36,8 +35,10 @@ only the country code will be validated.
     """,
     'depends': ['account'],
     'data': [
+        'data/ir_cron.xml',
         'views/res_config_settings_views.xml',
         'views/res_partner_views.xml',
     ],
+    'author': 'Odoo S.A.',
     'license': 'LGPL-3',
 }

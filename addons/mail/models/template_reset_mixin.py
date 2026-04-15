@@ -7,15 +7,14 @@ from lxml import etree
 
 from odoo import api, fields, models, tools, _
 from odoo.exceptions import UserError
-from odoo.modules import get_module_resource
-from odoo.modules.module import get_resource_from_path, get_resource_path
+from odoo.modules.module import get_resource_from_path
 from odoo.tools.convert import xml_import
-from odoo.tools.misc import file_open
-from odoo.tools.translate import TranslationImporter
+from odoo.tools.misc import file_path
+from odoo.tools.translate import TranslationImporter, get_po_paths
 
 
 class TemplateResetMixin(models.AbstractModel):
-    _name = "template.reset.mixin"
+    _name = 'template.reset.mixin'
     _description = 'Template Reset Mixin'
 
     template_fs = fields.Char(
@@ -62,23 +61,9 @@ class TemplateResetMixin(models.AbstractModel):
     def _override_translation_term(self, module_name, xml_ids):
         translation_importer = TranslationImporter(self.env.cr)
 
-        for code, _ in self.env['res.lang'].get_installed():
-            lang_code = tools.get_iso_codes(code)
-            # In case of sub languages (e.g fr_BE), load the base language first, (e.g fr.po) and
-            # then load the main translation file (e.g fr_BE.po)
-
-            # Step 1: reset translation terms with base language file
-            if '_' in lang_code:
-                base_lang_code = lang_code.split('_')[0]
-                base_trans_file = get_module_resource(module_name, 'i18n', base_lang_code + '.po')
-                if base_trans_file:
-                    translation_importer.load_file(base_trans_file, code, xmlids=xml_ids)
-
-            # Step 2: reset translation file with main language file (can possibly override the
-            # terms coming from the base language)
-            trans_file = get_module_resource(module_name, 'i18n', lang_code + '.po')
-            if trans_file:
-                translation_importer.load_file(trans_file, code, xmlids=xml_ids)
+        for lang, _ in self.env['res.lang'].get_installed():
+            for po_path in get_po_paths(module_name, lang):
+                translation_importer.load_file(po_path, lang, xmlids=xml_ids)
 
         translation_importer.save(overwrite=True, force_overwrite=True)
 
@@ -93,7 +78,7 @@ class TemplateResetMixin(models.AbstractModel):
         for template in self.filtered('template_fs'):
             external_id = template.get_external_id().get(template.id)
             module, xml_id = external_id.split('.')
-            fullpath = get_resource_path(*template.template_fs.split('/'))
+            fullpath = file_path(template.template_fs)
             if fullpath:
                 for field_name, field in template._fields.items():
                     if field.translate is True:

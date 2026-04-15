@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Part of Odoo. See LICENSE file for full copyright and licensing details.
 
 {
@@ -8,7 +7,6 @@
     'depends': [
         'event_sale',
         'sale_management',
-        'sale_product_configurator',
         'sale_product_matrix',
     ],
     'assets': {
@@ -16,5 +14,6 @@
             'test_sale_product_configurators/static/tests/tours/**/*',
         ],
     },
+    'author': 'Odoo S.A.',
     'license': 'LGPL-3',
 }

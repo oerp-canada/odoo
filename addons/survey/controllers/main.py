@@ -1,19 +1,20 @@
-# -*- coding: utf-8 -*-
 # Part of Odoo. See LICENSE file for full copyright and licensing details.
 
 import json
 import logging
-import werkzeug
-
 from collections import defaultdict
 from datetime import datetime, timedelta
+
+import werkzeug
 from dateutil.relativedelta import relativedelta
 
-from odoo import fields, http, SUPERUSER_ID, _
+from odoo import _, fields, http
 from odoo.exceptions import UserError
-from odoo.http import request, content_disposition
-from odoo.osv import expression
-from odoo.tools import format_datetime, format_date, is_html_empty
+from odoo.fields import Domain
+from odoo.http import request
+from odoo.http.stream import content_disposition
+from odoo.tools import format_date, format_datetime, is_html_empty
+
 from odoo.addons.base.models.ir_qweb import keep_query
 
 _logger = logging.getLogger(__name__)
@@ -29,18 +30,22 @@ class Survey(http.Controller):
         """ Check that given token matches an answer from the given survey_id.
         Returns a sudo-ed browse record of survey in order to avoid access rights
         issues now that access is granted through token. """
-        survey_sudo = request.env['survey.survey'].with_context(active_test=False).sudo().search([('access_token', '=', survey_token)])
-        if not answer_token:
-            answer_sudo = request.env['survey.user_input'].sudo()
-        else:
-            answer_sudo = request.env['survey.user_input'].sudo().search([
-                ('survey_id', '=', survey_sudo.id),
-                ('access_token', '=', answer_token)
-            ], limit=1)
-        return survey_sudo, answer_sudo
+        SurveySudo, UserInputSudo = request.env['survey.survey'].sudo(), request.env['survey.user_input'].sudo()
+        if not survey_token:
+            return SurveySudo, UserInputSudo
+        if answer_token:
+            answer_sudo = UserInputSudo.search(
+                Domain('survey_id', 'any',
+                    Domain('access_token', '=', survey_token)
+                    & Domain('active', 'in', (True, False))  # keeping active test for UserInput
+                ) & Domain('access_token', '=', answer_token), limit=1)
+            if answer_sudo:
+                return answer_sudo.survey_id, answer_sudo
 
-    def _check_validity(self, survey_token, answer_token, ensure_token=True, check_partner=True):
-        """ Check survey is open and can be taken. This does not checks for
+        return SurveySudo.with_context(active_test=False).search([('access_token', '=', survey_token)]), UserInputSudo
+
+    def _check_validity(self, survey_sudo, answer_sudo, answer_token, ensure_token=True, check_partner=True):
+        """ Check survey is open and can be taken. This does not check for
         security rules, only functional / business rules. It returns a string key
         allowing further manipulation of validity issues
 
@@ -49,8 +54,7 @@ class Survey(http.Controller):
          * survey_closed: survey is closed and does not accept input anymore;
          * survey_void: survey is void and should not be taken;
          * token_wrong: given token not recognized;
-         * token_required: no token given although it is necessary to access the
-           survey;
+         * token_required: no token given, but it is required to access the survey;
          * answer_deadline: token linked to an expired answer;
 
         :param ensure_token: whether user input existence based on given access token
@@ -60,9 +64,7 @@ class Survey(http.Controller):
         :param check_partner: Whether we must check that the partner associated to the target
           answer corresponds to the active user.
         """
-        survey_sudo, answer_sudo = self._fetch_from_access_token(survey_token, answer_token)
-
-        if not survey_sudo.exists():
+        if not survey_sudo:
             return 'survey_wrong'
 
         if answer_token and not answer_sudo:
@@ -82,16 +84,18 @@ class Survey(http.Controller):
         if (not survey_sudo.page_ids and survey_sudo.questions_layout == 'page_per_section') or not survey_sudo.question_ids:
             return 'survey_void'
 
-        if answer_sudo and check_partner:
-            if request.env.user._is_public() and answer_sudo.partner_id and not answer_token:
+        if answer_sudo and answer_sudo.deadline and answer_sudo.deadline < datetime.now():
+            return 'answer_deadline'
+
+        # if there is an answer token (from the url or cookie), then we don't
+        # have to check whether the user doing the request is the correct one.
+        if answer_sudo and check_partner and not answer_token:
+            if request.env.user._is_public() and answer_sudo.partner_id:
                 # answers from public user should not have any partner_id; this indicates probably a cookie issue
                 return 'answer_wrong_user'
             if not request.env.user._is_public() and answer_sudo.partner_id != request.env.user.partner_id:
                 # partner mismatch, probably a cookie issue
                 return 'answer_wrong_user'
-
-        if answer_sudo and answer_sudo.deadline and answer_sudo.deadline < datetime.now():
-            return 'answer_deadline'
 
         return True
 
@@ -102,20 +106,13 @@ class Survey(http.Controller):
          : param ensure_token: whether user input existence should be enforced or not(see ``_check_validity``)
          : param check_partner: whether the partner of the target answer should be checked (see ``_check_validity``)
         """
-        survey_sudo, answer_sudo = request.env['survey.survey'].sudo(), request.env['survey.user_input'].sudo()
+        survey_sudo, answer_sudo = self._fetch_from_access_token(survey_token, answer_token)
         has_survey_access, can_answer = False, False
 
-        validity_code = self._check_validity(survey_token, answer_token, ensure_token=ensure_token, check_partner=check_partner)
+        validity_code = self._check_validity(
+            survey_sudo, answer_sudo, answer_token, ensure_token=ensure_token, check_partner=check_partner)
         if validity_code != 'survey_wrong':
-            survey_sudo, answer_sudo = self._fetch_from_access_token(survey_token, answer_token)
-            try:
-                survey_user = survey_sudo.with_user(request.env.user)
-                survey_user.check_access_rights(self, 'read', raise_exception=True)
-                survey_user.check_access_rule(self, 'read')
-            except:
-                pass
-            else:
-                has_survey_access = True
+            has_survey_access = survey_sudo.with_user(request.env.user).has_access('read')
             can_answer = bool(answer_sudo)
             if not can_answer:
                 can_answer = survey_sudo.access_mode == 'public'
@@ -144,7 +141,7 @@ class Survey(http.Controller):
                     if answer_sudo.partner_id.user_ids:
                         answer_sudo.partner_id.signup_cancel()
                     else:
-                        answer_sudo.partner_id.signup_prepare(expiration=fields.Datetime.now() + relativedelta(days=1))
+                        answer_sudo.partner_id.signup_prepare()
                     redirect_url = answer_sudo.partner_id._get_signup_url_for_action(url='/survey/start/%s?answer_token=%s' % (survey_sudo.access_token, answer_sudo.access_token))[answer_sudo.partner_id.id]
                 else:
                     redirect_url = '/web/login?redirect=%s' % ('/survey/start/%s?answer_token=%s' % (survey_sudo.access_token, answer_sudo.access_token))
@@ -200,6 +197,7 @@ class Survey(http.Controller):
     def _prepare_retry_additional_values(self, answer):
         return {
             'deadline': answer.deadline,
+            'nickname': answer.nickname,
         }
 
     def _prepare_survey_finished_values(self, survey, answer, token=False):
@@ -221,7 +219,7 @@ class Survey(http.Controller):
         # Get the current answer token from cookie
         answer_from_cookie = False
         if not answer_token:
-            answer_token = request.httprequest.cookies.get('survey_%s' % survey_token)
+            answer_token = request.cookies.get('survey_%s' % survey_token)
             answer_from_cookie = bool(answer_token)
 
         access_data = self._get_access_data(survey_token, answer_token, ensure_token=False)
@@ -244,24 +242,29 @@ class Survey(http.Controller):
 
         if not answer_sudo:
             try:
-                survey_sudo.with_user(request.env.user).check_access_rights('read')
-                survey_sudo.with_user(request.env.user).check_access_rule('read')
+                survey_sudo.with_user(request.env.user).check_access('read')
             except:
                 return request.redirect("/")
             else:
                 return request.render("survey.survey_403_page", {'survey': survey_sudo})
 
-        return request.redirect('/survey/%s/%s' % (survey_sudo.access_token, answer_sudo.access_token))
+        # When resuming survey, restore language  + always enforce that the language is supported by the survey
+        lang = self._get_lang_with_fallback(answer_sudo.sudo(False))
+        response = request.redirect(self.env['ir.http']._url_for(f'/survey/{survey_sudo.access_token}', lang.code))
+        response.set_cookie(f'survey_{survey_sudo.access_token}', answer_sudo.access_token, max_age=60 * 60 * 24)
+        return response
 
     def _prepare_survey_data(self, survey_sudo, answer_sudo, **post):
         """ This method prepares all the data needed for template rendering, in function of the survey user input state.
             :param post:
                 - previous_page_id : come from the breadcrumb or the back button and force the next questions to load
-                                     to be the previous ones. """
+                                     to be the previous ones.
+                - next_post_submit_page : force the display of next post submit question or page if any."""
         data = {
             'is_html_empty': is_html_empty,
             'survey': survey_sudo,
             'answer': answer_sudo,
+            'post_submit_questions': answer_sudo._get_post_submit_questions(),
             'breadcrumb_pages': [{
                 'id': page.id,
                 'title': page.title,
@@ -269,16 +272,22 @@ class Survey(http.Controller):
             'format_datetime': lambda dt: format_datetime(request.env, dt, dt_format=False),
             'format_date': lambda date: format_date(request.env, date)
         }
+        if answer_sudo.state == 'new':
+            # Data for the language selector
+            supported_lang_codes = survey_sudo._get_supported_lang_codes()
+            data['languages'] = [(lang_code, self.env['res.lang']._get_data(code=lang_code)['name'])
+                                 for lang_code in supported_lang_codes]
+            data['lang_code'] = self._get_lang_with_fallback(answer_sudo.sudo(False)).code
+        triggering_answers_by_question, triggered_questions_by_answer, selected_answers = answer_sudo._get_conditional_values()
         if survey_sudo.questions_layout != 'page_per_question':
-            triggering_answer_by_question, triggered_questions_by_answer, selected_answers = answer_sudo._get_conditional_values()
             data.update({
-                'triggering_answer_by_question': {
-                    question.id: triggering_answer_by_question[question].id for question in triggering_answer_by_question.keys()
-                    if triggering_answer_by_question[question]
+                'triggering_answers_by_question': {
+                    question.id: triggering_answers.ids
+                    for question, triggering_answers in triggering_answers_by_question.items() if triggering_answers
                 },
                 'triggered_questions_by_answer': {
-                    answer.id: triggered_questions_by_answer[answer].ids
-                    for answer in triggered_questions_by_answer.keys()
+                    answer.id: triggered_questions.ids
+                    for answer, triggered_questions in triggered_questions_by_answer.items()
                 },
                 'selected_answers': selected_answers.ids
             })
@@ -306,17 +315,41 @@ class Survey(http.Controller):
             return data
 
         if answer_sudo.state == 'in_progress':
+            next_page_or_question = None
             if answer_sudo.is_session_answer:
                 next_page_or_question = survey_sudo.session_question_id
             else:
-                next_page_or_question = survey_sudo._get_next_page_or_question(
-                    answer_sudo,
-                    answer_sudo.last_displayed_page_id.id if answer_sudo.last_displayed_page_id else 0)
+                if 'next_post_submit_page' in post:
+                    next_page_or_question = answer_sudo._get_next_post_submit_page_or_question()
+                if not next_page_or_question:
+                    next_page_or_question = survey_sudo._get_next_page_or_question(
+                        answer_sudo,
+                        answer_sudo.last_displayed_page_id.id if answer_sudo.last_displayed_page_id else 0)
+                    # fallback to post submit page or question so that there is a next_page_or_question
+                    # otherwise this should be a submit
+                    if not next_page_or_question:
+                        next_page_or_question = answer_sudo._get_next_post_submit_page_or_question()
 
                 if next_page_or_question:
-                    data.update({
-                        'survey_last': survey_sudo._is_last_page_or_question(answer_sudo, next_page_or_question)
-                    })
+                    if answer_sudo.survey_first_submitted:
+                        survey_last = answer_sudo._is_last_post_submit_page_or_question(next_page_or_question)
+                    else:
+                        survey_last = survey_sudo._is_last_page_or_question(answer_sudo, next_page_or_question)
+                    values = {'survey_last': survey_last}
+                    # On the last survey page, get the suggested answers which are triggering questions on the following pages
+                    # to dynamically update the survey button to "submit" or "continue" depending on the selected answers.
+                    if survey_last and survey_sudo.questions_layout != 'one_page':
+                        pages_or_questions = survey_sudo._get_pages_or_questions(answer_sudo)
+                        following_questions = pages_or_questions.filtered(lambda page_or_question: page_or_question.sequence > next_page_or_question.sequence)
+                        next_page_questions_suggested_answers = next_page_or_question.suggested_answer_ids
+                        if survey_sudo.questions_layout == 'page_per_section':
+                            following_questions = following_questions.question_ids
+                            next_page_questions_suggested_answers = next_page_or_question.question_ids.suggested_answer_ids
+                        values['survey_last_triggering_answers'] = [
+                            answer.id for answer in triggered_questions_by_answer
+                            if answer in next_page_questions_suggested_answers and any(q in following_questions for q in triggered_questions_by_answer[answer])
+                        ]
+                    data.update(values)
 
             if answer_sudo.is_session_answer and next_page_or_question.is_time_limited:
                 data.update({
@@ -346,25 +379,28 @@ class Survey(http.Controller):
         object at frontend side."""
         survey_data = self._prepare_survey_data(survey_sudo, answer_sudo, **post)
 
+        IrQweb = request.env['ir.qweb'].with_context(
+            lang=self.env['res.lang']._get_data(id=answer_sudo.lang_id.id).code
+                 or self._get_lang_with_fallback(answer_sudo.sudo(False)).code)
         if answer_sudo.state == 'done':
-            survey_content = request.env['ir.qweb']._render('survey.survey_fill_form_done', survey_data)
+            survey_content = IrQweb._render('survey.survey_fill_form_done', survey_data)
         else:
-            survey_content = request.env['ir.qweb']._render('survey.survey_fill_form_in_progress', survey_data)
+            survey_content = IrQweb._render('survey.survey_fill_form_in_progress', survey_data)
 
         survey_progress = False
         if answer_sudo.state == 'in_progress' and not survey_data.get('question', request.env['survey.question']).is_page:
             if survey_sudo.questions_layout == 'page_per_section':
                 page_ids = survey_sudo.page_ids.ids
-                survey_progress = request.env['ir.qweb']._render('survey.survey_progression', {
+                survey_progress = IrQweb._render('survey.survey_progression', {
                     'survey': survey_sudo,
                     'page_ids': page_ids,
                     'page_number': page_ids.index(survey_data['page'].id) + (1 if survey_sudo.progression_mode == 'number' else 0)
                 })
             elif survey_sudo.questions_layout == 'page_per_question':
                 page_ids = (answer_sudo.predefined_question_ids.ids
-                            if not answer_sudo.is_session_answer
+                            if not answer_sudo.is_session_answer and survey_sudo.questions_selection == 'random'
                             else survey_sudo.question_ids.ids)
-                survey_progress = request.env['ir.qweb']._render('survey.survey_progression', {
+                survey_progress = IrQweb._render('survey.survey_progression', {
                     'survey': survey_sudo,
                     'page_ids': page_ids,
                     'page_number': page_ids.index(survey_data['question'].id)
@@ -377,14 +413,20 @@ class Survey(http.Controller):
             background_image_url = survey_data['page'].background_image_url
 
         return {
+            'has_post_submit_questions': bool(answer_sudo._get_post_submit_questions()),
             'survey_content': survey_content,
             'survey_progress': survey_progress,
-            'survey_navigation': request.env['ir.qweb']._render('survey.survey_navigation', survey_data),
+            'survey_navigation': IrQweb._render('survey.survey_navigation', survey_data),
             'background_image_url': background_image_url
         }
 
-    @http.route('/survey/<string:survey_token>/<string:answer_token>', type='http', auth='public', website=True)
-    def survey_display_page(self, survey_token, answer_token, **post):
+    @http.route([
+        '/survey/<string:survey_token>',
+        '/survey/<string:survey_token>/<string:answer_token>',
+    ], type='http', auth='public', website=True)
+    def survey_display_page(self, survey_token, answer_token=None, **post):
+        if not answer_token:
+            answer_token = request.httprequest.cookies.get('survey_%s' % survey_token)
         access_data = self._get_access_data(survey_token, answer_token, ensure_token=True)
         if access_data['validity_code'] is not True:
             return self._redirect_with_error(access_data, access_data['validity_code'])
@@ -449,48 +491,54 @@ class Survey(http.Controller):
     # JSON ROUTES to begin / continue survey (ajax navigation) + Tools
     # ----------------------------------------------------------------
 
-    @http.route('/survey/begin/<string:survey_token>/<string:answer_token>', type='json', auth='public', website=True)
+    @http.route('/survey/begin/<string:survey_token>/<string:answer_token>', type='jsonrpc', auth='public', website=True)
     def survey_begin(self, survey_token, answer_token, **post):
-        """ Route used to start the survey user input and display the first survey page. """
+        """ Route used to start the survey user input and display the first survey page.
+        Returns an empty dict for the correct answers and the first page html. """
         access_data = self._get_access_data(survey_token, answer_token, ensure_token=True)
         if access_data['validity_code'] is not True:
-            return {'error': access_data['validity_code']}
+            return {}, {'error': access_data['validity_code']}
         survey_sudo, answer_sudo = access_data['survey_sudo'], access_data['answer_sudo']
 
         if answer_sudo.state != "new":
-            return {'error': _("The survey has already started.")}
+            return {}, {'error': _("The survey has already started.")}
 
+        if 'lang_code' in post:
+            answer_sudo.lang_id = self.env['res.lang']._lang_get(post['lang_code'])
         answer_sudo._mark_in_progress()
-        return self._prepare_question_html(survey_sudo, answer_sudo, **post)
+        return {}, self._prepare_question_html(survey_sudo, answer_sudo, **post)
 
-    @http.route('/survey/next_question/<string:survey_token>/<string:answer_token>', type='json', auth='public', website=True)
+    @http.route('/survey/next_question/<string:survey_token>/<string:answer_token>', type='jsonrpc', auth='public', website=True)
     def survey_next_question(self, survey_token, answer_token, **post):
         """ Method used to display the next survey question in an ongoing session.
         Triggered on all attendees screens when the host goes to the next question. """
         access_data = self._get_access_data(survey_token, answer_token, ensure_token=True)
         if access_data['validity_code'] is not True:
-            return {'error': access_data['validity_code']}
+            return {}, {'error': access_data['validity_code']}
         survey_sudo, answer_sudo = access_data['survey_sudo'], access_data['answer_sudo']
 
         if answer_sudo.state == 'new' and answer_sudo.is_session_answer:
             answer_sudo._mark_in_progress()
 
-        return self._prepare_question_html(survey_sudo, answer_sudo, **post)
+        return {}, self._prepare_question_html(survey_sudo, answer_sudo, **post)
 
-    @http.route('/survey/submit/<string:survey_token>/<string:answer_token>', type='json', auth='public', website=True)
+    @http.route('/survey/submit/<string:survey_token>/<string:answer_token>', type='jsonrpc', auth='public', website=True)
     def survey_submit(self, survey_token, answer_token, **post):
         """ Submit a page from the survey.
         This will take into account the validation errors and store the answers to the questions.
         If the time limit is reached, errors will be skipped, answers will be ignored and
-        survey state will be forced to 'done'"""
+        survey state will be forced to 'done'.
+        Also returns the correct answers if the scoring type is 'scoring_with_answers_after_page'."""
         # Survey Validation
         access_data = self._get_access_data(survey_token, answer_token, ensure_token=True)
         if access_data['validity_code'] is not True:
-            return {'error': access_data['validity_code']}
+            return {}, {'error': access_data['validity_code']}
         survey_sudo, answer_sudo = access_data['survey_sudo'], access_data['answer_sudo']
 
         if answer_sudo.state == 'done':
-            return {'error': 'unauthorized'}
+            return {}, {'error': 'unauthorized'}
+        if answer_sudo.is_session_answer and not answer_sudo.test_entry and not survey_sudo.session_question_can_answer:
+            return {}, {'error': 'validation', 'fields': {survey_sudo.session_question_id.id: _('We do not accept submissions for this question anymore.')}}
 
         questions, page_or_question_id = survey_sudo._get_survey_questions(answer=answer_sudo,
                                                                            page_id=post.get('page_id'),
@@ -498,7 +546,7 @@ class Survey(http.Controller):
 
         if not answer_sudo.test_entry and not survey_sudo._has_attempts_left(answer_sudo.partner_id, answer_sudo.email, answer_sudo.invite_token):
             # prevent cheating with users creating multiple 'user_input' before their last attempt
-            return {'error': 'unauthorized'}
+            return {}, {'error': 'unauthorized'}
 
         if answer_sudo.survey_time_limit_reached or answer_sudo.question_time_limit_reached:
             if answer_sudo.question_time_limit_reached:
@@ -511,7 +559,7 @@ class Survey(http.Controller):
                 time_limit += timedelta(seconds=10)
             if fields.Datetime.now() > time_limit:
                 # prevent cheating with users blocking the JS timer and taking all their time to answer
-                return {'error': 'unauthorized'}
+                return {}, {'error': 'unauthorized'}
 
         errors = {}
         # Prepare answers / comment by question, validate and save answers
@@ -522,30 +570,50 @@ class Survey(http.Controller):
             answer, comment = self._extract_comment_from_answers(question, post.get(str(question.id)))
             errors.update(question.validate_question(answer, comment))
             if not errors.get(question.id):
-                answer_sudo.save_lines(question, answer, comment)
+                answer_sudo._save_lines(question, answer, comment, overwrite_existing=survey_sudo.users_can_go_back or question.save_as_nickname or question.save_as_email)
 
         if errors and not (answer_sudo.survey_time_limit_reached or answer_sudo.question_time_limit_reached):
-            return {'error': 'validation', 'fields': errors}
+            return {}, {'error': 'validation', 'fields': errors}
 
         if not answer_sudo.is_session_answer:
             answer_sudo._clear_inactive_conditional_answers()
+
+        # Get the page questions correct answers if scoring type is scoring after page
+        correct_answers = {}
+        if survey_sudo.scoring_type == 'scoring_with_answers_after_page':
+            scorable_questions = (questions - answer_sudo._get_inactive_conditional_questions()).filtered('is_scored_question')
+            correct_answers = scorable_questions._get_correct_answers()
 
         if answer_sudo.survey_time_limit_reached or survey_sudo.questions_layout == 'one_page':
             answer_sudo._mark_done()
         elif 'previous_page_id' in post:
             # when going back, save the last displayed to reload the survey where the user left it.
-            answer_sudo.write({'last_displayed_page_id': post['previous_page_id']})
+            answer_sudo.last_displayed_page_id = post['previous_page_id']
             # Go back to specific page using the breadcrumb. Lines are saved and survey continues
-            return self._prepare_question_html(survey_sudo, answer_sudo, **post)
+            return correct_answers, self._prepare_question_html(survey_sudo, answer_sudo, **post)
+        elif 'next_post_submit_page_or_question' in post:
+            answer_sudo.last_displayed_page_id = page_or_question_id
+            return correct_answers, self._prepare_question_html(survey_sudo, answer_sudo, next_post_submit_page=True)
         else:
             if not answer_sudo.is_session_answer:
-                next_page = survey_sudo._get_next_page_or_question(answer_sudo, page_or_question_id)
+                page_or_question = request.env['survey.question'].sudo().browse(page_or_question_id)
+                if answer_sudo.survey_first_submitted and answer_sudo._is_last_post_submit_page_or_question(page_or_question):
+                    next_page = request.env['survey.question']
+                else:
+                    next_page = survey_sudo._get_next_page_or_question(answer_sudo, page_or_question_id)
                 if not next_page:
-                    answer_sudo._mark_done()
+                    if survey_sudo.users_can_go_back and answer_sudo._get_post_submit_questions():
+                        answer_sudo.write({
+                            'last_displayed_page_id': page_or_question_id,
+                            'survey_first_submitted': True,
+                        })
+                        return correct_answers, self._prepare_question_html(survey_sudo, answer_sudo, next_post_submit_page=True)
+                    else:
+                        answer_sudo._mark_done()
 
-            answer_sudo.write({'last_displayed_page_id': page_or_question_id})
+            answer_sudo.last_displayed_page_id = page_or_question_id
 
-        return self._prepare_question_html(survey_sudo, answer_sudo)
+        return correct_answers, self._prepare_question_html(survey_sudo, answer_sudo)
 
     def _extract_comment_from_answers(self, question, answers):
         """ Answers is a custom structure depending of the question type
@@ -602,8 +670,8 @@ class Survey(http.Controller):
         grab the answers of the user_input_id that has <answer_token>.'''
         access_data = self._get_access_data(survey_token, answer_token, ensure_token=False, check_partner=False)
         if access_data['validity_code'] is not True and (
-                access_data['has_survey_access'] or
-                access_data['validity_code'] not in ['token_required', 'survey_closed', 'survey_void']):
+                not access_data['has_survey_access'] or
+                access_data['validity_code'] not in ['token_required', 'survey_closed', 'survey_void', 'answer_deadline']):
             return self._redirect_with_error(access_data, access_data['validity_code'])
 
         survey_sudo, answer_sudo = access_data['survey_sudo'], access_data['answer_sudo']
@@ -611,13 +679,13 @@ class Survey(http.Controller):
             'is_html_empty': is_html_empty,
             'review': review,
             'survey': survey_sudo,
-            'answer': answer_sudo if survey_sudo.scoring_type != 'scoring_without_answers' else answer_sudo.browse(),
+            'answer': answer_sudo,
             'questions_to_display': answer_sudo._get_print_questions(),
-            'scoring_display_correction': survey_sudo.scoring_type == 'scoring_with_answers' and answer_sudo,
+            'scoring_display_correction': survey_sudo.scoring_type in ['scoring_with_answers', 'scoring_with_answers_after_page'] and answer_sudo,
             'format_datetime': lambda dt: format_datetime(request.env, dt, dt_format=False),
             'format_date': lambda date: format_date(request.env, date),
             'graph_data': json.dumps(answer_sudo._prepare_statistics()[answer_sudo])
-                              if answer_sudo and survey_sudo.scoring_type == 'scoring_with_answers' else False,
+                              if answer_sudo and survey_sudo.scoring_type in ['scoring_with_answers', 'scoring_with_answers_after_page'] else False,
         })
 
     @http.route('/survey/<model("survey.survey"):survey>/certification_preview', type="http", auth="user", website=True)
@@ -716,17 +784,18 @@ class Survey(http.Controller):
         ])
 
     def _get_results_page_user_input_domain(self, survey, **post):
-        user_input_domain = ['&', ('test_entry', '=', False), ('survey_id', '=', survey.id)]
+        user_input_domains = []
         if post.get('finished'):
-            user_input_domain = expression.AND([[('state', '=', 'done')], user_input_domain])
+            user_input_domains.append(Domain('state', '=', 'done'))
         else:
-            user_input_domain = expression.AND([[('state', '!=', 'new')], user_input_domain])
+            user_input_domains.append(Domain('state', '!=', 'new'))
         if post.get('failed'):
-            user_input_domain = expression.AND([[('scoring_success', '=', False)], user_input_domain])
+            user_input_domains.append(Domain('scoring_success', '=', False))
         elif post.get('passed'):
-            user_input_domain = expression.AND([[('scoring_success', '=', True)], user_input_domain])
+            user_input_domains.append(Domain('scoring_success', '=', True))
 
-        return user_input_domain
+        user_input_domains.extend((Domain('test_entry', '=', False), Domain('survey_id', '=', survey.id)))
+        return Domain.AND(user_input_domains)
 
     def _extract_filters_data(self, survey, post):
         """ Extracts the filters from the URL to returns the related user_input_lines and
@@ -784,7 +853,7 @@ class Survey(http.Controller):
                 [('user_input_line_ids', 'in', request.env['survey.user_input.line'].sudo()._search(subdomain))]
                 for subdomain in user_input_line_subdomains
             ]
-            user_input_domain = expression.AND([user_input_domain, *all_required_lines_domains])
+            user_input_domain = Domain.AND([user_input_domain, *all_required_lines_domains])
 
         # Get the matching user input lines
         user_inputs_query = request.env['survey.user_input'].sudo()._search(user_input_domain)
@@ -844,3 +913,23 @@ class Survey(http.Controller):
             'model_short_key': 'L',
             'record_id': user_input_line.id,
         }
+
+    def _get_lang_with_fallback(self, user_input):
+        """ :return: the most suitable language for the user that is supported by the survey. """
+        user_input.ensure_one()
+        user_input_sudo = user_input.sudo()
+        if user_input_sudo.lang_id:
+            return user_input_sudo.lang_id.sudo(False)
+        lang_code = self.env.context.get('lang') or self.env['ir.http']._get_default_lang().code
+        ResLang = self.env['res.lang']
+        supported_lang_codes = user_input_sudo.survey_id._get_supported_lang_codes()
+        supported_lang_codes_set = set(supported_lang_codes)
+        if lang_code in supported_lang_codes_set:
+            return ResLang._lang_get(lang_code)
+        # Take the first frontend language supported by the survey and if there are none, the first survey language
+        return ResLang._lang_get(
+            next((
+                lang.code
+                for lang in self.env['res.lang']._get_frontend().values()
+                if lang['code'] in supported_lang_codes_set
+            ), supported_lang_codes[0]))

@@ -1,18 +1,22 @@
-/** @odoo-module */
+import { useLayoutEffect, useRef, useState } from "@web/owl2/utils";
+import { _t } from "@web/core/l10n/translation";
+import { Domain } from "@web/core/domain";
+import { useBus, useRefListener, useService } from '@web/core/utils/hooks';
 
-import { useBus, useService } from '@web/core/utils/hooks';
+export const ExpenseDocumentDropZone = (T) => class ExpenseDocumentDropZone extends T {
+    static props = [
+        ...T.props,
+        'uploadDocument',
+    ];
 
-const { useRef, useEffect, useState } = owl;
-
-export const ExpenseDocumentDropZone = {
     setup() {
-        this._super();
+        super.setup();
         this.dragState = useState({
             showDragZone: false,
         });
         this.root = useRef("root");
 
-        useEffect(
+        useLayoutEffect(
             (el) => {
                 if (!el) {
                     return;
@@ -31,74 +35,152 @@ export const ExpenseDocumentDropZone = {
             },
             () => [document.querySelector('.o_content')]
         );
-    },
+
+        useRefListener(this.root, 'click', (ev) => {
+            let targetElement = ev.target;
+            if (targetElement.closest('.o_view_nocontent_expense_receipt')) {
+                this.props.uploadDocument();
+            }
+        });
+    }
 
     highlight(ev) {
         ev.stopPropagation();
         ev.preventDefault();
         this.dragState.showDragZone = true;
-    },
+    }
 
     unhighlight(ev) {
         ev.stopPropagation();
         ev.preventDefault();
         this.dragState.showDragZone = false;
-    },
+    }
 
     async onDrop(ev) {
         ev.preventDefault();
         await this.env.bus.trigger("change_file_input", {
             files: ev.dataTransfer.files,
         });        
-    },
+        this.dragState.showDragZone = false;
+    }
 };
 
-export const ExpenseDocumentUpload = {
+export const AbstractExpenseDocumentUpload = (T) => class AbstractExpenseDocumentUpload extends T {
+
     setup() {
-        this._super();
+        super.setup();
         this.actionService = useService('action');
         this.notification = useService('notification');
-        this.orm = useService('orm');
-        this.http = useService('http');
-        this.fileInput = useRef('fileInput');
-        this.root = useRef("root");
+        this.orm = useService("orm");
+        this.http = useService("http");
+        this.createdExpenseIds = [];
+    }
 
-        useBus(this.env.bus, "change_file_input", async (ev) => {
-            this.fileInput.el.files = ev.detail.files;
-            await this.onChangeFileInput();
-        });
-    },
+    async generateOpenExpensesAction(currentAction) {
+        const actionName = _t("Generate Expenses");
+        let domain = [['id', 'in', this.createdExpenseIds]];
+        let options = {}
+        if (currentAction && currentAction.name === actionName) {
+            domain = Domain.or([domain, currentAction.domain]).toList();
+            options['stackPosition'] = 'replaceCurrentAction';
+        }
+        const views = this.env.isSmall
+            ? [
+                [false, "kanban"],
+                [false, "list"],
+                [false, "form"],
+            ]
+            : [
+                [false, "list"],
+                [false, "kanban"],
+                [false, "form"],
+            ];
+        await this.actionService.doAction({
+            'name': actionName,
+            'res_model': this.modelName,
+            'type': 'ir.actions.act_window',
+            'views': views,
+            'domain': domain,
+            'context': this.context,
+        }, options);
+    }
 
-    uploadDocument() {
-        this.fileInput.el.click();
-    },
-
-    async onChangeFileInput() {
+    async _onChangeFileInput(files) {
         const params = {
             csrf_token: odoo.csrf_token,
-            ufile: [...this.fileInput.el.files],
-            model: 'hr.expense',
+            ufile : files,
+            model: this.modelName,
             id: 0,
         };
 
-        const fileData = await this.http.post('/web/binary/upload_attachment', params, "text");
-        const attachments = JSON.parse(fileData);
+        const attachments = await this.http.post('/web/binary/upload_attachment', params);
         if (attachments.error) {
             throw new Error(attachments.error);
         }
-        this.onUpload(attachments);
-    },
+        await this.onUpload(attachments);
+    }
 
     async onUpload(attachments) {
         const attachmentIds = attachments.map((a) => a.id);
         if (!attachmentIds.length) {
             this.notification.add(
-                this.env._t('An error occurred during the upload')
+                _t('An error occurred during the upload')
             );
             return;
         }
 
-        const action = await this.orm.call('hr.expense', 'create_expense_from_attachments', ["", attachmentIds]);
-        this.actionService.doAction(action);
-    },
+        const createdExpenseIds = await this.orm.call(
+            this.modelName,
+            'create_expense_from_attachments',
+            [attachmentIds, this.viewType],
+            { context: this.context },
+        );
+        this.createdExpenseIds = [...this.createdExpenseIds, ...createdExpenseIds];
+    }
+
+    get viewType() {
+        return this.env.isSmall ? "kanban" : "list";
+    }
+
+    get modelName() {
+        return "hr.expense";
+    }
+}
+
+export const ExpenseDocumentUpload = (T) => class ExpenseDocumentUpload extends AbstractExpenseDocumentUpload(T) {
+    setup() {
+        super.setup();
+        this.fileInput = useRef('fileInput');
+        this.uploadsProcessing = 0;
+
+        useBus(this.env.bus, "change_file_input", async (ev) => {
+            this.fileInput.el.files = ev.detail.files;
+            this.uploadsProcessing++;
+            await this.onChangeFileInput();
+        });
+    }
+
+    uploadDocument() {
+        this.uploadsProcessing++;
+        this.fileInput.el.click();
+    }
+
+    async onChangeFileInput() {
+        try {
+            await this._onChangeFileInput([...this.fileInput.el.files]);
+            if (this.uploadsProcessing === 1) {
+                await this.generateOpenExpensesAction(this.actionService.currentController.action);
+            }
+        } finally {
+            this.uploadsProcessing--;
+        }
+    }
+
+    get viewType() {
+        return this.env.config.viewType;
+    }
+
+    get context() {
+        return this.props.context;
+    }
 };

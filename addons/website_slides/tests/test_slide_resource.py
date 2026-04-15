@@ -1,14 +1,14 @@
-# -*- coding: utf-8 -*-
 # Part of Odoo. See LICENSE file for full copyright and licensing details.
 
 from psycopg2 import IntegrityError
-from werkzeug.urls import url_quote
+from werkzeug.urls import url_unquote_plus
 
+from odoo.addons.base.tests.files import PNG_RAW
 from odoo.addons.website_slides.tests import common
 from odoo.exceptions import ValidationError
-from odoo.tests import HttpCase
+from odoo.tests import tagged, HttpCase
 from odoo.tests.common import users
-from odoo.tools import mute_logger
+from odoo.tools import BinaryBytes, mute_logger
 
 
 class TestResources(common.SlidesCase, HttpCase):
@@ -65,8 +65,7 @@ class TestResources(common.SlidesCase, HttpCase):
             'file_name': 'test.png',
             'resource_type': 'file',
             # A file for which _odoo_guess_mimetype and python_magic can detect the mime type: a png file
-            'data': 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAACXBIWXMAAC4jAA'
-                    'AuIwF4pT92AAAAD0lEQVQIHQEEAPv/AIdaewLIAV0IjhGPAAAAAElFTkSuQmCC',
+            'data': BinaryBytes(PNG_RAW),
             'slide_id': self.slide.id,
         })
         self.authenticate(self.env.user.login, self.env.user.login)
@@ -84,5 +83,7 @@ class TestResources(common.SlidesCase, HttpCase):
         ):
             resource.write({'name': name, 'file_name': file_name})
             with self.subTest(name=name, file_name=file_name, expected_download_name=expected_download_name):
-                self.assertIn(f"filename*=UTF-8''{url_quote(expected_download_name)}",
-                              self.url_open(resource.download_url).headers['Content-Disposition'])
+                content_disposition = self.url_open(resource.download_url).headers['Content-Disposition']
+                filename_star = content_disposition.split('; ')[-1]
+                filename_star = filename_star.removeprefix("""filename*=UTF-8''""")
+                self.assertEqual(url_unquote_plus(filename_star), expected_download_name)

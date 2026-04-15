@@ -1,9 +1,8 @@
-/** @odoo-module **/
-
+import { reactive } from "@web/owl2/utils";
+import { _t } from "@web/core/l10n/translation";
 import { registry } from "../registry";
-import { sprintf } from "../utils/strings";
 
-import { EventBus, reactive } from "@odoo/owl";
+import { EventBus } from "@odoo/owl";
 
 export const fileUploadService = {
     dependencies: ["notification"],
@@ -17,7 +16,7 @@ export const fileUploadService = {
         return new window.XMLHttpRequest();
     },
 
-    start(env, { notificationService }) {
+    start(env, { notification: notificationService }) {
         const uploads = reactive({});
         let nextId = 1;
         const bus = new EventBus();
@@ -56,7 +55,7 @@ export const fileUploadService = {
                 loaded: 0,
                 total: 0,
                 state: "pending",
-                title: files.length === 1 ? files[0].name : sprintf(env._t("%s Files"), files.length),
+                title: files.length === 1 ? files[0].name : _t("%s Files", files.length),
                 type: files.length === 1 ? files[0].type : undefined,
             });
             uploads[upload.id] = upload;
@@ -69,23 +68,76 @@ export const fileUploadService = {
             });
             // Load listener
             xhr.addEventListener("load", () => {
+                try {
+                    handleResponse();
+                } catch (e) {
+                    onError(e);
+                    return;
+                }
                 delete uploads[upload.id];
                 upload.state = "loaded";
                 bus.trigger("FILE_UPLOAD_LOADED", { upload });
             });
-            // Error listener
-            xhr.addEventListener("error", async () => {
+
+            function handleResponse() {
+                const resp = xhr.responseText ?? xhr.response;
+                let error;
+                let errorMessage = "";
+                if (!(xhr.status >= 200 && xhr.status < 300)) {
+                    error = true;
+                }
+                if (resp) {
+                    let content = resp;
+                    if (typeof content === "string") {
+                        try {
+                            content = JSON.parse(content);
+                        } catch {
+                            try {
+                                content = new DOMParser().parseFromString(content, "text/html");
+                            } catch {
+                                /** pass */
+                            }
+                        }
+                    }
+                    // Not sure what to do if the content is neither JSON nor HTML
+                    // Let's the call be successful then....
+                    if (error && content instanceof Document) {
+                        errorMessage = content.body.textContent;
+                    } else if (content instanceof Object) {
+                        if (content.error) {
+                            // https://www.jsonrpc.org/specification#error_object
+                            error = true;
+                            if (content.error.data) {
+                                // JsonRPCDispatcher.handle_error and http.serialize_exception
+                                errorMessage = `${content.error.data.name}: ${content.error.data.message}`;
+                            } else {
+                                errorMessage = content.error.message || errorMessage;
+                            }
+                        }
+                    }
+                }
+                if (error) {
+                    throw new Error(errorMessage);
+                }
+                return true;
+            }
+
+            function onError(error) {
+                const defaultErrorMessage = _t("An error occured while uploading.");
                 delete uploads[upload.id];
                 upload.state = "error";
+                const displayError = params.displayErrorNotification ?? true;
                 // Disable this option if you need more explicit error handling.
-                if (params.displayErrorNotification !== undefined && params.displayErrorNotification) {
-                    notificationService.add(env._t("An error occured while uploading."), {
-                        title: env._t("Error"),
+                if (displayError) {
+                    notificationService.add(error?.message || defaultErrorMessage, {
+                        type: "danger",
                         sticky: true,
                     });
                 }
                 bus.trigger("FILE_UPLOAD_ERROR", { upload });
-            });
+            }
+            // Error listener
+            xhr.addEventListener("error", (ev) => onError(ev.error));
             // Abort listener, considered as error
             xhr.addEventListener("abort", async () => {
                 delete uploads[upload.id];

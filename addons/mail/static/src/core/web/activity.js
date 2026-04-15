@@ -1,44 +1,36 @@
-/* @odoo-module */
-
 import { useAttachmentUploader } from "@mail/core/common/attachment_uploader_hook";
-import { useMessaging } from "@mail/core/common/messaging_hook";
 import { ActivityMailTemplate } from "@mail/core/web/activity_mail_template";
 import { ActivityMarkAsDone } from "@mail/core/web/activity_markasdone_popover";
 import { computeDelay, getMsToTomorrow } from "@mail/utils/common/dates";
+import { AvatarCard } from "@mail/core/web/avatar_card/avatar_card";
 
-import { Component, onMounted, onWillUnmount, useState } from "@odoo/owl";
+import { Component, onMounted, onWillUnmount } from "@odoo/owl";
 
 import { browser } from "@web/core/browser/browser";
 import { _t } from "@web/core/l10n/translation";
 import { usePopover } from "@web/core/popover/popover_hook";
 import { useService } from "@web/core/utils/hooks";
-import { sprintf } from "@web/core/utils/strings";
+import { render, useState } from "@web/owl2/utils";
 import { FileUploader } from "@web/views/fields/file_handler";
 
 /**
  * @typedef {Object} Props
- * @property {import("@mail/core/web/activity_model").Activity} data
- * @property {function} [onUpdate]
+ * @property {import("models").Activity} activity
+ * @property {function} onActivityChanged
  * @property {function} reloadParentView
  * @extends {Component<Props, Env>}
  */
 export class Activity extends Component {
     static components = { ActivityMailTemplate, FileUploader };
-    static props = ["data", "onUpdate?", "reloadParentView"];
-    static defaultProps = { onUpdate: () => {} };
+    static props = ["activity", "onActivityChanged", "reloadParentView"];
     static template = "mail.Activity";
 
-    /** @type {function} */
-    closePopover;
-
     setup() {
-        this.messaging = useMessaging();
-        /** @type {import("@mail/core/web/activity_service").ActivityService} */
-        this.activityService = useService("mail.activity");
-        /** @type {import("@mail/core/common/thread_service").ThreadService} */
-        this.threadService = useService("mail.thread");
+        super.setup();
+        this.store = useService("mail.store");
         this.state = useState({ showDetails: false });
-        this.popover = usePopover(ActivityMarkAsDone, { position: "right" });
+        this.markDonePopover = usePopover(ActivityMarkAsDone, { position: "right" });
+        this.avatarCard = usePopover(AvatarCard);
         onMounted(() => {
             this.updateDelayAtNight();
         });
@@ -47,22 +39,22 @@ export class Activity extends Component {
     }
 
     get displayName() {
-        if (this.props.data.summary) {
-            return sprintf(_t("“%s”"), this.props.data.summary);
+        if (this.props.activity.summary) {
+            return _t("“%s”", this.props.activity.summary);
         }
-        return this.props.data.display_name;
+        return this.props.activity.display_name;
     }
 
     updateDelayAtNight() {
         browser.clearTimeout(this.updateDelayMidnightTimeout);
         this.updateDelayMidnightTimeout = browser.setTimeout(
-            () => this.render(),
+            () => render(this),
             getMsToTomorrow() + 100
         ); // Make sure there is no race condition
     }
 
     get delay() {
-        return computeDelay(this.props.data.date_deadline);
+        return computeDelay(this.props.activity.date_deadline);
     }
 
     toggleDetails() {
@@ -70,37 +62,57 @@ export class Activity extends Component {
     }
 
     async onClickMarkAsDone(ev) {
-        if (this.popover.isOpen) {
-            this.popover.close();
+        if (this.markDonePopover.isOpen) {
+            this.markDonePopover.close();
             return;
         }
-        this.popover.open(ev.currentTarget, {
-            activity: this.props.data,
+        this.markDonePopover.open(ev.currentTarget, {
+            activity: this.props.activity,
             hasHeader: true,
-            reload: this.props.onUpdate,
+            onActivityChanged: this.props.onActivityChanged,
         });
     }
 
     async onFileUploaded(data) {
-        const { id: attachmentId } = await this.attachmentUploader.uploadData(data);
-        await this.activityService.markAsDone(this.props.data, [attachmentId]);
-        this.props.onUpdate();
-        await this.threadService.fetchNewMessages(this.thread);
+        const thread = this.thread;
+        const { id: attachmentId } = await this.attachmentUploader.uploadData(data, {
+            activity: this.props.activity,
+        });
+        await this.props.activity.markAsDone([attachmentId]);
+        this.props.onActivityChanged(thread);
+        await thread.fetchNewMessages();
+    }
+
+    onClickAvatar(ev) {
+        if (!this.props.activity.user_id) {
+            return;
+        }
+        const target = ev.currentTarget;
+        if (!this.avatarCard.isOpen) {
+            this.avatarCard.open(target, {
+                id: this.props.activity.user_id.id,
+                model: "res.users",
+            });
+        }
     }
 
     async edit() {
-        const { id, res_model, res_id } = this.props.data;
-        await this.env.services["mail.activity"].schedule(res_model, res_id, id);
-        this.props.onUpdate();
-    }
-
-    async unlink() {
-        this.activityService.delete(this.props.data);
-        await this.env.services.orm.unlink("mail.activity", [this.props.data.id]);
-        this.props.onUpdate();
+        const thread = this.thread;
+        await this.props.activity.edit();
+        this.props.onActivityChanged(thread);
     }
 
     get thread() {
-        return this.threadService.getThread(this.props.data.res_model, this.props.data.res_id);
+        return this.env.services["mail.store"]["mail.thread"].insert({
+            model: this.props.activity.res_model,
+            id: this.props.activity.res_id,
+        });
+    }
+
+    /**
+     * @param {MouseEvent} ev
+     */
+    async onClick(ev) {
+        this.store.handleClickOnLink(ev, this.thread);
     }
 }

@@ -1,28 +1,39 @@
-/** @odoo-module **/
-
-import { _lt } from "@web/core/l10n/translation";
+import { _t } from "@web/core/l10n/translation";
 import { registry } from "@web/core/registry";
 import { booleanField, BooleanField } from "../boolean/boolean_field";
 
 export class BooleanToggleField extends BooleanField {
-    static template = "web.BooleanToggleField";
     static props = {
         ...BooleanField.props,
         autosave: { type: Boolean, optional: true },
     };
 
     async onChange(newValue) {
-        await this.props.record.update({ [this.props.name]: newValue });
-        if (this.props.autosave) {
-            return this.props.record.save();
-        }
+        this.state.value = newValue;
+        const changes = { [this.props.name]: newValue };
+        await this.props.record.update(changes, { save: this.props.autosave });
+    }
+
+    get displayAsToggle() {
+        return true;
     }
 }
 
 export const booleanToggleField = {
     ...booleanField,
     component: BooleanToggleField,
-    displayName: _lt("Toggle"),
+    displayName: _t("Toggle"),
+    supportedOptions: [
+        {
+            label: _t("Autosave"),
+            name: "autosave",
+            type: "boolean",
+            default: true,
+            help: _t(
+                "If checked, the record will be saved immediately when the field is modified."
+            ),
+        },
+    ],
     extractProps({ options }, dynamicInfo) {
         return {
             autosave: "autosave" in options ? Boolean(options.autosave) : true,

@@ -10,14 +10,6 @@ class AccountChartTemplate(models.AbstractModel):
     def _get_no_template_data(self):
         return {
             'code_digits': '4',
-            'property_account_receivable_id': 'chart1500',
-            'property_account_payable_id': 'chart2400',
-            'property_account_expense_categ_id': 'chart4000',
-            'property_account_income_categ_id': 'chart3000',
-            'property_account_expense_id': 'chart4300',
-            'property_account_income_id': 'chart3000',
-            'property_tax_payable_account_id': 'chart2740',
-            'property_tax_receivable_account_id': 'chart2740',
         }
 
     @template('no', 'res.company')
@@ -28,10 +20,16 @@ class AccountChartTemplate(models.AbstractModel):
                 'bank_account_code_prefix': '1920',
                 'cash_account_code_prefix': '1900',
                 'transfer_account_code_prefix': '1940',
-                'account_default_pos_receivable_account_id': 'chart1501',
+                'account_default_pos_receivable_account_id': 'chart1500',
                 'income_currency_exchange_account_id': 'chart8060',
                 'expense_currency_exchange_account_id': 'chart8160',
-                'account_journal_early_pay_discount_loss_account_id': 'chart4370',
-                'account_journal_early_pay_discount_gain_account_id': 'chart3080',
+                'account_journal_early_pay_discount_loss_account_id': 'chart4372',
+                'account_journal_early_pay_discount_gain_account_id': 'chart3082',
+                'account_sale_tax_id': 'tax3',
+                'account_purchase_tax_id': 'tax2',
+                'expense_account_id': 'chart4000',
+                'income_account_id': 'chart3000',
+                'receivable_account_id': 'chart1500',
+                'payable_account_id': 'chart2400',
             },
         }

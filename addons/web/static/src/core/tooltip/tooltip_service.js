@@ -1,5 +1,3 @@
-/** @odoo-module **/
-
 import { browser } from "@web/core/browser/browser";
 import { registry } from "@web/core/registry";
 import { Tooltip } from "./tooltip";
@@ -41,25 +39,41 @@ import { whenReady } from "@odoo/owl";
  * with "info" being a stringified object with two keys "x" and "y".
  */
 
-const OPEN_DELAY = 400;
-const CLOSE_DELAY = 200;
+export const OPEN_DELAY = 400;
+export const CLOSE_DELAY = 200;
+export const SHOW_AFTER_DELAY = 250;
 
 export const tooltipService = {
     dependencies: ["popover"],
     start(env, { popover }) {
         let openTooltipTimeout;
         let closeTooltip;
+        let showTimer;
         let target = null;
-        let touchPressed;
-        const elementsWithTooltips = new Map();
+        const elementsWithTooltips = new WeakMap();
+
+        /**
+         * Detect if the current node is the `sup` tooltip node
+         * @param {HTMLElement} el
+         * @return {boolean}
+         */
+        function isHelpNode(el) {
+            return (
+                el.textContent === "?" &&
+                (el.hasAttribute("data-tooltip") || el.hasAttribute("data-tooltip-template"))
+            );
+        }
 
         /**
          * Closes the currently opened tooltip if any, or prevent it from opening.
          */
         function cleanup() {
+            target = null;
             browser.clearTimeout(openTooltipTimeout);
+            openTooltipTimeout = null;
             if (closeTooltip) {
                 closeTooltip();
+                closeTooltip = null;
             }
         }
 
@@ -73,9 +87,6 @@ export const tooltipService = {
             }
             if (!document.body.contains(target)) {
                 return true; // target is no longer in the DOM
-            }
-            if (hasTouch()) {
-                return !touchPressed;
             }
             return false;
         }
@@ -97,12 +108,15 @@ export const tooltipService = {
          *  open
          */
         function openTooltip(el, { tooltip = "", template, info, position, delay = OPEN_DELAY }) {
-            target = el;
             cleanup();
             if (!tooltip && !template) {
                 return;
             }
 
+            target = el;
+            // Prevent title from showing on a parent at the same time
+            target.title = "";
+            const timeoutDelay = isHelpNode(el) ? 0 : delay;
             openTooltipTimeout = browser.setTimeout(() => {
                 // verify that the element is still in the DOM
                 if (target.isConnected) {
@@ -112,10 +126,8 @@ export const tooltipService = {
                         { tooltip, template, info },
                         { position }
                     );
-                    // Prevent title from showing on a parent at the same time
-                    target.title = "";
                 }
-            }, delay);
+            }, timeoutDelay);
         }
 
         /**
@@ -126,10 +138,19 @@ export const tooltipService = {
          * @param {HTMLElement} el
          */
         function openElementsTooltip(el) {
+            // Fix weird behavior in Firefox where MouseEvent can be dispatched
+            // from TEXT_NODE, even if they shouldn't...
+            if (el.nodeType === Node.TEXT_NODE) {
+                return;
+            }
+            const element = el.closest("[data-tooltip], [data-tooltip-template]");
+            if (element && element === target) {
+                return;
+            }
             if (elementsWithTooltips.has(el)) {
                 openTooltip(el, elementsWithTooltips.get(el));
-            } else if (el.matches("[data-tooltip], [data-tooltip-template]")) {
-                const dataset = el.dataset;
+            } else if (element) {
+                const dataset = element.dataset;
                 const params = {
                     tooltip: dataset.tooltip,
                     template: dataset.tooltipTemplate,
@@ -141,7 +162,7 @@ export const tooltipService = {
                 if (dataset.tooltipDelay) {
                     params.delay = parseInt(dataset.tooltipDelay, 10);
                 }
-                openTooltip(el, params);
+                openTooltip(element, params);
             }
         }
 
@@ -156,8 +177,20 @@ export const tooltipService = {
             openElementsTooltip(ev.target);
         }
 
-        function onMouseleave(ev) {
-            if (target === ev.target) {
+        /**
+         * Check whether there is a tooltip registered on the event target, and if there is,
+         * cleanup it.
+         * @param {MouseEvent} ev a "click" event
+         */
+        function onClick(ev) {
+            if (isHelpNode(ev.target)) {
+                ev.preventDefault();
+            }
+            cleanupTooltip(ev);
+        }
+
+        function cleanupTooltip(ev) {
+            if (target == ev.target) {
                 cleanup();
             }
         }
@@ -169,8 +202,11 @@ export const tooltipService = {
          * @param {TouchEvent} ev a "touchstart" event
          */
         function onTouchStart(ev) {
-            touchPressed = true;
-            openElementsTooltip(ev.target);
+            cleanup();
+            const timeoutDelay = isHelpNode(ev.target) ? 0 : SHOW_AFTER_DELAY;
+            showTimer = browser.setTimeout(() => {
+                openElementsTooltip(ev.target);
+            }, timeoutDelay);
         }
 
         whenReady(() => {
@@ -185,28 +221,36 @@ export const tooltipService = {
                 document.body.addEventListener("touchstart", onTouchStart);
 
                 document.body.addEventListener("touchend", (ev) => {
-                    if (ev.target.matches("[data-tooltip], [data-tooltip-template]")) {
+                    if (isHelpNode(ev.target)) {
+                        ev.preventDefault();
+                        return;
+                    }
+                    if (ev.target.closest("[data-tooltip], [data-tooltip-template]")) {
                         if (!ev.target.dataset.tooltipTouchTapToShow) {
-                            touchPressed = false;
+                            browser.clearTimeout(showTimer);
+                            browser.clearTimeout(openTooltipTimeout);
                         }
                     }
                 });
-
                 document.body.addEventListener("touchcancel", (ev) => {
-                    if (ev.target.matches("[data-tooltip], [data-tooltip-template]")) {
+                    if (isHelpNode(ev.target)) {
+                        ev.preventDefault();
+                        return;
+                    }
+                    if (ev.target.closest("[data-tooltip], [data-tooltip-template]")) {
                         if (!ev.target.dataset.tooltipTouchTapToShow) {
-                            touchPressed = false;
+                            browser.clearTimeout(showTimer);
+                            browser.clearTimeout(openTooltipTimeout);
                         }
                     }
                 });
-
-                return;
             }
 
             // Listen (using event delegation) to "mouseenter" events to open the tooltip if any
             document.body.addEventListener("mouseenter", onMouseenter, { capture: true });
             // Listen (using event delegation) to "mouseleave" events to close the tooltip if any
-            document.body.addEventListener("mouseleave", onMouseleave, { capture: true });
+            document.body.addEventListener("mouseleave", cleanupTooltip, { capture: true });
+            document.body.addEventListener("click", onClick, { capture: true });
         });
 
         return {

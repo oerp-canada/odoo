@@ -1,8 +1,8 @@
-/** @odoo-module **/
+import { useComponent, useLayoutEffect, useRef, useState } from "@web/owl2/utils";
+import { hasTouch, isMobileOS } from "@web/core/browser/feature_detection";
 
-import { SERVICES_METADATA } from "@web/env";
-
-import { status, useComponent, useEffect, useRef, onWillUnmount } from "@odoo/owl";
+import { status, onWillUnmount, toRaw, onMounted, onPatched } from "@odoo/owl";
+import { router } from "@web/core/browser/router";
 
 /**
  * This file contains various custom hooks.
@@ -28,30 +28,41 @@ import { status, useComponent, useEffect, useRef, onWillUnmount } from "@odoo/ow
 // -----------------------------------------------------------------------------
 
 /**
- * Focus an element referenced by a t-ref="autofocus" in the current component
+ * Focus an element referenced by a t-ref="autofocus" in the active component
  * as soon as it appears in the DOM and if it was not displayed before.
  * If it is an input/textarea, set the selection at the end.
  * @param {Object} [params]
  * @param {string} [params.refName] override the ref name "autofocus"
  * @param {boolean} [params.selectAll] if true, will select the entire text value.
- * @param {boolean} [params.mobile] if true, will autofocus on mobile devices.
+ * @param {boolean} [params.mobile] if true, will force autofocus on touch devices.
  * @returns {Ref} the element reference
  */
 export function useAutofocus({ refName, selectAll, mobile } = {}) {
-    const comp = useComponent();
     const ref = useRef(refName || "autofocus");
-    // Prevent autofocus in mobile
-    if (!mobile && comp.env.isSmall) {
+    const uiService = useService("ui");
+
+    // Prevent autofocus on touch devices to avoid the virtual keyboard from popping up unexpectedly
+    if (!mobile && hasTouch()) {
         return ref;
     }
     // LEGACY
-    if (comp.env.device && comp.env.device.isMobileDevice) {
+    if (!mobile && isMobileOS()) {
         return ref;
     }
+    function isFocusable(el) {
+        if (!el) {
+            return;
+        }
+        if (!uiService.activeElement || uiService.activeElement.contains(el)) {
+            return true;
+        }
+        const rootNode = el.getRootNode();
+        return rootNode instanceof ShadowRoot && uiService.activeElement.contains(rootNode.host);
+    }
     // LEGACY
-    useEffect(
+    useLayoutEffect(
         (el) => {
-            if (el) {
+            if (isFocusable(el)) {
                 el.focus();
                 if (["INPUT", "TEXTAREA"].includes(el.tagName) && el.type !== "number") {
                     el.selectionEnd = el.value.length;
@@ -77,7 +88,7 @@ export function useAutofocus({ refName, selectAll, mobile } = {}) {
  */
 export function useBus(bus, eventName, callback) {
     const component = useComponent();
-    useEffect(
+    useLayoutEffect(
         () => {
             const listener = callback.bind(component);
             bus.addEventListener(eventName, listener);
@@ -87,84 +98,19 @@ export function useBus(bus, eventName, callback) {
     );
 }
 
-// -----------------------------------------------------------------------------
-// useListener
-// -----------------------------------------------------------------------------
-
-/**
- * @deprecated
- * The useListener hook offers an alternative to Owl's classical event
- * registration mechanism (with attribute 't-on-eventName' in xml).
- *
- * It is especially useful for abstract components, meant to be extended by
- * specific ones. If those abstract components need to define event handlers,
- * but don't have any template (because the template completely depends on
- * specific cases), then using the 't-on' mechanism isn't adequate, as the
- * handlers would be lost by the template override. In this case, using this
- * hook instead is more convenient.
- *
- * Usage: like all Owl hooks, this function has to be called in the
- * constructor of an Owl component:
- *
- *   useListener('click', () => { console.log('clicked'); });
- *
- * It also allows to do event delegation, by specifying a native query selector
- * as second argument. In this case, the handler is only called if the event
- * is triggered on an element matching the given selector.
- *
- *   useListener('click', 'button', () => { console.log('clicked'); });
- *
- * Note: components that alter the event's target and the t-portal directive are not
- * expected to behave as expected with event delegation.
- *
- * @param {string} eventName the name of the event
- * @param {string} [querySelector] a JS native selector for event delegation
- * @param {function} [handler] the event handler (will be bound to the component)
- * @param {Object} [options] to be passed to addEventListener as options.
- *   Useful for listening in the capture phase
- */
-export function useListener(eventName, querySelector, handler, options = {}) {
-    if (typeof arguments[1] !== "string") {
-        querySelector = null;
-        handler = arguments[1];
-        options = arguments[2] || {};
-    }
-    if (typeof handler !== "function") {
-        throw new Error("The handler must be a function");
-    }
-
-    const comp = useComponent();
-    let boundHandler;
-    if (querySelector) {
-        boundHandler = function (ev) {
-            let el = ev.target;
-            let target;
-            while (el && !target) {
-                if (el.matches(querySelector)) {
-                    target = el;
-                } else if (el === comp.el) {
-                    el = null;
-                } else {
-                    el = el.parentElement;
-                }
-            }
-            if (el) {
-                handler.call(comp, ev);
-            }
-        };
-    } else {
-        boundHandler = handler.bind(comp);
-    }
-    useEffect(
-        () => {
-            comp.el.addEventListener(eventName, boundHandler, options);
-            return () => {
-                comp.el.removeEventListener(eventName, boundHandler, options);
-            };
-        },
-        () => []
-    );
-}
+// In an object so that it can be patched in tests (prevent error on blocking RPCs after tests)
+export const useServiceProtectMethodHandling = {
+    fn() {
+        return this.original();
+    },
+    mocked() {
+        // Keep them unresolved so that no crash in test due to triggered RPCs by services
+        return new Promise(() => {});
+    },
+    original() {
+        return Promise.reject(new Error("Component is destroyed"));
+    },
+};
 
 // -----------------------------------------------------------------------------
 // useService
@@ -172,7 +118,7 @@ export function useListener(eventName, querySelector, handler, options = {}) {
 function _protectMethod(component, fn) {
     return function (...args) {
         if (status(component) === "destroyed") {
-            return Promise.reject(new Error("Component is destroyed"));
+            return useServiceProtectMethodHandling.fn();
         }
 
         const prom = Promise.resolve(fn.call(this, ...args));
@@ -186,12 +132,14 @@ function _protectMethod(component, fn) {
     };
 }
 
+export const SERVICES_METADATA = {};
+
 /**
  * Import a service into a component
  *
- * @template {keyof import("services").Services} K
+ * @template {keyof import("services").ServiceFactories} K
  * @param {K} serviceName
- * @returns {import("services").Services[K]}
+ * @returns {import("services").ServiceFactories[K]}
  */
 export function useService(serviceName) {
     const component = useComponent();
@@ -200,17 +148,20 @@ export function useService(serviceName) {
         throw new Error(`Service ${serviceName} is not available`);
     }
     const service = services[serviceName];
-    if (serviceName in SERVICES_METADATA) {
+    if (SERVICES_METADATA[serviceName]) {
         if (service instanceof Function) {
             return _protectMethod(component, service);
         } else {
-            const methods = SERVICES_METADATA[serviceName];
+            const methods = SERVICES_METADATA[serviceName] ?? [];
             const result = Object.create(service);
             for (const method of methods) {
                 result[method] = _protectMethod(component, service[method]);
             }
             return result;
         }
+    }
+    if (toRaw(service) !== service) {
+        return useState(service);
     }
     return service;
 }
@@ -230,11 +181,11 @@ export function useSpellCheck({ refName } = {}) {
     function toggleSpellcheck(ev) {
         ev.target.spellcheck = document.activeElement === ev.target;
     }
-    useEffect(
+    useLayoutEffect(
         (el) => {
             if (el) {
                 const inputs =
-                    ["INPUT", "TEXTAREA"].includes(el.nodeName) || el.contenteditable
+                    ["INPUT", "TEXTAREA"].includes(el.nodeName) || el.isContentEditable
                         ? [el]
                         : el.querySelectorAll("input, textarea, [contenteditable=true]");
                 inputs.forEach((input) => {
@@ -328,11 +279,146 @@ export function useOwnedDialogs() {
  * @param {Parameters<typeof EventTarget.prototype.addEventListener>} listener
  */
 export function useRefListener(ref, ...listener) {
-    useEffect(
+    useLayoutEffect(
         (el) => {
             el?.addEventListener(...listener);
             return () => el?.removeEventListener(...listener);
         },
         () => [ref.el]
     );
+}
+
+/**
+ * Error related to the registration of a listener
+ */
+class BackButtonListenerError extends Error {}
+
+/**
+ * By using the back button feature the default back button behavior from the
+ * app is actually overridden so it is important to keep count to restore the
+ * default when no custom listener are remaining.
+ */
+export class BackButtonManager {
+    constructor() {
+        this._listeners = new Map();
+        this._onPopstate = this._onPopstate.bind(this);
+        this._performLatestBackAction = this._performLatestBackAction.bind(this);
+        this._trapState = { trapState: true, nextState: router.current, skipRouteChange: true };
+        this._cleanupPending = false;
+    }
+
+    /**
+     * Enables the func listener, overriding default back button behavior.
+     *
+     * @param {Component} listener
+     * @param {function} func
+     * @throws {BackButtonListenerError} if the listener has already been registered
+     */
+    addListener(listener, func) {
+        if (this._listeners.has(listener)) {
+            throw new BackButtonListenerError("This listener was already registered.");
+        }
+        this._listeners.set(listener, func);
+        if (this._listeners.size === 1) {
+            this._activate();
+        }
+    }
+
+    /**
+     * Disables the func listener, restoring the default back button behavior if
+     * no other listeners are present.
+     *
+     * @param {Component} listener
+     * @throws {BackButtonListenerError} if the listener has already been unregistered
+     */
+    removeListener(listener) {
+        if (!this._listeners.has(listener)) {
+            throw new BackButtonListenerError("This listener has already been unregistered.");
+        }
+        this._listeners.delete(listener);
+        if (this._listeners.size === 0) {
+            this._deactivate();
+        }
+    }
+
+    _activate() {
+        this._cleanupPending = false;
+        window.addEventListener("popstate", this._onPopstate);
+        if (!window.history.state?.trapState) {
+            router.skipLoad = true;
+            window.history.pushState(this._trapState, "");
+        }
+    }
+
+    _deactivate() {
+        this._cleanupPending = true;
+        // Defer cleanup so that if we are swapping between two components that both use
+        // the hook, we don't destroy and recreate the trap history entry unnecessarily,
+        // as this may lead to flickering and/or extra unwanted history entries.
+        Promise.resolve().then(() => {
+            if (this._cleanupPending) {
+                this._cleanupPending = false;
+                window.removeEventListener("popstate", this._onPopstate);
+                if (window.history.state?.trapState) {
+                    router.skipLoad = true;
+                    window.history.back();
+                }
+            }
+        });
+    }
+
+    _performLatestBackAction() {
+        const [listener, func] = [...this._listeners].pop();
+        if (listener) {
+            func.apply(listener, arguments);
+        }
+    }
+
+    _onPopstate() {
+        this._performLatestBackAction();
+        if (this._listeners.size > 0) {
+            router.skipLoad = true;
+            window.history.pushState(this._trapState, "");
+        }
+    }
+}
+
+const backButtonManager = new BackButtonManager();
+
+/**
+ * Hook to override default back button behavior.
+ * @param {Function} handler - The function to run when back is pressed.
+ * @param {Function} [shouldEnable] - Optional callback returning boolean.
+ */
+export function useBackButton(handler, shouldEnable) {
+    if (!isMobileOS()) {
+        return;
+    }
+    const component = useComponent();
+    let isRegistered = false;
+
+    const register = () => {
+        if (isRegistered) {
+            return;
+        }
+        backButtonManager.addListener(component, handler);
+        isRegistered = true;
+    };
+
+    const unregister = () => {
+        if (!isRegistered) {
+            return;
+        }
+        backButtonManager.removeListener(component);
+        isRegistered = false;
+    };
+
+    const updateRegistration = () => {
+        const isActive = shouldEnable ? shouldEnable() : true;
+        isActive ? register() : unregister();
+    };
+
+    onMounted(updateRegistration);
+    onPatched(updateRegistration);
+    onWillUnmount(unregister);
 }

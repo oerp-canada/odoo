@@ -1,5 +1,3 @@
-/** @odoo-module **/
-
 import { FormController } from "@web/views/form/form_controller";
 import { useService } from "@web/core/utils/hooks";
 
@@ -17,16 +15,22 @@ export default class OnboardingStepFormController extends FormController {
      * If necessary, mark the step as done and reload the main view.
      * @override
      */
-    async onRecordSaved(record) {
-        const { reloadOnFirstValidation, reloadAlways } = this.stepConfig;
-        const validationResponse = await this.orm.call(
-            'onboarding.onboarding.step',
-            'action_validate_step',
-            [this.stepName],
-        );
-        if (reloadAlways || (reloadOnFirstValidation && validationResponse === "JUST_DONE")) {
-            this.action.restore(this.action.currentController.jsId);
+    async save({ closable, ...otherParams }) {
+        const saved = await super.save(otherParams);
+        if (saved) {
+            const { reloadOnFirstValidation, reloadAlways } = this.stepConfig;
+            const validationResponse = await this.orm.call(
+                'onboarding.onboarding.step',
+                'action_validate_step',
+                [this.stepName],
+            );
+            if (reloadAlways || (reloadOnFirstValidation && validationResponse === "JUST_DONE")) {
+                this.action.restore(this.action.currentController.jsId);
+            } else if (closable) {
+                this.action.doAction({ type: "ir.actions.act_window_close" });
+            }
         }
+        return saved;
     }
     /**
      * Returns the name of the onboarding step to validate after the dialog

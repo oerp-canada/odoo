@@ -1,23 +1,19 @@
-# -*- coding: utf-8 -*-
 # Part of Odoo. See LICENSE file for full copyright and licensing details.
 
-import base64
-
 from odoo import api, fields, models
-
-from odoo.modules.module import get_module_resource
+from odoo.tools import BinaryBytes, file_open
 
 
 class LunchProductCategory(models.Model):
     """ Category of the product such as pizza, sandwich, pasta, chinese, burger... """
     _name = 'lunch.product.category'
-    _inherit = 'image.mixin'
+    _inherit = ['image.mixin']
     _description = 'Lunch Product Category'
 
     @api.model
     def _default_image(self):
-        image_path = get_module_resource('lunch', 'static/img', 'lunch.png')
-        return base64.b64encode(open(image_path, 'rb').read())
+        with file_open('lunch/static/img/lunch.png', 'rb') as f:
+            return BinaryBytes(f.read())
 
     name = fields.Char('Product Category', required=True, translate=True)
     company_id = fields.Many2one('res.company')
@@ -32,10 +28,16 @@ class LunchProductCategory(models.Model):
         for category in self:
             category.product_count = data.get(category.id, 0)
 
-    def toggle_active(self):
+    def _sync_active_products(self):
         """ Archiving related lunch product """
-        res = super().toggle_active()
         Product = self.env['lunch.product'].with_context(active_test=False)
         all_products = Product.search([('category_id', 'in', self.ids)])
         all_products._sync_active_from_related()
-        return res
+
+    def action_archive(self):
+        super().action_archive()
+        self._sync_active_products()
+
+    def action_unarchive(self):
+        super().action_unarchive()
+        self._sync_active_products()

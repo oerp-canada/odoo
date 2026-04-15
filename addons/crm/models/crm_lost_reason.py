@@ -4,9 +4,10 @@
 from odoo import fields, models, _
 
 
-class LostReason(models.Model):
-    _name = "crm.lost.reason"
+class CrmLostReason(models.Model):
+    _name = 'crm.lost.reason'
     _description = 'Opp. Lost Reason'
+    _explanation = "Defines the standard reasons why a sales opportunity or lead was marked as lost. Used for reporting and analyzing sales failures."
 
     name = fields.Char('Description', required=True, translate=True)
     active = fields.Boolean('Active', default=True)
@@ -25,7 +26,7 @@ class LostReason(models.Model):
     def action_lost_leads(self):
         return {
             'name': _('Leads'),
-            'view_mode': 'tree,form',
+            'view_mode': 'list,form',
             'domain': [('lost_reason_id', 'in', self.ids)],
             'res_model': 'crm.lead',
             'type': 'ir.actions.act_window',

@@ -1,45 +1,28 @@
-# -*- coding: utf-8 -*-
 # Part of Odoo. See LICENSE file for full copyright and licensing details.
 
-from odoo import _, api, fields, models
-from odoo.exceptions import ValidationError
-import re
+from odoo import api, fields, models
 
 
 class ResPartner(models.Model):
     _inherit = 'res.partner'
 
-    l10n_br_cpf_code = fields.Char(string="CPF", help="Natural Persons Register.")
     l10n_br_ie_code = fields.Char(string="IE", help="State Tax Identification Number. Should contain 9-14 digits.")
     l10n_br_im_code = fields.Char(string="IM", help="Municipal Tax Identification Number")
     l10n_br_isuf_code = fields.Char(string="SUFRAMA code", help="SUFRAMA registration number.")
 
-    @api.constrains("vat")
-    def check_vat(self):
-        '''
-        Example of a Brazilian CNPJ number: 76.634.583/0001-74.
-        The 13th digit is the check digit of the previous 12 digits.
-        The check digit is calculated by multiplying the first 12 digits by weights and calculate modulo 11 of the result.
-        The 14th digit is the check digit of the previous 13 digits. Calculated the same way.
-        Both remainders are appended to the first 12 digits.
-        '''
-        def _l10n_br_calculate_mod_11(check, weights):
-            result = (sum([i*j for (i, j) in zip(check, weights)])) % 11
-            if result <= 1:
-                return 0
-            return 11 - result
+    def _get_frontend_writable_fields(self):
+        frontend_writable_fields = super()._get_frontend_writable_fields()
+        frontend_writable_fields.update({'street_number', 'street_name', 'street_number2'})
 
-        for partner in self:
-            if not partner.vat:
-                return
-            if not partner.country_code == 'BR':
-                return super().check_vat()
-            weights = [6, 5, 4, 3, 2, 9, 8, 7, 6, 5, 4, 3, 2]
-            vat_clean = list(map(int, re.sub("[^0-9]", "", partner.vat)))
-            if len(vat_clean) != 14:
-                raise ValidationError(_("Invalid CNPJ. Make sure that the CNPJ is a 14 digits number."))
-            vat_check = vat_clean[:12]
-            vat_check.append(_l10n_br_calculate_mod_11(vat_check, weights[1:]))
-            vat_check.append(_l10n_br_calculate_mod_11(vat_check, weights))
-            if vat_check != vat_clean:
-                raise ValidationError(_("Invalid CNPJ. Make sure that all the digits are entered correctly."))
+        return frontend_writable_fields
+
+    @api.depends('l10n_latam_identification_type_id')
+    def _compute_is_company(self):
+        cnpj = self.env.ref('l10n_br.cnpj', raise_if_not_found=False)
+        l10n_br_partners = self.filtered(lambda p: p.country_code == 'BR')
+
+        # Partners with CNPJ are legal entities => companies
+        for partner in l10n_br_partners:
+            partner.is_company = bool(cnpj and partner.l10n_latam_identification_type_id == cnpj)
+
+        super(ResPartner, self - l10n_br_partners)._compute_is_company()

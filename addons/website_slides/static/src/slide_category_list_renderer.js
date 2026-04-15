@@ -1,9 +1,6 @@
-/** @odoo-module */
-
+import { useLayoutEffect } from "@web/owl2/utils";
 import { makeContext } from "@web/core/context";
 import { ListRenderer } from "@web/views/list/list_renderer";
-
-const { useEffect } = owl;
 
 export class SlideCategoryListRenderer extends ListRenderer {
     setup() {
@@ -12,7 +9,7 @@ export class SlideCategoryListRenderer extends ListRenderer {
         this.discriminant = "is_category";
         this.titleField = "name";
 
-        useEffect(
+        useLayoutEffect(
             (table) => {
                 if (table) {
                     table.classList.add("o_section_list_view");
@@ -72,7 +69,7 @@ export class SlideCategoryListRenderer extends ListRenderer {
             case "enter":
             case "tab":
             case "shift+tab": {
-                this.props.list.unselectRecord(true);
+                this.props.list.leaveEditMode();
                 return true;
             }
         }

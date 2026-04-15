@@ -10,16 +10,6 @@ class AccountChartTemplate(models.AbstractModel):
     def _get_sk_template_data(self):
         return {
             'code_digits': '6',
-            'use_storno_accounting': True,
-            'property_account_receivable_id': 'chart_sk_311000',
-            'property_account_payable_id': 'chart_sk_321000',
-            'property_account_expense_categ_id': 'chart_sk_504000',
-            'property_account_income_categ_id': 'chart_sk_604000',
-            'property_account_expense_id': 'chart_sk_504000',
-            'property_account_income_id': 'chart_sk_604000',
-            'property_stock_account_input_categ_id': 'chart_sk_131000',
-            'property_stock_account_output_categ_id': 'chart_sk_504000',
-            'property_stock_valuation_account_id': 'chart_sk_132000',
         }
 
     @template('sk', 'res.company')
@@ -37,5 +27,61 @@ class AccountChartTemplate(models.AbstractModel):
                 'account_journal_early_pay_discount_gain_account_id': 'chart_sk_646000',
                 'default_cash_difference_income_account_id': 'chart_sk_668000',
                 'default_cash_difference_expense_account_id': 'chart_sk_568000',
+                'account_sale_tax_id': 'vy_tuz_23',
+                'account_purchase_tax_id': 'vs_tuz_23',
+                'expense_account_id': 'chart_sk_504000',
+                'income_account_id': 'chart_sk_604000',
+                'receivable_account_id': 'chart_sk_311000',
+                'payable_account_id': 'chart_sk_321000',
+                'account_stock_valuation_id': 'chart_sk_112000',
+            },
+        }
+
+    @template('sk', 'account.account')
+    def _get_sk_account_account(self):
+        return {
+            'chart_sk_112000': {
+                'account_stock_expense_id': 'chart_sk_568000',
+                'account_stock_variation_id': 'chart_sk_501000',
+            },
+            'chart_sk_012000': {
+                'asset_depreciation_account_id': 'chart_sk_072000',
+                'asset_expense_account_id': 'chart_sk_551000',
+            },
+            'chart_sk_013000': {
+                'asset_depreciation_account_id': 'chart_sk_073000',
+                'asset_expense_account_id': 'chart_sk_551000',
+            },
+            'chart_sk_014000': {
+                'asset_depreciation_account_id': 'chart_sk_074000',
+                'asset_expense_account_id': 'chart_sk_551000',
+            },
+            'chart_sk_015000': {
+                'asset_depreciation_account_id': 'chart_sk_075000',
+                'asset_expense_account_id': 'chart_sk_551000',
+            },
+            'chart_sk_019000': {
+                'asset_depreciation_account_id': 'chart_sk_079000',
+                'asset_expense_account_id': 'chart_sk_551000',
+            },
+            'chart_sk_021000': {
+                'asset_depreciation_account_id': 'chart_sk_081000',
+                'asset_expense_account_id': 'chart_sk_551000',
+            },
+            'chart_sk_022000': {
+                'asset_depreciation_account_id': 'chart_sk_082000',
+                'asset_expense_account_id': 'chart_sk_551000',
+            },
+            'chart_sk_025000': {
+                'asset_depreciation_account_id': 'chart_sk_085000',
+                'asset_expense_account_id': 'chart_sk_551000',
+            },
+            'chart_sk_026000': {
+                'asset_depreciation_account_id': 'chart_sk_086000',
+                'asset_expense_account_id': 'chart_sk_551000',
+            },
+            'chart_sk_029000': {
+                'asset_depreciation_account_id': 'chart_sk_089000',
+                'asset_expense_account_id': 'chart_sk_551000',
             },
         }

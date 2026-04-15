@@ -1,21 +1,22 @@
-/** @odoo-module **/
-
-import { registry } from "./core/registry";
-
-import { EventBus } from "@odoo/owl";
+import { App, EventBus } from "@odoo/owl";
+import { SERVICES_METADATA } from "@web/core/utils/hooks";
+import { registry } from "@web/core/registry";
+import { getTemplate } from "@web/core/templates";
+import { appTranslateFn } from "@web/core/l10n/translation";
+import { session } from "@web/session";
+import { isMacOS } from "@web/core/browser/feature_detection";
 
 // -----------------------------------------------------------------------------
 // Types
 // -----------------------------------------------------------------------------
 
 /**
- * @typedef {Object} OdooEnv
- * @property {Object} services
- * @property {EventBus} bus
- * @property {QWeb} qweb
- * @property {string} debug
- * @property {(str: string) => string} _t
- * @property {boolean} [isSmall]
+ * @typedef {{
+ *  bus: EventBus;
+ *  debug: string;
+ *  services: import("services").ServiceFactories;
+ *  readonly isSmall: boolean;
+ * }} OdooEnv
  */
 
 // -----------------------------------------------------------------------------
@@ -28,13 +29,15 @@ import { EventBus } from "@odoo/owl";
  * @returns {OdooEnv}
  */
 export function makeEnv() {
+    const bus = new EventBus();
+    const prom = new Promise((resolve) => {
+        bus.addEventListener("SERVICES-LOADED", resolve, { once: true });
+    });
     return {
-        bus: new EventBus(),
+        bus,
+        isReady: prom,
         services: {},
         debug: odoo.debug,
-        _t: () => {
-            throw new Error("Translations are not ready yet. Maybe use _lt instead?");
-        },
         get isSmall() {
             throw new Error("UI service not initialized!");
         },
@@ -47,7 +50,13 @@ export function makeEnv() {
 
 const serviceRegistry = registry.category("services");
 
-export const SERVICES_METADATA = {};
+serviceRegistry.addValidation({
+    start: Function,
+    dependencies: { type: Array, element: String, optional: true },
+    async: { type: [{ type: Array, element: String }, { value: true }], optional: true },
+    "*": true,
+});
+
 let startServicesPromise = null;
 
 /**
@@ -63,7 +72,7 @@ export async function startServices(env) {
     // start them regardless of the order they're added to the registry.
     await Promise.resolve();
 
-    const toStart = new Set();
+    const toStart = new Map();
     serviceRegistry.addEventListener("UPDATE", async (ev) => {
         // Wait for all synchronous code so that if new services that depend on
         // one another are added to the registry, they're all present before we
@@ -78,7 +87,7 @@ export async function startServices(env) {
         }
         if (toStart.size) {
             const namedService = Object.assign(Object.create(service), { name });
-            toStart.add(namedService);
+            toStart.set(name, namedService);
         } else {
             await _startServices(env, toStart);
         }
@@ -94,7 +103,7 @@ async function _startServices(env, toStart) {
     for (const [name, service] of serviceRegistry.getEntries()) {
         if (!(name in services)) {
             const namedService = Object.assign(Object.create(service), { name });
-            toStart.add(namedService);
+            toStart.set(name, namedService);
         }
     }
 
@@ -104,63 +113,51 @@ async function _startServices(env, toStart) {
         const proms = [];
         while ((service = findNext())) {
             const name = service.name;
-            toStart.delete(service);
+            toStart.delete(name);
             const entries = (service.dependencies || []).map((dep) => [dep, services[dep]]);
             const dependencies = Object.fromEntries(entries);
-            let value;
-            try {
-                value = service.start(env, dependencies);
-            } catch (e) {
-                value = e;
-                console.error(e);
+            if (name in services) {
+                continue;
             }
+            const value = service.start(env, dependencies);
             if ("async" in service) {
                 SERVICES_METADATA[name] = service.async;
             }
-            if (value instanceof Promise) {
-                proms.push(
-                    new Promise((resolve) => {
-                        value
-                            .then((val) => {
-                                services[name] = val || null;
-                            })
-                            .catch((error) => {
-                                services[name] = error;
-                                console.error("Can't load service '" + name + "' because:", error);
-                            })
-                            .finally(resolve);
-                    })
-                );
-            } else {
-                services[service.name] = value || null;
-            }
+            proms.push(
+                Promise.resolve(value).then((val) => {
+                    services[name] = val || null;
+                })
+            );
         }
         await Promise.all(proms);
         if (proms.length) {
             return start();
         }
     }
-    startServicesPromise = start();
+    startServicesPromise = start().finally(() => {
+        startServicesPromise = null;
+    });
     await startServicesPromise;
-    startServicesPromise = null;
+    env.bus.trigger("SERVICES-LOADED");
     if (toStart.size) {
-        const names = [...toStart].map((s) => s.name);
         const missingDeps = new Set();
-        [...toStart].forEach((s) =>
-            s.dependencies.forEach((dep) => {
-                if (!(dep in services) && !names.includes(dep)) {
-                    missingDeps.add(dep);
+        for (const service of toStart.values()) {
+            for (const dependency of service.dependencies) {
+                if (!(dependency in services) && !toStart.has(dependency)) {
+                    missingDeps.add(dependency);
                 }
-            })
-        );
+            }
+        }
         const depNames = [...missingDeps].join(", ");
         throw new Error(
-            `Some services could not be started: ${names}. Missing dependencies: ${depNames}`
+            `Some services could not be started: ${[
+                ...toStart.keys(),
+            ]}. Missing dependencies: ${depNames}`
         );
     }
 
     function findNext() {
-        for (const s of toStart) {
+        for (const s of toStart.values()) {
             if (s.dependencies) {
                 if (s.dependencies.every((d) => d in services)) {
                     return s;
@@ -171,4 +168,83 @@ async function _startServices(env, toStart) {
         }
         return null;
     }
+}
+
+export const customDirectives = {
+    // t-custom-click="handler"
+    // This custom directive will add two even listeners ("click"; "auxclick") and call the global value "click".
+    // The global value "click" will call the handler with two parameters :
+    //      - ev (the original event)
+    //      - isMiddleClick (a boolean that says if the user middle clicked, or if he did a ctrl+click)
+    //
+    click: (node, value, modifiers) => {
+        let mods = "";
+        if (modifiers.includes("synthetic")) {
+            mods += ".synthetic";
+        }
+        if (modifiers.includes("capture")) {
+            mods += ".capture";
+        }
+        const handlerFunction = `(ev) => __globals__.click(ev, (${value}).bind(this), '${JSON.stringify(
+            modifiers
+        )}')`;
+        node.setAttribute(`t-on-click${mods}`, handlerFunction);
+        node.setAttribute(`t-on-auxclick${mods}`, handlerFunction);
+    },
+};
+
+export const globalValues = {
+    click: (ev, value, modifiers) => {
+        if (ev.button === 0 || ev.button === 1) {
+            modifiers = JSON.parse(modifiers);
+            for (const modifier of modifiers) {
+                if (modifier === "stop") {
+                    ev.stopPropagation();
+                }
+                if (modifier === "prevent") {
+                    ev.preventDefault();
+                }
+            }
+            const ctrlKey = isMacOS() ? ev.metaKey : ev.ctrlKey;
+            const isMiddleClick = (ctrlKey && ev.button === 0) || ev.button === 1;
+            value(ev, isMiddleClick);
+        }
+    },
+};
+
+/**
+ * Create an application with a given component as root and mount it. If no env
+ * is provided, the application will be treated as a "root": an env will be
+ * created and the services will be started, it will also be set as the root
+ * in `__WOWL_DEBUG__`
+ *
+ * @param {import("@odoo/owl").Component} component the component to mount
+ * @param {HTMLElement} target the HTML element in which to mount the app
+ * @param {Partial<ConstructorParameters<typeof App>[1]>} [appConfig] object
+ *  containing a (partial) config for the app.
+ */
+export async function mountComponent(component, target, appConfig = {}) {
+    let { env } = appConfig;
+    const isRoot = !env;
+    if (isRoot) {
+        env = await makeEnv();
+        await startServices(env);
+    }
+    const app = new App(component, {
+        env,
+        getTemplate,
+        dev: env.debug || session.test_mode,
+        warnIfNoStaticProps: !session.test_mode,
+        name: component.constructor.name,
+        translatableAttributes: ["data-tooltip"],
+        translateFn: appTranslateFn,
+        customDirectives,
+        globalValues,
+        ...appConfig,
+    });
+    const root = await app.mount(target);
+    if (isRoot) {
+        odoo.__WOWL_DEBUG__ = { root };
+    }
+    return app;
 }

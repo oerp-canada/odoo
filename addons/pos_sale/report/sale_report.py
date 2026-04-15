@@ -10,13 +10,14 @@ class SaleReport(models.Model):
     @api.model
     def _get_done_states(self):
         done_states = super()._get_done_states()
-        done_states.extend(['paid', 'invoiced'])
+        done_states.extend(['paid', 'invoiced', 'done'])
         return done_states
 
     state = fields.Selection(
         selection_add=[
             ('paid', 'Paid'),
-            ('invoiced', 'Invoiced')
+            ('invoiced', 'Invoiced'),
+            ('done', 'Posted')
         ],
     )
 
@@ -26,28 +27,37 @@ class SaleReport(models.Model):
         select_ = f"""
             -MIN(l.id) AS id,
             l.product_id AS product_id,
-            t.uom_id AS product_uom,
+            NULL AS line_invoice_status,
+            t.uom_id AS product_uom_id,
             SUM(l.qty) AS product_uom_qty,
-            SUM(l.qty) AS qty_delivered,
-            0 AS qty_to_deliver,
-            CASE WHEN pos.state = 'invoiced' THEN SUM(l.qty) ELSE 0 END AS qty_invoiced,
-            CASE WHEN pos.state != 'invoiced' THEN SUM(l.qty) ELSE 0 END AS qty_to_invoice,
-            SUM(l.price_subtotal_incl)
+            SUM(l.qty_delivered) AS qty_delivered,
+            SUM(l.qty - l.qty_delivered) AS qty_to_deliver,
+            CASE WHEN pos.account_move IS NOT NULL THEN SUM(l.qty) ELSE 0 END AS qty_invoiced,
+            CASE WHEN pos.account_move IS NULL THEN SUM(l.qty) ELSE 0 END AS qty_to_invoice,
+            AVG(l.price_unit)
                 / MIN({self._case_value_or_one('pos.currency_rate')})
-                * {self._case_value_or_one('currency_table.rate')}
+                * {self._case_value_or_one('account_currency_table.rate')}
+            AS price_unit,
+            SUM(SIGN(l.qty) * SIGN(l.price_unit) * ABS(l.price_subtotal_incl))
+                / MIN({self._case_value_or_one('pos.currency_rate')})
+                * {self._case_value_or_one('account_currency_table.rate')}
             AS price_total,
-            SUM(l.price_subtotal)
+            SUM(SIGN(l.qty) * SIGN(l.price_unit) * ABS(l.price_subtotal))
                 / MIN({self._case_value_or_one('pos.currency_rate')})
-                * {self._case_value_or_one('currency_table.rate')}
+                * {self._case_value_or_one('account_currency_table.rate')}
             AS price_subtotal,
-            (CASE WHEN pos.state != 'invoiced' THEN SUM(l.price_subtotal) ELSE 0 END)
+            (CASE WHEN pos.account_move IS NULL THEN SUM(l.price_subtotal) ELSE 0 END)
                 / MIN({self._case_value_or_one('pos.currency_rate')})
-                * {self._case_value_or_one('currency_table.rate')}
+                * {self._case_value_or_one('account_currency_table.rate')}
             AS amount_to_invoice,
-            (CASE WHEN pos.state = 'invoiced' THEN SUM(l.price_subtotal) ELSE 0 END)
+            (CASE WHEN pos.account_move IS NOT NULL THEN SUM(l.price_subtotal) ELSE 0 END)
                 / MIN({self._case_value_or_one('pos.currency_rate')})
-                * {self._case_value_or_one('currency_table.rate')}
+                * {self._case_value_or_one('account_currency_table.rate')}
             AS amount_invoiced,
+            (CASE WHEN pos.account_move IS NOT NULL THEN SUM(l.price_unit * l.qty_delivered) ELSE 0 END)
+                / MIN({self._case_value_or_one('pos.currency_rate')})
+                * {self._case_value_or_one('account_currency_table.rate')}
+            AS untaxed_delivered_amount,
             count(*) AS nbr,
             pos.name AS name,
             pos.date_order AS date,
@@ -59,9 +69,9 @@ class SaleReport(models.Model):
             NULL AS campaign_id,
             NULL AS medium_id,
             NULL AS source_id,
+            NULL AS utm_reference,
             t.categ_id AS categ_id,
             pos.pricelist_id AS pricelist_id,
-            NULL AS analytic_account_id,
             pos.crm_team_id AS team_id,
             p.product_tmpl_id,
             partner.commercial_partner_id AS commercial_partner_id,
@@ -69,13 +79,14 @@ class SaleReport(models.Model):
             partner.industry_id AS industry_id,
             partner.state_id AS state_id,
             partner.zip AS partner_zip,
-            (SUM(p.weight) * l.qty / u.factor) AS weight,
-            (SUM(p.volume) * l.qty / u.factor) AS volume,
+            (SUM(p.weight) * l.qty) AS weight,
+            (SUM(p.volume) * l.qty) AS volume,
             l.discount AS discount,
             SUM((l.price_unit * l.discount * l.qty / 100.0
                 / {self._case_value_or_one('pos.currency_rate')}
-                * {self._case_value_or_one('currency_table.rate')}))
+                * {self._case_value_or_one('account_currency_table.rate')}))
             AS discount_amount,
+            {self.env.company.currency_id.id} AS currency_id,
             concat('pos.order', ',', pos.id) AS order_reference"""
 
         additional_fields = self._select_additional_fields()
@@ -86,15 +97,26 @@ class SaleReport(models.Model):
             select_ += template % (value, fname)
         return select_
 
+    def _available_additional_pos_fields(self):
+        """Hook to replace the additional fields from sale with the one from pos_sale."""
+        return {
+            'warehouse_id': 'picking.warehouse_id',
+        }
+
     def _fill_pos_fields(self, additional_fields):
         """Hook to fill additional fields for the pos_sale.
 
-        :param values: dictionary of values to fill
-        :type values: dict
+        :param additional_fields: Dictionary mapping fields with their values
+        :type additional_fields: dict[str, Any]
         """
-        return {x: 'NULL' for x in additional_fields}
+        filled_fields = {x: 'NULL' for x in additional_fields}
+        for fname, value in self._available_additional_pos_fields().items():
+            if fname in additional_fields:
+                filled_fields[fname] = value
+        return filled_fields
 
     def _from_pos(self):
+        currency_table = self.env['res.currency']._get_simple_currency_table(self.env.companies)
         return """
             pos_order_line l
             JOIN pos_order pos ON l.order_id = pos.id
@@ -104,13 +126,10 @@ class SaleReport(models.Model):
             LEFT JOIN uom_uom u ON u.id=t.uom_id
             LEFT JOIN pos_session session ON session.id = pos.session_id
             LEFT JOIN pos_config config ON config.id = session.config_id
-            JOIN {currency_table} ON currency_table.company_id = pos.company_id
+            LEFT JOIN stock_picking_type picking ON picking.id = config.picking_type_id
+            JOIN {currency_table} ON account_currency_table.company_id = pos.company_id
             """.format(
-            currency_table=self.env['res.currency']._get_query_currency_table(
-                {
-                    'multi_company': True,
-                    'date': {'date_to': fields.Date.today()}
-                }),
+            currency_table=self.env.cr.mogrify(currency_table).decode(self.env.cr.connection.encoding),
             )
 
     def _where_pos(self):
@@ -142,7 +161,8 @@ class SaleReport(models.Model):
             partner.zip,
             u.factor,
             pos.crm_team_id,
-            currency_table.rate"""
+            account_currency_table.rate,
+            picking.warehouse_id"""
 
     def _query(self):
         res = super()._query()

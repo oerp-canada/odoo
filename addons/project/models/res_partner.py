@@ -1,18 +1,30 @@
 # -*- coding: utf-8 -*-
 # Part of Odoo. See LICENSE file for full copyright and licensing details.
 
-from odoo import fields, models
+from odoo import api, fields, models, _
+from odoo.exceptions import UserError
 from odoo.tools import email_normalize
 
 
 class ResPartner(models.Model):
     """ Inherits partner and adds Tasks information in the partner form """
     _inherit = 'res.partner'
-    _check_company_auto = True
 
-    project_ids = fields.One2many('project.project', 'partner_id', string='Projects', check_company=True)
-    task_ids = fields.One2many('project.task', 'partner_id', string='Tasks')
-    task_count = fields.Integer(compute='_compute_task_count', string='# Tasks')
+    project_ids = fields.One2many('project.project', 'partner_id', string='Projects', export_string_translation=False)
+    task_ids = fields.One2many('project.task', 'partner_id', string='Tasks', export_string_translation=False)
+    task_count = fields.Integer(compute='_compute_task_count', string='# Tasks', export_string_translation=False)
+
+    @api.constrains('company_id', 'project_ids')
+    def _ensure_same_company_than_projects(self):
+        for partner in self:
+            if partner.company_id and partner.project_ids.company_id and partner.project_ids.company_id != partner.company_id:
+                raise UserError(_("Partner company cannot be different from its assigned projects' company"))
+
+    @api.constrains('company_id', 'task_ids')
+    def _ensure_same_company_than_tasks(self):
+        for partner in self:
+            if partner.company_id and partner.task_ids.company_id and partner.task_ids.company_id != partner.company_id:
+                raise UserError(_("Partner company cannot be different from its assigned tasks' company"))
 
     def _compute_task_count(self):
         # retrieve all children partners and prefetch 'parent_id' on them
@@ -49,3 +61,22 @@ class ResPartner(models.Model):
                 'active': True,
             })
         return created_users
+
+    def action_view_tasks(self):
+        self.ensure_one()
+        action = {
+            **self.env["ir.actions.actions"]._for_xml_id("project.project_task_action_from_partner"),
+            'display_name': _("%(partner_name)s's Tasks", partner_name=self.name),
+            'context': {
+                'default_partner_id': self.id,
+            },
+        }
+        all_child = self.with_context(active_test=False).search([('id', 'child_of', self.ids)])
+        search_domain = [('partner_id', 'in', (self | all_child).ids)]
+        if self.task_count <= 1:
+            task_id = self.env['project.task'].search(search_domain, limit=1)
+            action['res_id'] = task_id.id
+            action['views'] = [(view_id, view_type) for view_id, view_type in action['views'] if view_type == "form"]
+        else:
+            action['domain'] = search_domain
+        return action

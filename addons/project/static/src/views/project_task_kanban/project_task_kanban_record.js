@@ -1,11 +1,15 @@
-/* @odoo-module */
-
-import { KanbanRecord } from "@web/views/kanban/kanban_record";
-import { useState } from "@odoo/owl";
+import { useState } from "@web/owl2/utils";
 import { ProjectTaskKanbanCompiler } from "./project_task_kanban_compiler";
+import { RottingKanbanRecord } from "@mail/js/rotting_mixin/rotting_kanban_record";
 import { SubtaskKanbanList } from "@project/components/subtask_kanban_list/subtask_kanban_list"
 
-export class ProjectTaskKanbanRecord extends KanbanRecord {
+export class ProjectTaskKanbanRecord extends RottingKanbanRecord {
+    static Compiler = ProjectTaskKanbanCompiler;
+    static components = {
+        ...RottingKanbanRecord.components,
+        SubtaskKanbanList,
+    };
+
     setup() {
         super.setup();
         this.state = useState({folded: true});
@@ -20,9 +24,3 @@ export class ProjectTaskKanbanRecord extends KanbanRecord {
         return context;
     }
 }
-
-ProjectTaskKanbanRecord.Compiler = ProjectTaskKanbanCompiler;
-ProjectTaskKanbanRecord.components = {
-    ...KanbanRecord.components,
-    SubtaskKanbanList,
-};

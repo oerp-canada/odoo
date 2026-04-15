@@ -1,7 +1,5 @@
-/** @odoo-module **/
-
 import { registry } from "@web/core/registry";
-import { _lt } from "@web/core/l10n/translation";
+import { _t } from "@web/core/l10n/translation";
 import { formatPercentage } from "../formatters";
 import { parsePercentage } from "../parsers";
 import { useInputField } from "../input_field_hook";
@@ -15,15 +13,16 @@ export class PercentageField extends Component {
     static props = {
         ...standardFieldProps,
         digits: { type: Array, optional: true },
-        placeholder: { type: String, optional: true },
+        noSymbol: { type: Boolean, optional: true },
     };
 
     setup() {
         useInputField({
             getValue: () =>
                 formatPercentage(this.props.record.data[this.props.name], {
-                    digits: this.digits,
+                    digits: this.props.digits,
                     noSymbol: true,
+                    field: this.props.record.fields[this.props.name],
                 }),
             refName: "numpadDecimal",
             parse: (v) => parsePercentage(v),
@@ -31,20 +30,18 @@ export class PercentageField extends Component {
         useNumpadDecimal();
     }
 
-    get digits() {
-        const fieldDigits = this.props.record.fields[this.props.name].digits;
-        return !this.props.digits && Array.isArray(fieldDigits) ? fieldDigits : this.props.digits;
-    }
     get formattedValue() {
         return formatPercentage(this.props.record.data[this.props.name], {
-            digits: this.digits,
+            digits: this.props.digits,
+            noSymbol: this.props.noSymbol,
+            field: this.props.record.fields[this.props.name],
         });
     }
 }
 
 export const percentageField = {
     component: PercentageField,
-    displayName: _lt("Percentage"),
+    displayName: _t("Percentage"),
     supportedTypes: ["integer", "float"],
     extractProps: ({ attrs, options }) => {
         // Sadly, digits param was available as an option and an attr.
@@ -56,9 +53,11 @@ export const percentageField = {
             digits = options.digits;
         }
 
+        const noSymbol = options.no_symbol || false;
+
         return {
             digits,
-            placeholder: attrs.placeholder,
+            noSymbol,
         };
     },
 };

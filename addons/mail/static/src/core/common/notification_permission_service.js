@@ -1,10 +1,22 @@
-/* @odoo-module */
-
-import { reactive } from "@odoo/owl";
+import { reactive } from "@web/owl2/utils";
 
 import { browser } from "@web/core/browser/browser";
+import {
+    isAndroidApp,
+    isDisplayStandalone,
+    isIOS,
+    isIosApp,
+} from "@web/core/browser/feature_detection";
 import { _t } from "@web/core/l10n/translation";
 import { registry } from "@web/core/registry";
+
+async function getIosPwaPermission() {
+    if (browser.location.protocol !== "https:") {
+        return "denied";
+    }
+    const registration = await browser.navigator.serviceWorker?.getRegistration();
+    return (await registration?.pushManager.permissionState()) ?? "prompt";
+}
 
 export const notificationPermissionService = {
     dependencies: ["notification"],
@@ -20,20 +32,34 @@ export const notificationPermissionService = {
         }
     },
 
-    async start(env, { notification }) {
+    /**
+     * @param {import("@web/env").OdooEnv} env
+     * @param {import("services").ServiceFactories} services
+     */
+    async start(env, services) {
+        const notification = services.notification;
         let permission;
         try {
-            permission = await browser.navigator?.permissions?.query({
-                name: "notifications",
-            });
+            if (isIOS() && isDisplayStandalone()) {
+                permission = { state: await getIosPwaPermission() };
+            } else if (isIOS()) {
+                permission = { state: "denied" };
+            } else {
+                permission = await browser.navigator?.permissions?.query({
+                    name: "notifications",
+                });
+            }
         } catch {
             // noop
         }
         const state = reactive({
             /** @type {"prompt" | "granted" | "denied"} */
-            permission: this._normalizePermission(
-                permission?.state ?? browser.Notification?.permission
-            ),
+            permission:
+                isIosApp() || isAndroidApp()
+                    ? "denied"
+                    : this._normalizePermission(
+                          permission?.state ?? browser.Notification?.permission
+                      ),
             requestPermission: async () => {
                 if (browser.Notification && state.permission === "prompt") {
                     state.permission = this._normalizePermission(
@@ -53,7 +79,7 @@ export const notificationPermissionService = {
                 }
             },
         });
-        if (permission) {
+        if (permission && !isIOS()) {
             permission.addEventListener("change", () => (state.permission = permission.state));
         }
         return state;

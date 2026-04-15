@@ -1,11 +1,10 @@
 import importlib
 import importlib.util
 import inspect
-import itertools
+import logging
 import sys
-import threading
-import unittest
 from pathlib import Path
+from unittest import case
 
 from .. import tools
 from .tag_selector import TagsSelector
@@ -13,14 +12,43 @@ from .suite import OdooSuite
 from .result import OdooTestResult
 
 
+_logger = logging.getLogger(__name__)
+
+
+def get_module_test_cases(module):
+    """Return a suite of all test cases contained in the given module"""
+    for obj in module.__dict__.values():
+        if not isinstance(obj, type):
+            continue
+        if not issubclass(obj, case.TestCase):
+            continue
+        if obj.__module__ != module.__name__:
+            continue
+
+        test_case_class = obj
+        test_cases = test_case_class.__dict__.items()
+        if getattr(test_case_class, 'allow_inherited_tests_method', False):
+            # keep iherited method for specific classes.
+            # This is likely to be removed once a better solution is found
+            test_cases = inspect.getmembers(test_case_class, callable)
+        else:
+            # sort test case to keep the initial behaviour.
+            # This is likely to be removed in the future
+            test_cases = sorted(test_cases, key=lambda pair: pair[0])
+
+        for method_name, method in test_cases:
+            if not callable(method):
+                continue
+            if not method_name.startswith('test'):
+                continue
+            yield test_case_class(method_name)
+
+
 def get_test_modules(module):
     """ Return a list of module for the addons potentially containing tests to
-    feed unittest.TestLoader.loadTestsFromModule() """
+    feed get_module_test_cases() """
     results = _get_tests_modules(importlib.util.find_spec(f'odoo.addons.{module}'))
-
-    upgrade_spec = importlib.util.find_spec(f'odoo.upgrade.{module}')
-    if upgrade_spec:
-        results += list(_get_upgrade_test_modules(module))
+    results += list(_get_upgrade_test_modules(module))
 
     return results
 
@@ -39,16 +67,25 @@ def _get_tests_modules(mod):
 
 
 def _get_upgrade_test_modules(module):
-    upg = importlib.import_module("odoo.upgrade")
-    for path in map(Path, upg.__path__):
-        for test in (path / module / "tests").glob("test_*.py"):
-            spec = importlib.util.spec_from_file_location(f"odoo.upgrade.{module}.tests.{test.stem}", test)
-            if not spec:
-                continue
-            pymod = importlib.util.module_from_spec(spec)
-            sys.modules[spec.name] = pymod
-            spec.loader.exec_module(pymod)
-            yield pymod
+    upgrade_modules = (
+        f"odoo.upgrade.{module}",
+        f"odoo.addons.{module}.migrations",
+        f"odoo.addons.{module}.upgrades",
+    )
+    for module_name in upgrade_modules:
+        if not importlib.util.find_spec(module_name):
+            continue
+
+        upg = importlib.import_module(module_name)
+        for path in map(Path, upg.__path__):
+            for test in path.glob("tests/test_*.py"):
+                spec = importlib.util.spec_from_file_location(f"{upg.__name__}.tests.{test.stem}", test)
+                if not spec:
+                    continue
+                pymod = importlib.util.module_from_spec(spec)
+                sys.modules[spec.name] = pymod
+                spec.loader.exec_module(pymod)
+                yield pymod
 
 
 def make_suite(module_names, position='at_install'):
@@ -58,53 +95,20 @@ def make_suite(module_names, position='at_install'):
     :param list[str] module_names: modules to load tests from
     :param str position: "at_install" or "post_install"
     """
-    config_tags = TagsSelector(tools.config['test_tags'])
-    position_tag = TagsSelector(position)
+    available_modules = module_names if position == 'post_install' else None
+    config_tags = TagsSelector(tools.config['test_tags'], available_modules)
+    position_tag = TagsSelector(position, available_modules)
     tests = (
         t
         for module_name in module_names
         for m in get_test_modules(module_name)
-        for t in unwrap_suite(unittest.TestLoader().loadTestsFromModule(m))
+        for t in get_module_test_cases(m)
         if position_tag.check(t) and config_tags.check(t)
     )
-    return OdooSuite(sorted(tests, key=lambda t: t.test_sequence))
+    return OdooSuite(sorted(tests, key=lambda t: getattr(t, 'test_sequence', 0)))
 
 
-def run_suite(suite, module_name=None):
-    # avoid dependency hell
-    from ..modules import module
-    module.current_test = module_name
-    threading.current_thread().testing = True
-
-    results = OdooTestResult()
+def run_suite(suite, global_report=None):
+    results = OdooTestResult(global_report=global_report)
     suite(results)
-
-    threading.current_thread().testing = False
-    module.current_test = None
     return results
-
-
-def unwrap_suite(test):
-    """
-    Attempts to unpack testsuites (holding suites or cases) in order to
-    generate a single stream of terminals (either test cases or customized
-    test suites). These can then be checked for run/skip attributes
-    individually.
-
-    An alternative would be to use a variant of @unittest.skipIf with a state
-    flag of some sort e.g. @unittest.skipIf(common.runstate != 'at_install'),
-    but then things become weird with post_install as tests should *not* run
-    by default there
-    """
-    if isinstance(test, unittest.TestCase):
-        yield test
-        return
-
-    subtests = list(test)
-    ## custom test suite (no test cases)
-    #if not len(subtests):
-    #    yield test
-    #    return
-
-    for item in itertools.chain.from_iterable(unwrap_suite(t) for t in subtests):
-        yield item

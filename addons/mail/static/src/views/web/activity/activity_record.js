@@ -1,16 +1,12 @@
-/* @odoo-module */
-
 import { ActivityCompiler } from "@mail/views/web/activity/activity_compiler";
 
 import { Component } from "@odoo/owl";
 
-import { useService } from "@web/core/utils/hooks";
+import { evaluateBooleanExpr } from "@web/core/py_js/py";
+import { user } from "@web/core/user";
+import { isHtmlEmpty } from "@web/core/utils/html";
 import { Field } from "@web/views/fields/field";
-import {
-    getFormattedRecord,
-    getImageSrcFromRecordInfo,
-    isHtmlEmpty,
-} from "@web/views/kanban/kanban_record";
+import { getFormattedRecord, getImageSrcFromRecordInfo } from "@web/views/kanban/kanban_record";
 import { useViewCompiler } from "@web/views/view_compiler";
 
 export class ActivityRecord extends Component {
@@ -25,14 +21,15 @@ export class ActivityRecord extends Component {
     static template = "mail.ActivityRecord";
 
     setup() {
-        this.user = useService("user");
+        this.evaluateBooleanExpr = evaluateBooleanExpr;
         this.widget = {
             deletable: false,
             editable: false,
             isHtmlEmpty,
         };
-        const { arch, templateDocs } = this.props.archInfo;
-        this.recordTemplate = useViewCompiler(ActivityCompiler, arch, templateDocs)["activity-box"];
+        const { templateDocs } = this.props.archInfo;
+        const templates = useViewCompiler(ActivityCompiler, templateDocs);
+        this.recordTemplate = templates["activity-box"];
     }
 
     getRenderingContext() {
@@ -40,7 +37,7 @@ export class ActivityRecord extends Component {
         return {
             record: getFormattedRecord(record),
             activity_image: (...args) => getImageSrcFromRecordInfo(record, ...args),
-            user_context: this.user.context,
+            user_context: user.context,
             widget: this.widget,
             luxon,
             __comp__: Object.assign(Object.create(this), { this: this }),

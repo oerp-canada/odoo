@@ -1,12 +1,10 @@
-/** @odoo-module */
-
+import { useState } from "@web/owl2/utils";
 import { registry } from "@web/core/registry";
 import { _t } from "@web/core/l10n/translation";
 import { unique } from "@web/core/utils/arrays";
 import { useService } from "@web/core/utils/hooks";
-import { sprintf } from "@web/core/utils/strings";
 
-import { Component, useState, onWillStart } from "@odoo/owl";
+import { Component, onWillStart } from "@odoo/owl";
 import { standardWidgetProps } from "@web/views/widgets/standard_widget_props";
 
 class ResConfigInviteUsers extends Component {
@@ -20,7 +18,6 @@ class ResConfigInviteUsers extends Component {
         this.invite = useService("user_invite");
         this.action = useService("action");
         this.notification = useService("notification");
-        this.user = useService("user");
 
         this.state = useState({
             status: "idle", // idle, inviting
@@ -64,22 +61,18 @@ class ResConfigInviteUsers extends Component {
         }
         if (invalidEmails.length) {
             const errorMessage = (() => {
-                const listFormatter = new Intl.ListFormat(this.user.lang.replace("_", "-"), {
-                    type: "conjunction",
-                    style: "long",
-                });
                 switch (invalidEmails.length) {
                     case 1:
-                        return sprintf(_t("Invalid email address: %(address)s"), {
+                        return _t("Invalid email address: %(address)s", {
                             address: invalidEmails[0],
                         });
                     case 2:
-                        return sprintf(_t("Invalid email addresses: %(2 addresses)s"), {
-                            "2 addresses": listFormatter.format(invalidEmails),
+                        return _t("Invalid email addresses: %(two_addresses)s", {
+                            two_addresses: invalidEmails,
                         });
                     default:
-                        return sprintf(_t("Invalid email addresses: %(addresses)s"), {
-                            addresses: listFormatter.format(invalidEmails),
+                        return _t("Invalid email addresses: %(addresses)s", {
+                            addresses: invalidEmails,
                         });
                 }
             })();

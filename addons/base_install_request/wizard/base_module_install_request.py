@@ -3,10 +3,11 @@
 
 from odoo import api, fields, models, _
 from odoo.exceptions import UserError
+from odoo.tools.mail import is_html_empty
 
 
 class BaseModuleInstallRequest(models.TransientModel):
-    _name = "base.module.install.request"
+    _name = 'base.module.install.request'
     _description = "Module Activation Request"
     _rec_name = "module_id"
 
@@ -18,34 +19,57 @@ class BaseModuleInstallRequest(models.TransientModel):
     user_id = fields.Many2one('res.users', default=lambda self: self.env.user, required=True)
     user_ids = fields.Many2many('res.users', string="Send to:", compute='_compute_user_ids')
     body_html = fields.Html('Body')
+    qweb_template_xmlid = fields.Char('Template Id', required=True, default='base_install_request.mail_installation_request_template')
 
     @api.depends('module_id')
     def _compute_user_ids(self):
-        users = self.env.ref('base.group_system').users
+        users = self.env.ref('base.group_system').all_user_ids
         self.user_ids = [(6, 0, users.ids)]
 
     def action_send_request(self):
-        mail_template = self.env.ref('base_install_request.mail_template_base_install_request')
         menu_id = self.env.ref('base.menu_apps').id
         for user in self.user_ids:
-            render_ctx = dict(self.env.context, partner=user.partner_id, menu_id=menu_id)
-            mail_template.with_context(render_ctx).send_mail(
-                self.id,
-                force_send=True,
-                email_layout_xmlid='mail.mail_notification_light')
+            mail_content_html = self.env['ir.qweb']._render(self.qweb_template_xmlid,
+                {
+                    'body_html': self.body_html,
+                    'menu_id': menu_id,
+                    'module_id': self.module_id,
+                    'partner': user.partner_id,
+                    'request': self,
+                    'show_body': not is_html_empty(self.body_html),
+                }
+            )
+            mail_body_html = self.env['mail.render.mixin']._render_encapsulate(
+                'mail.mail_notification_light',
+                mail_content_html,
+                add_context={
+                    'model_description': _('Module Activation Request for "%(module_desc)s"', module_desc=self.module_id.shortdesc),
+                })
+
+            mail_values = {
+                'auto_delete': True,
+                'body_html': mail_body_html,
+                'email_from': self.user_id.email_formatted or self.env.user.email_formatted,
+                'recipient_ids': [(4, user.partner_id.id)],
+                'subject': _('Module Activation Request for "%(module_desc)s"', module_desc=self.module_id.shortdesc),
+            }
+
+            mail = self.env['mail.mail'].sudo().create(mail_values)
+            mail.send()
+
         return {
             'type': 'ir.actions.client',
             'tag': 'display_notification',
             'params': {
                 'type': 'success',
-                'message': _('Your request has been successfully sent'),
+                'message': _('Request sent'),
                 'next': {'type': 'ir.actions.act_window_close'},
             }
         }
 
 
 class BaseModuleInstallReview(models.TransientModel):
-    _name = "base.module.install.review"
+    _name = 'base.module.install.review'
     _description = "Module Activation Review"
     _rec_name = "module_id"
 

@@ -1,8 +1,6 @@
-/** @odoo-module **/
-
-import { _lt } from "@web/core/l10n/translation";
+import { _t } from "@web/core/l10n/translation";
 import { registry } from "@web/core/registry";
-import { archParseBoolean } from "@web/views/utils";
+import { exprToBoolean } from "@web/core/utils/strings";
 import { standardFieldProps } from "../standard_field_props";
 
 import { Component } from "@odoo/owl";
@@ -18,22 +16,46 @@ export class BooleanFavoriteField extends Component {
         noLabel: false,
     };
 
+    get iconClass() {
+        return this.props.record.data[this.props.name] ? "fa fa-star" : "fa fa-star-o";
+    }
+
+    get label() {
+        return this.props.record.data[this.props.name]
+            ? _t("Remove from Favorites")
+            : _t("Add to Favorites");
+    }
+
     async update() {
-        await this.props.record.update({ [this.props.name]: !this.props.record.data[this.props.name] });
-        if (this.props.autosave) {
-            await this.props.record.save();
+        if (this.props.readonly) {
+            return;
         }
+        const changes = { [this.props.name]: !this.props.record.data[this.props.name] };
+        await this.props.record.update(changes, { save: this.props.autosave });
     }
 }
 
 export const booleanFavoriteField = {
     component: BooleanFavoriteField,
-    displayName: _lt("Favorite"),
+    displayName: _t("Favorite"),
     supportedTypes: ["boolean"],
     isEmpty: () => false,
-    extractProps: ({ attrs, options }) => ({
-        noLabel: archParseBoolean(attrs.nolabel),
+    listViewWidth: ({ hasLabel }) => (!hasLabel ? 20 : false),
+    supportedOptions: [
+        {
+            label: _t("Autosave"),
+            name: "autosave",
+            type: "boolean",
+            default: true,
+            help: _t(
+                "If checked, the record will be saved immediately when the field is modified."
+            ),
+        },
+    ],
+    extractProps: ({ attrs, options }, dynamicInfo) => ({
+        noLabel: exprToBoolean(attrs.nolabel),
         autosave: "autosave" in options ? Boolean(options.autosave) : true,
+        readonly: dynamicInfo.readonly,
     }),
 };
 

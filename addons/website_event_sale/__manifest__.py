@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Part of Odoo. See LICENSE file for full copyright and licensing details.
 
 {
@@ -15,7 +14,6 @@ Sell event tickets through eCommerce app.
         'views/event_event_views.xml',
         'views/website_event_templates.xml',
         'views/website_sale_templates.xml',
-        'security/website_event_sale_security.xml',
     ],
     'auto_install': True,
     'assets': {
@@ -24,8 +22,8 @@ Sell event tickets through eCommerce app.
         ],
         'web.assets_frontend': [
             'website_event_sale/static/src/scss/*.scss',
-            'website_event_sale/static/src/js/*.js',
         ],
     },
+    'author': 'Odoo S.A.',
     'license': 'LGPL-3',
 }

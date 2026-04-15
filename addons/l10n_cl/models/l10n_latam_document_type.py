@@ -3,8 +3,7 @@
 from odoo import models, fields
 
 
-class L10nLatamDocumentType(models.Model):
-
+class L10n_LatamDocumentType(models.Model):
     _inherit = 'l10n_latam.document.type'
 
     internal_type = fields.Selection(
@@ -36,3 +35,9 @@ class L10nLatamDocumentType(models.Model):
 
     def _is_doc_type_vendor(self):
         return self.code == '46'
+
+    def _is_doc_type_export(self):
+        return self.code in ['110', '111', '112'] and self.country_id.code == 'CL'
+
+    def _is_doc_type_electronic_ticket(self):
+        return self.code in ['39', '41'] and self.country_id.code == 'CL'

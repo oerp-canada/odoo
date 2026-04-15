@@ -1,251 +1,551 @@
-/* @odoo-module */
-
+import { reactive } from "@web/owl2/utils";
+import { fields, Record } from "@mail/model/export";
 import { BlurManager } from "@mail/discuss/call/common/blur_manager";
-import { monitorAudio } from "@mail/discuss/call/common/media_monitoring";
-import { RtcSession } from "@mail/discuss/call/common/rtc_session_model";
-import { removeFromArray } from "@mail/utils/common/arrays";
-import { closeStream, createLocalId, onChange } from "@mail/utils/common/misc";
+import { CallPermissionDialog } from "@mail/discuss/call/common/call_permission_dialog";
+import { CALL_PROMOTE_FULLSCREEN } from "@mail/discuss/call/common/discuss_channel_model_patch";
+import { monitorAudio } from "@mail/utils/common/media_monitoring";
+import { CallPermissionDeniedDialog } from "@mail/discuss/call/common/call_permission_denied_dialog";
+import { rpc } from "@web/core/network/rpc";
+import { assignDefined, closeStream, onChange } from "@mail/utils/common/misc";
 
-import { reactive } from "@odoo/owl";
+import { toRaw } from "@odoo/owl";
 
 import { browser } from "@web/core/browser/browser";
 import { _t } from "@web/core/l10n/translation";
 import { registry } from "@web/core/registry";
-import { sprintf } from "@web/core/utils/strings";
+import { pick } from "@web/core/utils/objects";
 import { debounce } from "@web/core/utils/timing";
+import { loadBundle, loadJS } from "@web/core/assets";
+import { memoize } from "@web/core/utils/functions";
+import { url } from "@web/core/utils/urls";
+import { isBrowserSafari, isMobileOS } from "@web/core/browser/feature_detection";
+import { CallAction } from "@mail/discuss/call/common/call_actions";
 
-const ORDERED_TRANSCEIVER_NAMES = ["audio", "video"];
-const PEER_NOTIFICATION_WAIT_DELAY = 50;
-const RECOVERY_TIMEOUT = 15_000;
-const RECOVERY_DELAY = 3_000;
-const VIDEO_CONFIG = {
+let sequence = 1;
+const getSequence = () => sequence++;
+
+/**
+ * @typedef {'camera' | 'screen' } VideoType
+ */
+
+/**
+ * @typedef {'audio' | VideoType } StreamType
+ */
+
+/**
+ * @typedef {object} DownloadStates
+ * @property {boolean} [audio]
+ * @property {boolean} [camera]
+ * @property {boolean} [screen]
+ */
+
+/**
+ * @typedef {object} CrossTabActions
+ * @property {boolean} [is_muted]
+ * @property {boolean} [is_deaf]
+ * @property {boolean} [raisingHand]
+ * @property {boolean} [pip]
+ */
+
+/**
+ * @typedef {Object<string, (import("@mail/discuss/call/common/rtc_session_model").ServerSessionInfo|import("@mail/discuss/call/common/rtc_session_model").SessionInfo)>} SessionInfoMap
+ */
+
+/**
+ * @return {Promise<{ SfuClient: import("@mail/../lib/odoo_sfu/odoo_sfu").SfuClient, SFU_CLIENT_STATE: import("@mail/../lib/odoo_sfu/odoo_sfu").SFU_CLIENT_STATE }>}
+ */
+const loadSfuAssets = memoize(async () => await loadBundle("mail.assets_odoo_sfu"));
+
+/**
+ *
+ * @param {EventTarget} target
+ * @param {string} event
+ * @param {Function} f event listener callback
+ * @return {Function} unsubscribe function
+ */
+function subscribe(target, event, f) {
+    target.addEventListener(event, f);
+    return () => target.removeEventListener(event, f);
+}
+
+export const PTT_RELEASE_DURATION = 200;
+const SW_MESSAGE_TYPE = {
+    POST_RTC_LOGS: "POST_RTC_LOGS",
+};
+
+export const CONNECTION_TYPES = {
+    /** @type {"p2p"} */
+    P2P: "p2p",
+    /** @type {"server"} */
+    SERVER: "server",
+};
+const SCREEN_CONFIG = {
+    width: { max: 1920 },
+    height: { max: 1080 },
     aspectRatio: 16 / 9,
     frameRate: {
-        max: 30,
+        max: 24,
     },
 };
-const INVALID_ICE_CONNECTION_STATES = new Set(["disconnected", "failed", "closed"]);
+
 const IS_CLIENT_RTC_COMPATIBLE = Boolean(window.RTCPeerConnection && window.MediaStream);
-const DEFAULT_ICE_SERVERS = [
-    { urls: ["stun:stun1.l.google.com:19302", "stun:stun2.l.google.com:19302"] },
-];
-
-let tmpId = 0;
-
-/**
- * Returns a string representation of a data channel for logging and
- * debugging purposes.
- *
- * @param {RTCDataChannel} dataChannel
- * @returns string
- */
-function serializeRTCDataChannel(data) {
-    const toLog = [
-        "binaryType",
-        "bufferedAmount",
-        "bufferedAmountLowThreshold",
-        "id",
-        "label",
-        "maxPacketLifeTime",
-        "maxRetransmits",
-        "negotiated",
-        "ordered",
-        "protocol",
-        "readyState",
-    ];
-    return JSON.stringify(Object.fromEntries(toLog.map((p) => [p, data[p]])));
+function GET_DEFAULT_ICE_SERVERS() {
+    return [{ urls: ["stun:stun1.l.google.com:19302", "stun:stun2.l.google.com:19302"] }];
 }
-
-/**
- * @param {RTCPeerConnection} peerConnection
- * @param {String} trackKind
- * @returns {RTCRtpTransceiver} the transceiver used for this trackKind.
- */
-function getTransceiver(peerConnection, trackKind) {
-    const transceivers = peerConnection.getTransceivers();
-    return transceivers[ORDERED_TRANSCEIVER_NAMES.indexOf(trackKind)];
-}
+export const CROSS_TAB_HOST_MESSAGE = {
+    PING: "PING", // signals that the host is still active
+    UPDATE_REMOTE: "UPDATE_REMOTE", // sent with updated state of the remote rtc sessions of the call
+    CLOSE: "CLOSE", // sent when the host ends the call
+    PIP_CHANGE: "PIP_CHANGE", // sent when the host changes the pip mode
+};
+export const CROSS_TAB_CLIENT_MESSAGE = {
+    INIT: "INIT", // sent by a tab to signal its presence and receive a state update
+    REQUEST_ACTION: "REQUEST_ACTION", // request that an action be executed by the host (mute, deaf,...)
+    LEAVE: "LEAVE", // request the host to leave the call
+    UPDATE_VOLUME: "UPDATE_VOLUME", // sent by a tab to signal a volume change
+};
+const PING_INTERVAL = 30_000;
+const UNAVAILABLE_AS_REMOTE = _t("This action can only be done in the call tab.");
+const CALL_FULLSCREEN_ID = Symbol("CALL_FULLSCREEN");
 
 /**
  * @param {Array<RTCIceServer>} iceServers
  * @returns {Boolean}
  */
 function hasTurn(iceServers) {
-    return iceServers.some((server) => {
-        let hasTurn = false;
-        if (server.url) {
-            hasTurn = server.url.startsWith("turn:");
-        }
-        if (server.urls) {
-            if (Array.isArray(server.urls)) {
-                hasTurn = server.urls.some((url) => url.startsWith("turn:")) || hasTurn;
-            } else {
-                hasTurn = server.urls.startsWith("turn:") || hasTurn;
-            }
-        }
-        return hasTurn;
-    });
+    return iceServers.some(
+        (server) =>
+            server.url?.startsWith("turn:") ||
+            server.urls?.startsWith?.("turn:") ||
+            server.urls?.some?.((url) => url.startsWith("turn:"))
+    );
 }
 
-export class Rtc {
-    notifications = reactive(new Map());
-    timeouts = new Map();
+/**
+ * Allows to use both peer to peer and SFU connections simultaneously, which makes it possible to
+ * establish a connection with other call participants with the SFU when possible, and still handle
+ * peer-to-peer for the participants who did not manage to establish a SFU connection.
+ */
+export class Network {
+    /** @type {import("@mail/discuss/call/common/peer_to_peer").PeerToPeer} */
+    p2p;
+    /** @type {import("@mail/../lib/odoo_sfu/odoo_sfu").SfuClient} */
+    sfu;
+    /** @type {[{ name: string, f: EventListener }]} */
+    _listeners = [];
+    /**
+     * @param {import("@mail/discuss/call/common/peer_to_peer").PeerToPeer} p2p
+     * @param {import("@mail/../lib/odoo_sfu/odoo_sfu").SfuClient} [sfu]
+     */
+    constructor(p2p, sfu) {
+        this.p2p = p2p;
+        this.sfu = sfu;
+    }
 
-    constructor(env, services) {
-        this.env = env;
-        /** @type {import("@mail/core/common/store_service").Store} */
-        this.store = services["mail.store"];
-        this.notification = services.notification;
-        this.rpc = services.rpc;
-        /** @type {import("@mail/core/common/channel_member_service").ChannelMemberService} */
-        this.channelMemberService = services["discuss.channel.member"];
-        /** @type {import("@mail/core/common/sound_effects_service").SoundEffects} */
-        this.soundEffectsService = services["mail.sound_effects"];
-        /** @type {import("@mail/core/common/user_settings_service").UserSettings} */
-        this.userSettingsService = services["mail.user_settings"];
-        /** @type {import("@mail/core/common/thread_service").ThreadService} */
-        this.threadService = services["mail.thread"];
-        /** @type {import("@mail/core/common/persona_service").PersonaService} */
-        this.personaService = services["mail.persona"];
-        this.state = reactive({
-            hasPendingRequest: false,
-            selfSession: undefined,
-            channel: undefined,
-            iceServers: DEFAULT_ICE_SERVERS,
-            logs: new Map(),
-            sendCamera: false,
-            sendScreen: false,
-            updateAndBroadcastDebounce: undefined,
-            isPendingNotify: false,
-            notificationsToSend: new Map(),
-            audioTrack: undefined,
-            videoTrack: undefined,
-            /**
-             * callback to properly end the audio monitoring.
-             * If set it indicates that we are currently monitoring the local
-             * audioTrack for the voice activation feature.
-             */
-            disconnectAudioMonitor: undefined,
-            /**
-             * Object { sessionId: timeoutId<Number> }
-             * Contains the timeoutIds of the reconnection attempts.
-             */
-            recoverTimeouts: new Map(),
-            /**
-             * Set of sessionIds, used to track which calls are outgoing,
-             * which is used when attempting to recover a failed peer connection by
-             * inverting the call direction.
-             */
-            outgoingSessions: new Set(),
-            pttReleaseTimeout: undefined,
-            sourceCameraStream: null,
-        });
-        this.blurManager = undefined;
-        this.ringingThreads = reactive([], () => this.onRingingThreadsChange());
-        void this.ringingThreads.length;
-        this.store.ringingThreads = this.ringingThreads;
-        onChange(this.userSettingsService, "useBlur", () => {
-            if (this.state.sendCamera) {
-                this.toggleVideo("camera", true);
+    /**
+     * @param sessionId
+     * @returns {{ type: StreamType, state: string }[]}
+     */
+    getSfuConsumerStats(sessionId) {
+        const consumers = this.sfu?._consumers.get(sessionId);
+        if (!consumers) {
+            return [];
+        }
+        return Object.entries(consumers).map(([type, consumer]) => {
+            let state = "active";
+            if (!consumer) {
+                state = "no consumer";
+            } else if (consumer.closed) {
+                state = "closed";
+            } else if (consumer.paused) {
+                state = "paused";
+            } else if (!consumer.track) {
+                state = "no track";
+            } else if (!consumer.track.enabled) {
+                state = "track disabled";
+            } else if (consumer.track.muted) {
+                state = "track muted";
             }
+            return { type, state };
         });
-        onChange(this.userSettingsService, "edgeBlurAmount", () => {
-            if (this.blurManager) {
-                this.blurManager.edgeBlur = this.userSettingsService.edgeBlurAmount;
+    }
+
+    /**
+     * add a SFU to the network.
+     * @param {import("@mail/../lib/odoo_sfu/odoo_sfu").SfuClient} sfu
+     */
+    addSfu(sfu) {
+        if (this.sfu) {
+            this.sfu.disconnect();
+        }
+        this.sfu = sfu;
+    }
+    removeSfu() {
+        if (!this.sfu) {
+            return;
+        }
+        for (const { name, f } of this._listeners) {
+            this.sfu.removeEventListener(name, f);
+        }
+        this.sfu.disconnect();
+    }
+    /**
+     * @param {string} name
+     * @param {function} f
+     * @override
+     */
+    addEventListener(name, f) {
+        this._listeners.push({ name, f });
+        this.p2p.addEventListener(name, f);
+        this.sfu?.addEventListener(name, f);
+    }
+    /**
+     * @param {StreamType} type
+     * @param {MediaStreamTrack | null} track track to be sent to the other call participants,
+     * not setting it will remove the track from the server
+     */
+    async updateUpload(type, track) {
+        await Promise.all([
+            this.sfu?.state === "connected" && this.sfu.updateUpload(type, track),
+            this.p2p.updateUpload(type, track),
+        ]);
+    }
+    /**
+     * Stop or resume the consumption of tracks from the other call participants.
+     *
+     * @param {number} sessionId
+     * @param {DownloadStates} states e.g: { audio: true, camera: false }
+     */
+    updateDownload(sessionId, states) {
+        this.p2p.updateDownload(sessionId, states);
+        this.sfu?.updateDownload(sessionId, states);
+    }
+    /**
+     * Updates the server with the info of the session (isTalking, isCameraOn,...) so that it can broadcast it to the
+     * other call participants.
+     *
+     * @param {import("@mail/discuss/call/common/rtc_session_model").SessionInfo} info
+     * @param {Object} [options] see documentation of respective classes
+     */
+    updateInfo(info, options = {}) {
+        this.p2p.updateInfo(info);
+        this.sfu?.updateInfo(info, options);
+    }
+    disconnect() {
+        for (const { name, f } of this._listeners.splice(0)) {
+            this.p2p.removeEventListener(name, f);
+            this.sfu?.removeEventListener(name, f);
+        }
+        this.p2p.disconnect();
+        this.sfu?.disconnect();
+    }
+}
+
+/**
+ * @typedef {Object} SessionSubLogError
+ * @property {string} name
+ * @property {string} message
+ * @property {string} [stack]
+ */
+/**
+ * @typedef {Object} SessionSubLog
+ * @property {string} event
+ * @property {SessionSubLogError} [error]
+ */
+/**
+ * @typedef {Object} SessionLog
+ * @property {string} step
+ * @property {string} state
+ * @property {SessionSubLog[]} logs
+ * @property {boolean} important
+ * @property {string} [cause]
+ * @property {string} [serverInfo]
+ * @property {string} [level]
+ */
+/**
+ * @typedef {Object} RtcLog
+ * @property {Number} channelId
+ * @property {Number} selfSessionId
+ * @property {string} start
+ * @property {string} [end]
+ * @property {boolean} hasTurn
+ * @property {Object<number, SessionLog>} entriesBySessionId
+ */
+
+export class Rtc extends Record {
+    static singleton = true;
+
+    /** @type {typeof CONNECTION_TYPES[keyof typeof CONNECTION_TYPES]} */
+    connectionType;
+    /** @type {ReturnType<debounce>} */
+    updateAndBroadcastDebounce;
+    isSendingCamera = false;
+    isSendingScreen = false;
+    /** @type {MediaStreamTrack} */
+    micAudioTrack;
+    /** @type {MediaStreamTrack} */
+    screenAudioTrack;
+    /** @type {MediaStreamTrack} */
+    audioTrack;
+    /** @type {MediaStreamTrack} */
+    cameraTrack;
+    /** @type {MediaStreamTrack} */
+    screenTrack;
+    /** @type {MediaStream} */
+    sourceCameraStream;
+    /** @type {MediaStream} */
+    sourceScreenStream;
+    hasPendingRequest = false;
+    /**
+     * callback to properly end the audio monitoring.
+     * If set it indicates that we are currently monitoring the local
+     * micAudioTrack for the voice activation feature.
+     *
+     * @type {import("@mail/utils/common/media_monitoring").MonitorAudioReturnType}
+     */
+    disconnectAudioMonitor;
+    /** @type {ReturnType<setTimeout>} */
+    pttReleaseTimeout;
+    /**
+     * Whether the network fell back to p2p mode in a SFU call.
+     */
+    fallbackMode = false;
+    isPipMode = false;
+    isFullscreen = false;
+    /** Whether fullscreen was active before opening PIP. */
+    hadFullscreen = false;
+    /** @type {RtcLog} */
+    logs = {};
+    notifications = reactive(new Map());
+    /** @type {Map<string, number>} timeoutId by notificationId for call notifications */
+    timeouts = new Map();
+    /** @type {Map<number, number>} timeoutId by sessionId for download pausing delay */
+    downloadTimeouts = new Map();
+    /** @type {{urls: string[]}[]} */
+    iceServers = fields.Attr(undefined, {
+        compute() {
+            return this.iceServers ? this.iceServers : GET_DEFAULT_ICE_SERVERS();
+        },
+    });
+    /** @type {"granted" | "denied" | "prompt" | undefined} */
+    microphonePermission;
+    /** @type {"granted" | "denied" | "prompt" | undefined} */
+    cameraPermission;
+    /**
+     * The RtcSession of the current user for the call hosted by this tab, this is only set if
+     * the current tab is the cross-tab host (the tab that is maintaining the connections and streams).
+     *
+     * If you want a reference to the RtcSession of the call, regardless of where it is hosted,
+     * as long as it is on the same browser, use `selfSession`.
+     */
+    localSession = fields.One("discuss.channel.rtc.session");
+    /**
+     * The RtcSession shared between tabs, this is set if any of the tabs of that browser is in a call.
+     *
+     * For most use cases, this is the RtcSession you want to use (to ensure cross-tab consistency),
+     * unless you need to access actual connection data (connection stats, streams,...), which can only
+     * be accessed from the tab that is hosting the call.
+     */
+    selfSession = fields.One("discuss.channel.rtc.session", {
+        compute() {
+            return (
+                this.localSession ||
+                this.store["discuss.channel.rtc.session"].get(this._remotelyHostedSessionId)
+            );
+        },
+        onDelete() {
+            if (this.channel) {
+                this.channel.promoteFullscreen = CALL_PROMOTE_FULLSCREEN.INACTIVE;
             }
-        });
-        onChange(this.userSettingsService, "backgroundBlurAmount", () => {
-            if (this.blurManager) {
-                this.blurManager.backgroundBlur = this.userSettingsService.backgroundBlurAmount;
+        },
+    });
+    /**
+     * The DiscussChannel of the current user for the call hosted by this tab.
+     */
+    localChannel = fields.One("discuss.channel");
+    channel = fields.One("discuss.channel", {
+        compute() {
+            if (this.localChannel) {
+                return this.localChannel;
             }
-        });
-        onChange(this.userSettingsService, "voiceActivationThreshold", async () => {
-            await this.linkVoiceActivation();
-        });
-        onChange(this.userSettingsService, "usePushToTalk", async () => {
-            await this.linkVoiceActivation();
-        });
-        onChange(this.userSettingsService, "audioInputDeviceId", async () => {
-            if (this.state.selfSession) {
-                await this.resetAudioTrack({ force: true });
+            return this._remotelyHostedChannelId;
+        },
+        onUpdate() {
+            if (!this.channel) {
+                return;
             }
-        });
-        this.env.bus.addEventListener("mail.thread/onUpdate", ({ detail: { thread, data } }) => {
-            this.onThreadUpdate(thread, data);
-        });
-        this.env.bus.addEventListener(
-            "RTC-SERVICE:UPDATE_RTC_SESSIONS",
-            ({ detail: { commands = [], record, thread } }) => {
-                if (record) {
-                    const session = this.insertSession(record);
-                    thread.rtcSessions[session.id] = session;
+            this.store["discuss.channel"].getOrFetch(this.channel.id);
+        },
+    });
+    /**
+     * Html element embedding the rtc service. Used to scope the dialog to the correct
+     * document fragment (either the actual document or the active shadow root).
+     * @type {HTMLElement|undefined}
+     */
+    rootEl;
+    serverInfo;
+    /**
+     * @type {Network}
+     */
+    network;
+    /** @type {import("@mail/../lib/odoo_sfu/odoo_sfu").SfuClient} */
+    sfuClient = undefined;
+
+    /** @type {Object<string, boolean>} The keys are action names and the values are booleans indicating whether each action is active */
+    lastActions = {};
+    /** @type {Array<string>} Array of action names representing the stack of currently active actions */
+    actionsStack = [];
+    /** @type {string|undefined} String representing the last call action activated, or undefined if none are */
+    lastSelfCallAction = undefined;
+    /** callbacks to be called when cleaning the state up after a call */
+    cleanups = [];
+    /** @type {number} */
+    sfuTimeout;
+    /** @type {AudioContext} AudioContext used to mix screen and mic audio */
+    audioContext;
+    // cross tab sync
+    _broadcastChannel = new browser.BroadcastChannel("call_sync_state");
+    _remotelyHostedSessionId;
+    _remotelyHostedChannelId;
+    _crossTabTimeoutId;
+    /** @type {number} count of how many times the p2p service attempted a connection recovery */
+    _p2pRecoveryCount = 0;
+
+    /**
+     * Whether this tab serves as a remote for a call hosted on another tab.
+     */
+    get isRemote() {
+        return Boolean(this._remotelyHostedChannelId);
+    }
+    /**
+     * Whether the current tab is the host of the call.
+     */
+    get isHost() {
+        return Boolean(this.localSession);
+    }
+
+    callActions = fields.Attr([], {
+        compute() {
+            const transformedActions = registry
+                .category("discuss.call/actions")
+                .getEntries()
+                .map(([id, definition]) => new CallAction({ owner: this, id, definition }));
+            for (const action of transformedActions) {
+                action.setup();
+            }
+            return transformedActions;
+        },
+        onUpdate() {
+            for (const action of this.callActions) {
+                if (action.isActive === this.lastActions[action.id]) {
+                    continue;
                 }
-                for (const command of commands) {
-                    const sessionsData = command[1];
-                    switch (command[0]) {
-                        case "insert-and-unlink":
-                            for (const rtcSessionData of sessionsData) {
-                                this.deleteSession(rtcSessionData.id);
-                            }
-                            break;
-                        case "insert":
-                            for (const rtcSessionData of sessionsData) {
-                                const session = this.insertSession(rtcSessionData);
-                                thread.rtcSessions[session.id] = session;
-                            }
-                            break;
+                if (!action.isTracked) {
+                    continue;
+                }
+                if (action.isActive) {
+                    if (!this.actionsStack.includes(action.id)) {
+                        this.actionsStack.unshift(action.id);
+                    }
+                } else {
+                    const index = this.actionsStack.indexOf(action.id);
+                    if (index !== -1) {
+                        this.actionsStack.splice(index, 1);
                     }
                 }
             }
-        );
-        this.env.bus.addEventListener("RTC-SERVICE:PLAY_MEDIA", () => {
-            for (const session of Object.values(this.state.channel.rtcSessions)) {
+            this.lastSelfCallAction = this.actionsStack[0];
+            this.lastActions = Object.fromEntries(
+                this.callActions.map((action) => [action.id, action.isActive])
+            );
+        },
+    });
+
+    setup() {
+        this.linkVoiceActivationDebounce = debounce(this.linkVoiceActivation, 500);
+        this.upgradeConnectionDebounce = debounce(this._upgradeConnection, 15000, true);
+        this.blurManager = undefined;
+    }
+
+    start() {
+        const services = this.store.env.services;
+        this.notification = services.notification;
+        this.dialog = services.dialog;
+        this.soundEffectsService = services["mail.sound_effects"];
+        this.pttExtService = services["discuss.ptt_extension"];
+        if (this._broadcastChannel) {
+            this._broadcastChannel.onmessage = this._onBroadcastChannelMessage.bind(this);
+            this._postToTabs({ type: CROSS_TAB_CLIENT_MESSAGE.INIT });
+        }
+        /**
+         * @type {import("@mail/discuss/call/common/peer_to_peer").PeerToPeer}
+         */
+        this.p2pService = services["discuss.p2p"];
+        onChange(this.store.settings, "useBlur", () => {
+            if (this.isSendingCamera) {
+                this.toggleVideo("camera", { force: true });
+            }
+        });
+        onChange(this.store.settings, ["edgeBlurAmount", "backgroundBlurAmount"], () => {
+            if (this.blurManager) {
+                this.blurManager.edgeBlur = this.store.settings.edgeBlurAmount;
+                this.blurManager.backgroundBlur = this.store.settings.backgroundBlurAmount;
+            }
+        });
+        onChange(this.store.settings, ["voiceActivationThreshold", "usePushToTalk"], () => {
+            this.linkVoiceActivationDebounce();
+        });
+        onChange(this.store.settings, "audioInputDeviceId", async () => {
+            if (this.localSession) {
+                await this.resetMicAudioTrack({ force: true });
+            }
+        });
+        onChange(this.store.settings, "audioOutputDeviceId", async () => {
+            if (this.localSession) {
+                await this.setOutputDevice(this.store.settings.audioOutputDeviceId);
+            }
+        });
+        onChange(this.store.settings, "cameraInputDeviceId", async () => {
+            if (this.localSession && this.cameraTrack) {
+                await this.toggleVideo("camera", { force: true, refreshStream: true });
+            }
+        });
+        this.store.env.bus.addEventListener("RTC-SERVICE:PLAY_MEDIA", () => {
+            const channel = this.localChannel;
+            if (!channel) {
+                return;
+            }
+            for (const session of channel.rtc_session_ids) {
                 session.playAudio();
             }
         });
-        browser.addEventListener("keydown", (ev) => {
-            if (
-                !this.state.channel ||
-                this.userSettingsService.isRegisteringKey ||
-                !this.userSettingsService.usePushToTalk ||
-                !this.userSettingsService.isPushToTalkKey(ev)
-            ) {
-                return;
-            }
-            browser.clearTimeout(this.state.pttReleaseTimeout);
-            if (!this.state.selfSession.isTalking && !this.state.selfSession.isMute) {
-                this.soundEffectsService.play("push-to-talk-on", { volume: 0.3 });
-            }
-            this.setTalking(true);
-        });
-        browser.addEventListener("keyup", (ev) => {
-            if (
-                !this.state.channel ||
-                !this.userSettingsService.usePushToTalk ||
-                !this.userSettingsService.isPushToTalkKey(ev, { ignoreModifiers: true }) ||
-                !this.state.selfSession.isTalking
-            ) {
-                return;
-            }
-            if (!this.state.selfSession.isMute) {
-                this.soundEffectsService.play("push-to-talk-off", { volume: 0.3 });
-            }
-            this.state.pttReleaseTimeout = browser.setTimeout(
-                () => this.setTalking(false),
-                this.userSettingsService.voiceActiveDuration || 0
-            );
-        });
+        browser.addEventListener("blur", () => this.onBlur());
+        browser.addEventListener(
+            "keydown",
+            (ev) => {
+                this.onKeyDown(ev);
+            },
+            { capture: true }
+        );
+        browser.addEventListener(
+            "keyup",
+            (ev) => {
+                this.onKeyUp(ev);
+            },
+            { capture: true }
+        );
 
         browser.addEventListener("pagehide", () => {
-            if (this.state.channel) {
+            if (this.localChannel) {
                 const data = JSON.stringify({
-                    params: { channel_id: this.state.channel.id },
+                    params: { channel_id: this.localChannel.id, session_id: this.selfSession.id },
                 });
                 const blob = new Blob([data], { type: "application/json" });
                 // using sendBeacon allows sending a post request even when the
                 // browser prevents async requests from firing when the browser
                 // is closed. Alternatives like synchronous XHR are not reliable.
                 browser.navigator.sendBeacon("/mail/rtc/channel/leave_call", blob);
+                this.sfuClient?.disconnect();
             }
         });
         /**
@@ -253,19 +553,107 @@ export class Rtc {
          * a regular interval to try to recover any connection that failed
          * to start.
          *
-         * This is distinct from this.recover which tries to restores
-         * connection that were established but failed or timed out.
+         * This is distinct from this.recover which tries to restore
+         * connections that were established but failed or timed out.
          */
         browser.setInterval(async () => {
-            if (!this.state.selfSession || !this.state.channel) {
+            if (!this.localSession || !this.localChannel) {
                 return;
             }
+            this._postToTabs({
+                type: CROSS_TAB_HOST_MESSAGE.PING,
+                hostedSessionId: this.localSession.id,
+            });
             await this.ping();
-            if (!this.state.selfSession || !this.state.channel) {
+            if (!this.localSession || !this.localChannel) {
                 return;
             }
             this.call();
-        }, 30_000);
+        }, PING_INTERVAL);
+    }
+
+    get displaySurface() {
+        return this.sourceScreenStream?.getVideoTracks()[0]?.getSettings().displaySurface;
+    }
+
+    isPushToTalkRelease(ev) {
+        if (
+            !this.localChannel ||
+            !this.store.settings.usePushToTalk ||
+            (ev instanceof KeyboardEvent && !this.store.settings.isPushToTalkKey(ev)) ||
+            !this.localSession.isTalking ||
+            this.pttExtService.voiceActivated
+        ) {
+            return false;
+        }
+        return true;
+    }
+
+    onKeyDown(ev) {
+        if (!this.store.settings.isPushToTalkKey(ev)) {
+            return;
+        }
+        this.onPushToTalk();
+    }
+
+    onKeyUp(ev) {
+        if (!this.isPushToTalkRelease(ev)) {
+            return;
+        }
+        this.setPttReleaseTimeout();
+    }
+
+    onBlur() {
+        if (!this.isPushToTalkRelease()) {
+            return;
+        }
+        this.setPttReleaseTimeout();
+    }
+
+    setPttReleaseTimeout(duration = PTT_RELEASE_DURATION) {
+        this.pttReleaseTimeout = browser.setTimeout(() => {
+            this.setTalking(false);
+            if (!this.localSession?.isMute) {
+                this.soundEffectsService.play("ptt-release");
+            }
+        }, Math.max(this.store.settings.voiceActiveDuration || 0, duration));
+    }
+
+    onPushToTalk() {
+        if (
+            !this.localChannel ||
+            this.store.settings.isRegisteringKey ||
+            !this.store.settings.usePushToTalk
+        ) {
+            return;
+        }
+        browser.clearTimeout(this.pttReleaseTimeout);
+        if (!this.localSession.isTalking && !this.localSession.isMute) {
+            this.soundEffectsService.play("ptt-press");
+        }
+        this.setTalking(true);
+    }
+
+    async openPip(options) {
+        if (this.isHost) {
+            this.hadFullscreen = this.isFullscreen;
+            if (this.isFullscreen) {
+                this.exitFullscreen();
+            }
+            await this.pipService.openPip(options);
+            return;
+        }
+        this.notification.add(UNAVAILABLE_AS_REMOTE, {
+            type: "warning",
+        });
+    }
+
+    closePip() {
+        if (this.isHost) {
+            this.pipService.closePip();
+        } else {
+            this._remoteAction({ pip: false });
+        }
     }
 
     /**
@@ -288,40 +676,6 @@ export class Rtc {
         );
     }
 
-    onThreadUpdate(thread, data) {
-        if ("rtc_inviting_session" in data) {
-            this.env.bus.trigger("RTC-SERVICE:UPDATE_RTC_SESSIONS", {
-                thread,
-                record: data.rtc_inviting_session,
-            });
-            thread.invitingRtcSessionId = data.rtc_inviting_session.id;
-            if (!this.store.ringingThreads.includes(thread.localId)) {
-                this.store.ringingThreads.push(thread.localId);
-            }
-        }
-        if ("rtcInvitingSession" in data) {
-            if (Array.isArray(data.rtcInvitingSession)) {
-                if (data.rtcInvitingSession[0][0] === "unlink") {
-                    thread.invitingRtcSessionId = undefined;
-                    removeFromArray(this.store.ringingThreads, thread.localId);
-                }
-                return;
-            }
-            this.env.bus.trigger("RTC-SERVICE:UPDATE_RTC_SESSIONS", {
-                thread,
-                record: data.rtcInvitingSession,
-            });
-            thread.invitingRtcSessionId = data.rtcInvitingSession.id;
-            this.store.ringingThreads.push(thread.localId);
-        }
-        if ("rtcSessions" in data) {
-            this.env.bus.trigger("RTC-SERVICE:UPDATE_RTC_SESSIONS", {
-                thread,
-                commands: data.rtcSessions,
-            });
-        }
-    }
-
     /**
      * @param {any} id
      */
@@ -334,1028 +688,1503 @@ export class Rtc {
     /**
      * Notifies the server and does the cleanup of the current call.
      */
-    async leaveCall(channel = this.state.channel) {
-        await this.rpcLeaveCall(channel);
+    async leaveCall(channel = this.localChannel) {
+        this.store.fullscreenChannel = null;
+        this.hasPendingRequest = true;
+        await rpc("/mail/rtc/channel/leave_call", { channel_id: channel.id }, { silent: true });
         this.endCall(channel);
+        this.hasPendingRequest = false;
     }
 
     /**
-     * @param {import("@mail/core/common/thread_model").Thread} [channel]
+     * @param {import("models").DiscussChannel} [channel]
      */
-    endCall(channel = this.state.channel) {
-        channel.rtcInvitingSessionId = undefined;
-        if (this.state.channel === channel) {
-            this.clear();
-            this.soundEffectsService.play("channel-leave");
+    endCall(channel = this.localChannel) {
+        this._endHost();
+        if (channel.self_member_id) {
+            channel.self_member_id.rtc_inviting_session_id = undefined;
         }
-    }
-
-    onRingingThreadsChange() {
-        if (this.ringingThreads.length > 0) {
-            this.soundEffectsService.play("incoming-call", { loop: true });
-        } else {
-            this.soundEffectsService.stop("incoming-call");
+        channel.activeRtcSession = undefined;
+        if (channel.eq(this.localChannel)) {
+            this.logs.end = new Date().toISOString();
+            this.dumpLogs();
+            this.pttExtService.unsubscribe();
+            this.network?.disconnect();
+            this.clear();
+            this.soundEffectsService.play("call-leave");
         }
     }
 
     async deafen() {
-        await this.setDeaf(true);
-        this.soundEffectsService.play("deafen");
-    }
-
-    async handleNotification(sessionId, content) {
-        const { event, channelId, payload } = JSON.parse(content);
-        const session = this.state.channel?.rtcSessions[sessionId];
-        if (
-            !session ||
-            !IS_CLIENT_RTC_COMPATIBLE ||
-            (!session.peerConnection &&
-                (!channelId || !this.state.channel || channelId !== this.state.channel.id))
-        ) {
+        if (this.isRemote) {
+            this._remoteAction({ is_deaf: true });
             return;
         }
-        switch (event) {
-            case "offer": {
-                this.log(session, `received notification: ${event}`, {
-                    step: "received offer",
-                });
-                const peerConnection = session.peerConnection || this.createConnection(session);
-                if (
-                    !peerConnection ||
-                    INVALID_ICE_CONNECTION_STATES.has(peerConnection.iceConnectionState) ||
-                    peerConnection.signalingState === "have-remote-offer"
-                ) {
-                    return;
-                }
-                const description = new window.RTCSessionDescription(payload.sdp);
-                try {
-                    await peerConnection.setRemoteDescription(description);
-                } catch (e) {
-                    this.log(session, "offer handling: failed at setting remoteDescription", {
-                        error: e,
-                    });
-                    return;
-                }
-                await this.updateRemote(session, "audio");
-                await this.updateRemote(session, "video");
-
-                let answer;
-                try {
-                    answer = await peerConnection.createAnswer();
-                } catch (e) {
-                    this.log(session, "offer handling: failed at creating answer", {
-                        error: e,
-                    });
-                    return;
-                }
-                try {
-                    await peerConnection.setLocalDescription(answer);
-                } catch (e) {
-                    this.log(session, "offer handling: failed at setting localDescription", {
-                        error: e,
-                    });
-                    return;
-                }
-
-                this.log(session, "sending notification: answer", {
-                    step: "sending answer",
-                });
-                await this.notify([session], "answer", {
-                    sdp: peerConnection.localDescription,
-                });
-                this.recover(session, RECOVERY_TIMEOUT, "standard answer timeout");
-                break;
-            }
-            case "answer": {
-                this.log(session, `received notification: ${event}`, {
-                    step: "received answer",
-                });
-                const peerConnection = session.peerConnection;
-                if (
-                    !peerConnection ||
-                    INVALID_ICE_CONNECTION_STATES.has(peerConnection.iceConnectionState) ||
-                    peerConnection.signalingState === "stable" ||
-                    peerConnection.signalingState === "have-remote-offer"
-                ) {
-                    return;
-                }
-                const description = new window.RTCSessionDescription(payload.sdp);
-                try {
-                    await peerConnection.setRemoteDescription(description);
-                } catch (e) {
-                    this.log(session, "answer handling: Failed at setting remoteDescription", {
-                        error: e,
-                    });
-                    // ignored the transaction may have been resolved by another concurrent offer.
-                }
-                break;
-            }
-            case "ice-candidate": {
-                const peerConnection = session.peerConnection;
-                if (
-                    !peerConnection ||
-                    INVALID_ICE_CONNECTION_STATES.has(peerConnection.iceConnectionState)
-                ) {
-                    return;
-                }
-                const rtcIceCandidate = new window.RTCIceCandidate(payload.candidate);
-                try {
-                    await peerConnection.addIceCandidate(rtcIceCandidate);
-                } catch (error) {
-                    this.log(
-                        session,
-                        "ICE candidate handling: failed at adding the candidate to the connection",
-                        { error }
-                    );
-                    this.recover(session, RECOVERY_TIMEOUT, "failed at adding ice candidate");
-                }
-                break;
-            }
-            case "disconnect":
-                this.log(session, `received notification: ${event}`, {
-                    step: " peer cleanly disconnected ",
-                });
-                this.disconnect(session);
-                break;
-            case "raise_hand":
-                Object.assign(session, {
-                    raisingHand: payload.active ? new Date() : undefined,
-                });
-                // eslint-disable-next-line no-case-declarations
-                const notificationId = "raise_hand_" + session.id;
-                if (session.raisingHand) {
-                    this.addCallNotification({
-                        id: notificationId,
-                        text: sprintf(_t("%s raised a hand"), session.name),
-                    });
-                } else {
-                    this.removeCallNotification(notificationId);
-                }
-                break;
-            case "trackChange": {
-                const { isSelfMuted, isTalking, isSendingVideo, isDeaf } = payload.state;
-                if (payload.type === "audio") {
-                    if (!session.audioStream) {
-                        return;
-                    }
-                    Object.assign(session, {
-                        isSelfMuted,
-                        isTalking,
-                        isDeaf,
-                    });
-                }
-                if (payload.type === "video" && isSendingVideo === false) {
-                    /**
-                     * Since WebRTC "unified plan", the local track is tied to the
-                     * remote transceiver.sender and not the remote track. Therefore
-                     * when the remote track is 'ended' the local track is not 'ended'
-                     * but only 'muted'. This is why we do not stop the local track
-                     * until the peer is completely removed.
-                     */
-                    session.videoStream = undefined;
-                }
-                break;
-            }
-        }
-    }
-
-    async mute() {
-        await this.setMute(true);
-        this.soundEffectsService.play("mute");
+        await this.setDeaf(true);
+        this.soundEffectsService.play("earphone-off");
     }
 
     /**
-     * @param {import("@mail/core/common/thread_model").Thread} channel
-     * @param {Object} [param1={}]
-     * @param {boolean} [param1.video]
+     * @param {import("models").RtcSession} session
+     * @param {boolean} active
      */
-    async toggleCall(channel, { video } = {}) {
-        if (this.state.hasPendingRequest) {
+    setRemoteRaiseHand(session, active) {
+        if (Boolean(session.raisingHand) === active) {
             return;
         }
-        this.state.hasPendingRequest = true;
-        const isActiveCall = Boolean(this.state.channel && this.state.channel === channel);
-        if (this.state.channel) {
-            await this.leaveCall(this.state.channel);
+        Object.assign(session, {
+            raisingHand: active ? new Date() : undefined,
+        });
+        const notificationId = "raise_hand_" + session.id;
+        if (session.raisingHand) {
+            this.addCallNotification({
+                id: notificationId,
+                text: _t("%s raised their hand", session.name),
+            });
+        } else {
+            this.removeCallNotification(notificationId);
+        }
+    }
+
+    /**
+     * @param {import("models").RtcSession} session
+     * @param {number} volume
+     */
+    setVolume(session, volume) {
+        session.volume = volume;
+        this.store.settings.saveVolumeSetting({
+            guestId: session?.guest_id?.id,
+            partnerId: session?.partner_id?.id,
+            volume,
+        });
+        this._postToTabs({
+            type: CROSS_TAB_CLIENT_MESSAGE.UPDATE_VOLUME,
+            changes: { sessionId: session.id, volume },
+        });
+    }
+
+    async mute() {
+        if (this.isRemote) {
+            this._remoteAction({ is_muted: true });
+            return;
+        }
+        await this.setMute(true);
+        this.soundEffectsService.play("mic-off");
+    }
+
+    /** @param {Object} props Properties to pass to the meeting component. */
+    async enterFullscreen(props) {
+        const Meeting = registry.category("discuss.call/components").get("Meeting");
+        this.store.fullscreenChannel = this.channel;
+        await this.fullscreen.enter(Meeting, {
+            id: CALL_FULLSCREEN_ID,
+            keepBrowserHeader: true,
+            props,
+            rootId: this.rootEl?.getRootNode()?.host?.id,
+        });
+    }
+
+    async exitFullscreen() {
+        this.store.fullscreenChannel = null;
+        await this.fullscreen.exit(CALL_FULLSCREEN_ID);
+    }
+
+    /**
+     * @param {import("models").DiscussChannel} channel
+     * @param {Object} [initialState={}]
+     * @param {boolean} [initialState.audio]
+     * @param {boolean} [initialState.camera]
+     */
+    async toggleCall(channel, { audio = true, camera } = {}) {
+        if (channel.id === this._remotelyHostedChannelId) {
+            this._postToTabs({ type: CROSS_TAB_CLIENT_MESSAGE.LEAVE });
+            this.clear();
+            return;
+        }
+        await Promise.resolve(() =>
+            loadJS(url("/mail/static/lib/selfie_segmentation/selfie_segmentation.js")).catch(
+                () => {}
+            )
+        );
+        if (this.hasPendingRequest) {
+            return;
+        }
+        const isActiveCall = channel.eq(this.localChannel);
+        if (this.localChannel) {
+            await this.leaveCall(this.localChannel);
         }
         if (!isActiveCall) {
-            await this.joinCall(channel, { video });
+            const joinCallOpts = { audio, camera };
+            if (this.microphonePermission !== "granted") {
+                joinCallOpts.audio = false;
+            }
+            await this.joinCall(channel, joinCallOpts);
         }
-        this.state.hasPendingRequest = false;
+    }
+
+    async toggleCameraFacingMode() {
+        this.store.settings.cameraFacingMode =
+            this.store.settings.cameraFacingMode === "user" ? "environment" : "user";
+        await this.toggleVideo("camera", { force: true, refreshStream: true });
+    }
+
+    async toggleDeafen() {
+        if (this.selfSession.is_deaf) {
+            await this.undeafen();
+        } else {
+            await this.deafen();
+        }
     }
 
     async toggleMicrophone() {
-        if (this.state.selfSession.isMute) {
-            await this.unmute();
+        if (this.selfSession.isMute) {
+            if (this.selfSession.is_muted) {
+                await this.unmute();
+            }
+            if (this.selfSession.is_deaf) {
+                await this.undeafen();
+            }
         } else {
             await this.mute();
         }
     }
 
     async undeafen() {
+        if (this.isRemote) {
+            this._remoteAction({ is_deaf: false });
+            return;
+        }
         await this.setDeaf(false);
-        this.soundEffectsService.play("undeafen");
+        this.soundEffectsService.play("earphone-on");
+    }
+
+    /**
+     * @param {"microphone" | "camera"} media
+     * @param {Object} [configuration]
+     */
+    showMediaPermissionDialog(media, { props = {}, options = {} } = {}) {
+        const permission = media === "camera" ? this.cameraPermission : this.microphonePermission;
+        if (permission === "denied") {
+            // Bypass the permission dialog in this case: we still need to do
+            // the potential thing that was supposed to be done once it closes.
+            options.onClose?.();
+            this.showMediaUnavailableWarning({ [media]: true });
+            return;
+        }
+        this.closeCallPermissionDialog = this.dialog.add(
+            CallPermissionDialog,
+            {
+                ...props,
+                media,
+                useMicrophone: async () => {
+                    await this.unmute();
+                    await props.useMicrophone?.();
+                },
+                useCamera: async () => {
+                    await this.toggleVideo("camera", { force: true, refreshStream: true });
+                    await props.useCamera?.();
+                },
+            },
+            {
+                context: { root: { el: this.rootEl } },
+                ...options,
+            }
+        );
+    }
+
+    showMediaUnavailableWarning({ microphone, camera, screen }) {
+        if (screen) {
+            this.notification.add(
+                _t("Screen sharing access blocked. Enable in browser settings."),
+                { type: "warning" }
+            );
+            return;
+        }
+        let permissionType;
+        if (microphone !== camera) {
+            permissionType = microphone ? "microphone" : "camera";
+        }
+        this.dialog.add(CallPermissionDeniedDialog, { permissionType });
+    }
+
+    async askForBrowserPermission({ audio, video }) {
+        try {
+            const stream = await browser.navigator.mediaDevices.getUserMedia({
+                audio: audio ? this.store.settings.audioConstraints : false,
+                video: video ? this.store.settings.cameraConstraints : false,
+            });
+            if (isBrowserSafari() || isMobileOS()) {
+                if (audio) {
+                    this.microphonePermission = "granted";
+                }
+                if (video) {
+                    this.cameraPermission = "granted";
+                }
+            }
+            closeStream(stream);
+        } catch {
+            this.showMediaUnavailableWarning({ microphone: audio, camera: video });
+        }
+        if (audio && video) {
+            return this.microphonePermission === "granted" && this.cameraPermission === "granted";
+        }
+        return audio
+            ? this.microphonePermission === "granted"
+            : this.cameraPermission === "granted";
     }
 
     async unmute() {
-        if (this.state.audioTrack) {
+        if (this.isRemote) {
+            this._remoteAction({ is_muted: false });
+            return;
+        }
+        if (this.microphonePermission === "prompt") {
+            this.showMediaPermissionDialog("microphone");
+            return;
+        }
+        if (this.micAudioTrack) {
             await this.setMute(false);
         } else {
-            await this.resetAudioTrack({ force: true });
+            await this.resetMicAudioTrack({ force: true });
         }
-        this.soundEffectsService.play("unmute");
+        this.soundEffectsService.play("mic-on");
     }
 
     //----------------------------------------------------------------------
     // Private
     //----------------------------------------------------------------------
 
+    async _loadSfu() {
+        const load = async () => {
+            await loadSfuAssets();
+            const sfuModule = odoo.loader.modules.get("@mail/../lib/odoo_sfu/odoo_sfu");
+            this.SFU_CLIENT_STATE = sfuModule.SFU_CLIENT_STATE;
+            this.sfuClient = new sfuModule.SfuClient();
+        };
+        try {
+            await load();
+        } catch {
+            // trying again with a delay in case of race condition with the asset loading.
+            await new Promise((resolve, reject) => {
+                browser.setTimeout(async () => {
+                    try {
+                        await load();
+                    } catch (error) {
+                        reject(error);
+                    }
+                    resolve();
+                }, 1000);
+            });
+        }
+    }
+
+    updateUpload() {
+        this.network?.updateUpload("audio", this.audioTrack);
+        this.network?.updateUpload("camera", this.cameraTrack);
+        this.network?.updateUpload("screen", this.screenTrack);
+    }
+
+    async _initConnection() {
+        this.localSession.connectionState = "selecting network type";
+        this.connectionType = CONNECTION_TYPES.P2P;
+        this.network?.disconnect();
+        // loading p2p in any case as we may need to receive peer-to-peer connections from users who failed to connect to the SFU.
+        this.p2pService.connect(this.localSession.id, this.localChannel.id, {
+            info: this.formatInfo(),
+            iceServers: this.iceServers,
+        });
+        this.network = new Network(this.p2pService);
+        this.updateUpload();
+        if (this.serverInfo) {
+            this.log(this.localSession, "loading sfu server", {
+                step: "loading sfu server",
+                serverInfo: toRaw(this.serverInfo),
+            });
+            this.localSession.connectionState = "loading SFU assets";
+            try {
+                await this._loadSfu();
+                this.connectionType = CONNECTION_TYPES.SERVER;
+                if (this.network) {
+                    this.network.addSfu(this.sfuClient);
+                } else {
+                    return; // the call may be ended by the time the sfu is loaded
+                }
+            } catch (e) {
+                this.fallbackMode = true;
+                this.notification.add(
+                    _t("Failed to load the SFU server, falling back to peer-to-peer"),
+                    {
+                        type: "warning",
+                    }
+                );
+                this.log(this.localSession, "failed to load sfu server", {
+                    error: e,
+                    important: true,
+                });
+            }
+            this.selfSession.connectionState = "initializing";
+        } else {
+            this.log(this.localSession, "no sfu server info, using peer-to-peer");
+        }
+        this.network.addEventListener("stateChange", this._handleSfuClientStateChange);
+        this.network.addEventListener("update", this._handleNetworkUpdates);
+        this.network.addEventListener("log", ({ detail: { id, level, message } }) => {
+            const session = this.store["discuss.channel.rtc.session"].get(id);
+            if (session) {
+                this.log(session, message, { step: "p2p", level, important: true });
+            }
+        });
+        if (this.localChannel) {
+            await this.call();
+            this.updateUpload();
+        }
+    }
+
     /**
-     * @param {RtcSession} session
+     * Send an action to the host tab of the call
+     *
+     * @param {CrossTabActions} changes
+     */
+    _remoteAction(changes) {
+        this._postToTabs({
+            type: CROSS_TAB_CLIENT_MESSAGE.REQUEST_ACTION,
+            changes,
+        });
+    }
+
+    _updateInfo() {
+        if (!this.isHost) {
+            return;
+        }
+        const info = toRaw(this.formatInfo());
+        this.network?.updateInfo(info);
+        this._updateRemoteTabs({ [this.localSession.id]: info });
+    }
+
+    _host() {
+        this._remotelyHostedChannelId = undefined;
+        this._remotelyHostedSessionId = this.localSession.id;
+        this._updateRemoteTabs({ [this.localSession.id]: toRaw(this.formatInfo()) });
+    }
+    _endHost() {
+        this._postToTabs({
+            type: CROSS_TAB_HOST_MESSAGE.CLOSE,
+            hostedSessionId: this._remotelyHostedSessionId,
+        });
+    }
+
+    /** @param {SessionInfoMap} changes */
+    _updateRemoteTabs(changes) {
+        this._postToTabs({
+            type: CROSS_TAB_HOST_MESSAGE.UPDATE_REMOTE,
+            hostedChannelId: this.localChannel.id,
+            hostedSessionId: this.localSession.id,
+            changes,
+        });
+    }
+
+    _postToTabs(message) {
+        if (!this._broadcastChannel) {
+            this.log(this.selfSession, "broadcast channel not available");
+            return;
+        }
+        try {
+            this._broadcastChannel.postMessage(message);
+        } catch (error) {
+            this.log(this.selfSession, "failed to post message to broadcast channel", { error });
+        }
+    }
+
+    _refreshCrossTabTimeout() {
+        browser.clearTimeout(this._crossTabTimeoutId);
+        this._crossTabTimeoutId = browser.setTimeout(() => {
+            this.clear();
+        }, PING_INTERVAL + 10_000);
+    }
+
+    async _onBroadcastChannelMessage({
+        data: { type, hostedChannelId, hostedSessionId, changes },
+    }) {
+        switch (type) {
+            case CROSS_TAB_HOST_MESSAGE.UPDATE_REMOTE:
+                if (this.isHost) {
+                    return;
+                }
+                this._remotelyHostedSessionId = hostedSessionId;
+                this._remotelyHostedChannelId = hostedChannelId;
+                this._refreshCrossTabTimeout();
+                this.updateSessionInfo(changes);
+                return;
+            case CROSS_TAB_HOST_MESSAGE.CLOSE: {
+                if (this._remotelyHostedSessionId !== hostedSessionId) {
+                    return;
+                }
+                this.clear();
+                return;
+            }
+            case CROSS_TAB_HOST_MESSAGE.PIP_CHANGE: {
+                if (this.isHost) {
+                    return;
+                }
+                this.isPipMode = changes.isPipMode;
+                return;
+            }
+            case CROSS_TAB_HOST_MESSAGE.PING: {
+                this._refreshCrossTabTimeout();
+                return;
+            }
+            case CROSS_TAB_CLIENT_MESSAGE.INIT: {
+                if (!this.isHost) {
+                    return;
+                }
+                this._updateRemoteTabs({ [this.localSession.id]: toRaw(this.formatInfo()) });
+                this._postToTabs({
+                    type: CROSS_TAB_HOST_MESSAGE.PIP_CHANGE,
+                    changes: { isPipMode: this.isPipMode },
+                });
+                return;
+            }
+            case CROSS_TAB_CLIENT_MESSAGE.REQUEST_ACTION: {
+                if (!this.isHost) {
+                    return;
+                }
+                await this._localAction(changes);
+                this._updateRemoteTabs({ [this.localSession.id]: toRaw(this.formatInfo()) });
+                return;
+            }
+            case CROSS_TAB_CLIENT_MESSAGE.LEAVE: {
+                if (!this.isHost) {
+                    return;
+                }
+                await this.leaveCall(this.channel);
+                return;
+            }
+            case CROSS_TAB_CLIENT_MESSAGE.UPDATE_VOLUME: {
+                const session = this.store["discuss.channel.rtc.session"].get(changes.sessionId);
+                if (!session) {
+                    return;
+                }
+                session.volume = changes.volume;
+                return;
+            }
+        }
+    }
+
+    /** @param {CrossTabActions} actions */
+    async _localAction(actions = {}) {
+        const promises = [];
+        for (const [key, value] of Object.entries(actions)) {
+            switch (key) {
+                case "is_muted":
+                    if (value === this.localSession.is_muted) {
+                        break;
+                    }
+                    promises.push(value ? this.mute() : this.unmute());
+                    break;
+                case "is_deaf":
+                    if (value === this.localSession.is_deaf) {
+                        break;
+                    }
+                    value ? promises.push(this.deafen()) : promises.push(this.undeafen());
+                    break;
+                case "raisingHand":
+                    if (value === Boolean(this.localSession.raisingHand)) {
+                        break;
+                    }
+                    promises.push(this.raiseHand(value));
+                    break;
+                case "pip":
+                    if (value === this.isPipMode) {
+                        break;
+                    }
+                    if (value) {
+                        promises.push(this.openPip());
+                    } else {
+                        this.closePip();
+                    }
+                    break;
+            }
+        }
+        await Promise.all(promises);
+    }
+
+    /**
+     * @param {import("models").RtcSession} session
      * @param {String} entry
      * @param {Object} [param2]
      * @param {Error} [param2.error]
      * @param {String} [param2.step] current step of the flow
      * @param {String} [param2.state] current state of the connection
+     * @param {Boolean} [param2.important] if the log is important and should be kept even if logRtc is disabled
      */
-    log(session, entry, { error, step, state, ...data } = {}) {
-        session.logStep = entry;
-        if (!this.userSettingsService.logRtc) {
+    log(session, entry, param2 = {}) {
+        if (!session) {
             return;
         }
-        if (!this.state.logs.has(session.id)) {
-            this.state.logs.set(session.id, { step: "", state: "", logs: [] });
+        const { error, step, state, important, ...data } = param2;
+        session.logStep = entry;
+        if (!this.store.settings.logRtc && !important) {
+            return;
+        }
+        console.debug(
+            `%c${new Date().toLocaleString()} - [${entry}]`,
+            "color: #e36f17; font-weight: bold;",
+            toRaw(session)._raw,
+            param2
+        );
+        if (!this.logs) {
+            return;
+        }
+        let sessionEntry = this.logs.entriesBySessionId[session.id];
+        if (!sessionEntry) {
+            this.logs.entriesBySessionId[session.id] = sessionEntry = {
+                step: "",
+                state: "",
+                logs: [],
+            };
         }
         if (step) {
-            this.state.logs.get(session.id).step = step;
+            sessionEntry.step = step;
         }
         if (state) {
-            this.state.logs.get(session.id).state = state;
+            sessionEntry.state = state;
         }
-        const trace = window.Error().stack || "";
-        this.state.logs.get(session.id).logs.push({
-            event: `${luxon.DateTime.now().toFormat("HH:mm:ss")}: ${entry}`,
+        sessionEntry.logs.push({
+            event: `${new Date().toISOString()}: ${entry}`,
             error: error && {
                 name: error.name,
                 message: error.message,
                 stack: error.stack && error.stack.split("\n"),
             },
-            trace: trace.split("\n"),
             ...data,
         });
     }
 
-    async connect(session) {
-        this.createConnection(session);
-        for (const transceiverName of ORDERED_TRANSCEIVER_NAMES) {
-            await this.updateRemote(session, transceiverName, true);
-        }
-        this.state.outgoingSessions.add(session.id);
-    }
-
-    call() {
-        if (!this.state.channel.rtcSessions) {
+    /**
+     * @param {CustomEvent} param0
+     * @param {Object} param0.detail
+     * @param {String} param0.detail.name
+     * @param {any} param0.detail.payload
+     */
+    async _handleNetworkUpdates({ detail: { name, payload } }) {
+        if (!this.localChannel) {
             return;
         }
-        for (const session of Object.values(this.state.channel.rtcSessions)) {
-            if (session.peerConnection || session.id === this.state.selfSession.id) {
-                continue;
+        switch (name) {
+            case "broadcast":
+                {
+                    const {
+                        senderId,
+                        message: { sequence },
+                    } = payload;
+                    if (!sequence) {
+                        return;
+                    }
+                    const session = await this.store["discuss.channel.rtc.session"].getWhenReady(
+                        senderId
+                    );
+                    if (!session) {
+                        return;
+                    }
+                    if (!session.sequence || session.sequence < sequence) {
+                        session.sequence = sequence;
+                    }
+                }
+                return;
+            case "connection_change":
+                {
+                    const { id, state } = payload;
+                    const session = this.store["discuss.channel.rtc.session"].get(id);
+                    if (!session) {
+                        return;
+                    }
+                    session.connectionState = state;
+                }
+                return;
+            case "disconnect":
+                {
+                    const { sessionId } = payload;
+                    const session = this.store["discuss.channel.rtc.session"].get(sessionId);
+                    if (!session) {
+                        return;
+                    }
+                    this.disconnect(session);
+                }
+                return;
+            case "info_change":
+                this.updateSessionInfo(payload);
+                return;
+            case "track":
+                {
+                    const { sessionId, type, track, active, sequence } = payload;
+                    const session = await this.store["discuss.channel.rtc.session"].getWhenReady(
+                        sessionId
+                    );
+                    if (!session || !this.localChannel) {
+                        this.log(
+                            this.selfSession,
+                            `track received for unknown session ${sessionId} (${this.connectionType})`
+                        );
+                        return;
+                    }
+                    if (sequence && sequence < session.sequence) {
+                        this.log(
+                            session,
+                            `track received for old sequence ${sequence} (${this.connectionType})`
+                        );
+                        return;
+                    }
+                    this.log(session, `${type} track received (${this.connectionType})`);
+                    try {
+                        await this.handleRemoteTrack({ session, track, type, active });
+                    } catch {
+                        // ignored, the session may be closing.
+                        // this can happen when you join a call from another tab in which you have another session.
+                    }
+                    // makes sure we are not downloading a video that is not displayed
+                    setTimeout(() => {
+                        this.updateVideoDownload(session);
+                    }, 2000);
+                }
+                return;
+            case "recovery": {
+                const { id } = payload;
+                const session = this.store["discuss.channel.rtc.session"].get(id);
+                if (
+                    this.selfSession?.persona.main_user_id?.share !== false ||
+                    this.serverInfo ||
+                    this.fallbackMode ||
+                    !session?.channel.eq(this.localChannel)
+                ) {
+                    return;
+                }
+                this._p2pRecoveryCount++;
+                if (this._p2pRecoveryCount > 1 || !hasTurn(this.iceServers)) {
+                    this.upgradeConnectionDebounce();
+                }
             }
-            this.log(session, "init call", { step: "init call" });
-            this.connect(session);
         }
     }
 
-    createConnection(session) {
-        const peerConnection = new window.RTCPeerConnection({ iceServers: this.state.iceServers });
-        this.log(session, "RTCPeerConnection created", {
-            step: "peer connection created",
-        });
-        peerConnection.onicecandidate = async (event) => {
-            if (!event.candidate) {
+    async _handleSfuClientStateChange({ detail: { state, cause } }) {
+        this.log(this.localSession, `connection state change: ${state}`, { state, cause });
+        this.localSession.connectionState = state;
+        switch (state) {
+            case this.SFU_CLIENT_STATE.AUTHENTICATED:
+                // if we are hot-swapping connection type, we clear the p2p as late as possible
+                this.p2pService.removeALlPeers();
+                this.sfuClient.broadcast({ sequence: getSequence() });
+                break;
+            case this.SFU_CLIENT_STATE.CONNECTED:
+                browser.clearTimeout(this.sfuTimeout);
+                this.sfuClient.updateInfo(this.formatInfo(), {
+                    needRefresh: true, // asks the server to send the info from all the channel
+                });
+                this.sfuClient.updateUpload("audio", this.audioTrack);
+                this.sfuClient.updateUpload("camera", this.cameraTrack);
+                this.sfuClient.updateUpload("screen", this.screenTrack);
                 return;
-            }
-            await this.notify([session], "ice-candidate", {
-                candidate: event.candidate,
-            });
-        };
-        peerConnection.oniceconnectionstatechange = async (event) => {
-            this.log(
-                session,
-                `ICE connection state changed: ${peerConnection.iceConnectionState}`,
+            case this.SFU_CLIENT_STATE.CLOSED:
                 {
-                    state: peerConnection.iceConnectionState,
+                    if (!this.localChannel) {
+                        return;
+                    }
+                    let text;
+                    if (cause === "full") {
+                        text = _t("Channel full");
+                        this.leaveCall();
+                    } else {
+                        text = _t(
+                            "Connection to SFU server closed by the server, falling back to peer-to-peer"
+                        );
+                        this.log(this.localSession, text, { important: true });
+                        this._downgradeConnection();
+                    }
+                    this.notification.add(text, {
+                        type: "warning",
+                    });
                 }
-            );
-            if (!this.state.channel.rtcSessions[session.id]) {
                 return;
-            }
-            session.connectionState = peerConnection.iceConnectionState;
-            switch (peerConnection.iceConnectionState) {
-                case "closed":
-                    this.disconnect(session);
-                    break;
-                case "failed":
-                case "disconnected":
-                    await this.recover(
-                        session,
-                        RECOVERY_DELAY,
-                        `ice connection ${peerConnection.iceConnectionState}`
-                    );
-                    break;
-            }
-        };
-        peerConnection.onicegatheringstatechange = (event) => {
-            this.log(session, `ICE gathering state changed: ${peerConnection.iceGatheringState}`);
-        };
-        peerConnection.onconnectionstatechange = async (event) => {
-            this.log(session, `connection state changed: ${peerConnection.connectionState}`);
-            switch (peerConnection.connectionState) {
-                case "closed":
-                    this.disconnect(session);
-                    break;
-                case "failed":
-                case "disconnected":
-                    await this.recover(
-                        session,
-                        RECOVERY_DELAY,
-                        `connection ${peerConnection.connectionState}`
-                    );
-                    break;
-            }
-        };
-        peerConnection.onicecandidateerror = async (error) => {
-            this.log(session, "ice candidate error");
-            this.recover(session, RECOVERY_TIMEOUT, "ice candidate error");
-        };
-        peerConnection.onnegotiationneeded = async (event) => {
-            const offer = await peerConnection.createOffer();
-            try {
-                await peerConnection.setLocalDescription(offer);
-            } catch (error) {
-                // Possibly already have a remote offer here: cannot set local description
-                this.log(session, "couldn't setLocalDescription", { error });
-                return;
-            }
-            this.log(session, "sending notification: offer", {
-                step: "sending offer",
-            });
-            await this.notify([session], "offer", {
-                sdp: peerConnection.localDescription,
-            });
-        };
-        peerConnection.ontrack = ({ transceiver, track }) => {
-            this.log(session, `received ${track.kind} track`);
-            this.updateStream(session, track, {
-                mute: this.state.selfSession.isDeaf,
-            });
-        };
-        const dataChannel = peerConnection.createDataChannel("notifications", {
-            negotiated: true,
-            id: 1,
-        });
-        dataChannel.onmessage = (event) => {
-            this.handleNotification(session.id, event.data);
-        };
-        dataChannel.onopen = async () => {
-            /**
-             * FIXME? it appears that the track yielded by the peerConnection's 'ontrack' event is always enabled,
-             * even when it is disabled on the sender-side.
-             */
-            try {
-                await this.notify([session], "trackChange", {
-                    type: "audio",
-                    state: {
-                        isTalking: this.state.selfSession.isTalking,
-                        isSelfMuted: this.state.selfSession.isSelfMuted,
-                    },
-                });
-                await this.notify([session], "raise_hand", {
-                    active: Boolean(this.state.selfSession.raisingHand),
-                });
-            } catch (e) {
-                if (!(e instanceof DOMException) || e.name !== "OperationError") {
-                    throw e;
-                }
-                this.log(
-                    session,
-                    `failed to send on datachannel; dataChannelInfo: ${serializeRTCDataChannel(
-                        dataChannel
-                    )}`,
-                    { error: e }
+        }
+    }
+
+    async _upgradeConnection() {
+        const channelId = this.localChannel?.id;
+        if (this.serverInfo || this.fallbackMode || !channelId) {
+            return;
+        }
+        await rpc(
+            "/mail/rtc/channel/upgrade_connection",
+            { channel_id: channelId },
+            { silent: true }
+        );
+    }
+
+    /** @param {SessionInfoMap} payload */
+    updateSessionInfo(payload) {
+        if (!payload) {
+            return;
+        }
+        if (this.isHost) {
+            this._updateRemoteTabs(payload);
+        }
+        for (const [id, info] of Object.entries(payload)) {
+            (async () => {
+                const session = await this.store["discuss.channel.rtc.session"].getWhenReady(
+                    Number(id)
                 );
-            }
-        };
-        Object.assign(session, {
-            peerConnection,
-            dataChannel,
-            connectionState: "connecting",
-        });
-        return peerConnection;
+                if (!session || session.eq(this.localSession) || !this.channel) {
+                    return;
+                }
+                // `isRaisingHand` is turned into the Date `raisingHand`
+                this.setRemoteRaiseHand(session, info.isRaisingHand);
+                assignDefined(session, {
+                    is_muted: info.isSelfMuted ?? info.is_muted,
+                    is_deaf: info.isDeaf ?? info.is_deaf,
+                    isTalking: info.isTalking,
+                    is_camera_on: info.isCameraOn ?? info.is_camera_on,
+                    is_screen_sharing_on: info.isScreenSharingOn ?? info.is_screen_sharing_on,
+                });
+            })();
+        }
+    }
+
+    async _downgradeConnection() {
+        this.serverInfo = undefined;
+        this.fallbackMode = true;
+        this.connectionType = CONNECTION_TYPES.P2P;
+        this.network.removeSfu();
+        await this.call();
+        this.updateUpload();
     }
 
     /**
-     * @param {import("@mail/core/common/thread_model").Thread}
+     *
+     * @param {Object} [param0={}]
+     * @param {boolean} [param0.asFallback=false] whether the call is made as a fallback to the SFU, in which case
+     * p2p connections are offered more eagerly as other participants may not offer them if their primary connection
+     * type is SFU.
+     * @return {Promise<void>}
      */
-    async joinCall(channel, { video = false } = {}) {
+    async call({ asFallback = false } = {}) {
+        if (asFallback && !this.fallbackMode) {
+            return;
+        }
+        if (this.connectionType === CONNECTION_TYPES.SERVER) {
+            if (this.sfuClient.state === this.SFU_CLIENT_STATE.DISCONNECTED) {
+                browser.clearTimeout(this.sfuTimeout);
+                this.sfuTimeout = browser.setTimeout(() => {
+                    this.log(this.selfSession, "sfu connection timeout", { important: true });
+                    this._downgradeConnection();
+                }, 10000);
+                await this.sfuClient.connect(this.serverInfo.url, this.serverInfo.jsonWebToken, {
+                    channelUUID: this.serverInfo.channelUUID,
+                    iceServers: this.iceServers,
+                });
+            }
+            return;
+        }
+        if (!this.localChannel.hasRtcSessionActive) {
+            return;
+        }
+        const sequence = getSequence();
+        for (const session of this.localChannel.rtc_session_ids) {
+            if (session.eq(this.localSession)) {
+                continue;
+            }
+            this.p2pService.addPeer(session.id, { sequence });
+        }
+    }
+
+    /**
+     * @param {import("models").RtcSession} session
+     * @param {MediaStreamTrack} track
+     * @param {StreamType} type
+     * @param {boolean} active false if the track is muted/disabled
+     */
+    async handleRemoteTrack({ session, track, type, active = true }) {
+        session.updateStreamState(type, active);
+        await this.updateStream(session, track, {
+            mute: this.localSession.is_deaf,
+            videoType: type,
+        });
+        this.updateActiveSession(session, type, { addVideo: true });
+    }
+
+    /**
+     * @param {import("models").DiscussChannel} channel
+     * @param {object} [initialState]
+     * @param {boolean} [initialState.audio] whether to request and use the user audio input (microphone) at start
+     * @param {boolean} [initialState.camera] whether to request and use the user video input (camera) at start
+     */
+    async joinCall(channel, { audio = true, camera = false } = {}) {
         if (!IS_CLIENT_RTC_COMPATIBLE) {
             this.notification.add(_t("Your browser does not support webRTC."), { type: "warning" });
             return;
         }
-        const { rtcSessions, iceServers, sessionId, invitedMembers } = await this.rpc(
+        this.pttExtService.subscribe();
+        this.hasPendingRequest = true;
+        const data = await rpc(
             "/mail/rtc/channel/join_call",
             {
+                camera,
                 channel_id: channel.id,
-                check_rtc_session_ids: Object.values(channel.rtcSessions).map(
-                    (session) => session.id
-                ),
+                check_rtc_session_ids: channel.rtc_session_ids.map((session) => session.id),
             },
             { silent: true }
         );
+        this.hasPendingRequest = false;
         // Initializing a new session implies closing the current session.
         this.clear();
-        this.state.logs.clear();
-        this.state.channel = channel;
-        this.onThreadUpdate(this.state.channel, { rtcSessions, invitedMembers });
-        this.state.selfSession = this.store.rtcSessions[sessionId];
-        this.state.iceServers = iceServers || DEFAULT_ICE_SERVERS;
-        this.state.logs.set("channelId", this.state.channel?.id);
-        this.state.logs.set("selfSessionId", this.state.selfSession?.id);
-        this.state.logs.set("hasTURN", hasTurn(this.state.iceServers));
-        const channelProxy = reactive(this.state.channel, () => {
-            if (channel !== this.state.channel) {
-                throw new Error("channel has changed");
-            }
-            if (this.state.channel) {
-                if (this.state.channel && !channelProxy.rtcSessions[this.state.selfSession.id]) {
-                    // if the current RTC session is not in the channel sessions, this call is no longer valid.
-                    this.endCall();
-                    return;
-                }
-                for (const session of Object.values(this.state.channel.rtcSessions)) {
-                    if (!channelProxy.rtcSessions[session.id]) {
-                        this.log(session, "session removed from the server");
-                        this.disconnect(session);
-                    }
-                }
-            }
-            void Object.keys(channelProxy.rtcSessions);
-        });
-        this.state.updateAndBroadcastDebounce = debounce(
+        this.localChannel = channel;
+        this.store.insert(data);
+        this.newLogs();
+        this.updateAndBroadcastDebounce = debounce(
             async () => {
-                if (!this.state.selfSession) {
+                if (!this.localSession) {
                     return;
                 }
-                await this.rpc(
+                await rpc(
                     "/mail/rtc/session/update_and_broadcast",
                     {
-                        session_id: this.state.selfSession.id,
-                        values: {
-                            is_camera_on: this.state.selfSession.isCameraOn,
-                            is_deaf: this.state.selfSession.isDeaf,
-                            is_muted: this.state.selfSession.isSelfMuted,
-                            is_screen_sharing_on: this.state.selfSession.isScreenSharingOn,
-                        },
+                        session_id: this.localSession.id,
+                        values: pick(
+                            this.localSession,
+                            "is_camera_on",
+                            "is_deaf",
+                            "is_muted",
+                            "is_screen_sharing_on"
+                        ),
                     },
                     { silent: true }
                 );
             },
             3000,
-            true
+            { leading: true, trailing: true }
         );
-        this.state.channel.rtcInvitingSessionId = undefined;
-        this.call();
-        this.soundEffectsService.play("channel-join");
-        await this.resetAudioTrack({ force: true });
-        if (video) {
+        if (this.localChannel.self_member_id) {
+            this.localChannel.self_member_id.rtc_inviting_session_id = undefined;
+        }
+        if (camera) {
             await this.toggleVideo("camera");
         }
+        if (!this.selfSession) {
+            return;
+        }
+        await this._initConnection();
+        await this.resetMicAudioTrack({ force: audio });
+        if (!this.localChannel?.id) {
+            return;
+        }
+        this.soundEffectsService.play("call-join");
+        this._host();
+        this.cleanups.push(
+            // only register the beforeunload event if there is a call as FireFox will not place
+            // the pages with beforeunload listeners in the bfcache.
+            subscribe(browser, "beforeunload", (event) => {
+                event.preventDefault();
+            })
+        );
+        this.channel?.focusAvailableVideo();
+    }
+
+    newLogs() {
+        this.logs = {
+            channelId: this.localChannel.id,
+            selfSessionId: this.localSession.id,
+            start: new Date().toISOString(),
+            hasTurn: hasTurn(this.iceServers),
+            entriesBySessionId: {},
+        };
     }
 
     /**
-     * @param {RtcSession[]} sessions
-     * @param {String} event
-     * @param {Object} [payload]
+     * @param {Object} [param0={}]
+     * @param  {boolean} [param0.download=false] true if we want to download the logs
      */
-    async notify(sessions, event, payload) {
-        if (!sessions.length || !this.state.channel.id || !this.state.selfSession) {
-            return;
-        }
-        if (event === "trackChange") {
-            // p2p
-            for (const session of sessions) {
-                if (!session?.dataChannel || session?.dataChannel.readyState !== "open") {
-                    continue;
-                }
-                session.dataChannel.send(
-                    JSON.stringify({
-                        event,
-                        channelId: this.state.channel.id,
-                        payload,
-                    })
-                );
-            }
-        } else {
-            // server
-            this.state.notificationsToSend.set(++tmpId, {
-                channelId: this.state.channel.id,
-                event,
-                payload,
-                sender: this.state.selfSession,
-                sessions,
+    dumpLogs({ download = false } = {}) {
+        const logs = [];
+        if (this.logs) {
+            logs.push({
+                type: "timeline",
+                entry: this.logs.start,
+                value: toRaw(this.logs),
             });
-            await this.sendNotifications();
+        }
+        if (this.localChannel) {
+            logs.push(this.buildSnapshot());
+        }
+        if (logs.length || download) {
+            browser.navigator.serviceWorker?.controller?.postMessage({
+                name: SW_MESSAGE_TYPE.POST_RTC_LOGS,
+                logs,
+                download,
+            });
         }
     }
 
-    async rpcLeaveCall(channel) {
-        await this.rpc(
-            "/mail/rtc/channel/leave_call",
-            {
-                channel_id: channel.id,
+    buildSnapshot() {
+        const server = {};
+        if (this.connectionType === CONNECTION_TYPES.SERVER) {
+            server.info = toRaw(this.serverInfo);
+            server.state = this.sfuClient?.state;
+            server.errors = this.sfuClient?.errors.map((error) => error.message);
+        }
+        const sessions = this.localChannel.rtc_session_ids.map((session) => {
+            const sessionInfo = {
+                id: session.id,
+                channelMemberId: session.channel_member_id?.id,
+                state: session.connectionState,
+                audioError: session.audioError,
+                videoError: session.videoError,
+                sfuConsumers: this.network?.getSfuConsumerStats(session.id),
+            };
+            if (session.eq(this.selfSession)) {
+                sessionInfo.isSelf = true;
+            }
+            const audioEl = session.audioElement;
+            if (audioEl) {
+                sessionInfo.audio = {
+                    state: audioEl.readyState,
+                    muted: audioEl.muted,
+                    paused: audioEl.paused,
+                    networkState: audioEl.networkState,
+                };
+            }
+            const peer = this.p2pService?.peers.get(session.id);
+            if (peer) {
+                sessionInfo.peer = {
+                    id: peer.id,
+                    state: peer.connection.connectionState,
+                    iceState: peer.connection.iceConnectionState,
+                };
+            }
+            return sessionInfo;
+        });
+        return {
+            type: "snapshot",
+            entry: new Date().toISOString(),
+            value: {
+                server,
+                sessions,
+                connectionType: this.connectionType,
+                fallback: this.fallbackMode,
             },
-            { silent: true }
-        );
+        };
+    }
+
+    logSnapshot() {
+        if (!this.localChannel) {
+            // a snapshot out of a call would not collect any data
+            return;
+        }
+        browser.navigator.serviceWorker?.controller?.postMessage({
+            name: SW_MESSAGE_TYPE.POST_RTC_LOGS,
+            logs: [this.buildSnapshot()],
+        });
     }
 
     async ping() {
-        const { rtcSessions } = await this.rpc(
+        const data = await rpc(
             "/discuss/channel/ping",
             {
-                channel_id: this.state.channel.id,
-                check_rtc_session_ids: Object.values(this.state.channel.rtcSessions).map(
+                channel_id: this.localChannel.id,
+                check_rtc_session_ids: this.localChannel.rtc_session_ids.map(
                     (session) => session.id
                 ),
-                rtc_session_id: this.state.selfSession.id,
+                rtc_session_id: this.localSession.id,
             },
             { silent: true }
         );
-        if (this.state.channel && rtcSessions) {
-            const activeSessionsData = rtcSessions[0][1];
-            for (const sessionData of activeSessionsData) {
-                const session = this.insertSession(sessionData);
-                this.state.channel.rtcSessions[session.id] = session;
-            }
-            const outdatedSessionsData = rtcSessions[1][1];
-            for (const sessionData of outdatedSessionsData) {
-                this.deleteSession(sessionData);
-            }
-        }
-    }
-
-    /**
-     * @param {number} [delay] in ms
-     */
-    recover(session, delay = 0, reason = "") {
-        if (this.state.recoverTimeouts.get(session.id)) {
-            return;
-        }
-        this.state.recoverTimeouts.set(
-            session.id,
-            browser.setTimeout(async () => {
-                this.state.recoverTimeouts.delete(session.id);
-                const peerConnection = session.peerConnection;
-                if (
-                    !peerConnection ||
-                    !this.state.channel.id ||
-                    this.state.outgoingSessions.has(session.id) ||
-                    peerConnection.iceConnectionState === "connected"
-                ) {
-                    return;
-                }
-                if (this.userSettingsService.logRtc) {
-                    let stats;
-                    try {
-                        const iterableStats = await peerConnection.getStats();
-                        stats = iterableStats && [...iterableStats.values()];
-                    } catch {
-                        // ignore
-                    }
-                    this.log(
-                        session,
-                        `calling back to recover "${peerConnection.iceConnectionState}" connection`,
-                        { reason, stats }
-                    );
-                }
-                await this.notify([session], "disconnect");
-                this.disconnect(session);
-                this.connect(session);
-            }, delay)
-        );
+        this.store.insert(data);
     }
 
     disconnect(session) {
+        const downloadTimeout = this.downloadTimeouts.get(session.id);
+        if (downloadTimeout) {
+            clearTimeout(downloadTimeout);
+            this.downloadTimeouts.delete(session.id);
+        }
         this.removeCallNotification("raise_hand_" + session.id);
-        closeStream(session.audioStream);
-        if (session.audioElement) {
-            session.audioElement.pause();
-            try {
-                session.audioElement.srcObject = undefined;
-            } catch {
-                // ignore error during remove, the value will be overwritten at next usage anyway
-            }
-        }
-        delete session.audioStream;
-        delete session.connectionState;
-        delete session.localCandidateType;
-        delete session.remoteCandidateType;
-        delete session.dataChannelState;
-        delete session.packetsReceived;
-        delete session.packetsSent;
-        delete session.dtlsState;
-        delete session.iceState;
-        delete session.raisingHand;
-        delete session.logStep;
-        delete session.audioError;
-        delete session.videoError;
+        session.raisingHand = undefined;
+        session.logStep = undefined;
+        session.audioError = undefined;
+        session.videoError = undefined;
+        session.connectionState = undefined;
         session.isTalking = false;
+        session.mainVideoStreamType = undefined;
+        this.removeAudioFromSession(session);
         this.removeVideoFromSession(session);
-        session.dataChannel?.close();
-        delete session.dataChannel;
-        const peerConnection = session.peerConnection;
-        if (peerConnection) {
-            const RTCRtpSenders = peerConnection.getSenders();
-            for (const sender of RTCRtpSenders) {
-                try {
-                    peerConnection.removeTrack(sender);
-                } catch {
-                    // ignore error
-                }
-            }
-            for (const transceiver of peerConnection.getTransceivers()) {
-                try {
-                    transceiver.stop();
-                } catch {
-                    // transceiver may already be stopped by the remote.
-                }
-            }
-            peerConnection.close();
-            delete session.peerConnection;
-        }
-        browser.clearTimeout(this.state.recoverTimeouts.get(session.id));
-        this.state.recoverTimeouts.delete(session.id);
-        this.state.outgoingSessions.delete(session.id);
+        this.p2pService?.removePeer(session.id);
         this.log(session, "peer removed", { step: "peer removed" });
     }
 
     clear() {
-        for (const session of Object.values(this.store.rtcSessions)) {
-            this.disconnect(session);
+        if (this.localChannel) {
+            for (const session of this.localChannel.rtc_session_ids) {
+                this.removeAudioFromSession(session);
+                this.removeVideoFromSession(session);
+                session.isTalking = false;
+            }
         }
-        for (const timeoutId of this.state.recoverTimeouts.values()) {
-            clearTimeout(timeoutId);
-        }
-        this.state.recoverTimeouts.clear();
-        this.state.updateAndBroadcastDebounce?.cancel();
-        this.state.disconnectAudioMonitor?.();
-        this.state.audioTrack?.stop();
-        this.state.videoTrack?.stop();
-        this.state.notificationsToSend.clear();
-        closeStream(this.state.sourceCameraStream);
-        this.state.sourceCameraStream = null;
+        this.exitFullscreen();
+        this._remotelyHostedSessionId = undefined;
+        this._remotelyHostedChannelId = undefined;
+        browser.clearTimeout(this._crossTabTimeoutId);
+        this.cleanups.splice(0).forEach((cleanup) => cleanup());
+        browser.clearTimeout(this.sfuTimeout);
+        this.sfuClient = undefined;
+        this.network = undefined;
+        this.audioContext?.close();
+        this.audioContext = undefined;
+        this._p2pRecoveryCount = 0;
+        this.closeCallPermissionDialog?.();
+        this.updateAndBroadcastDebounce?.cancel();
+        this.disconnectAudioMonitor?.();
+        this.micAudioTrack?.stop();
+        this.screenAudioTrack?.stop();
+        this.audioTrack?.stop();
+        this.cameraTrack?.stop();
+        this.screenTrack?.stop();
+        this.fallbackMode = undefined;
+        this.isPipMode = false;
+        closeStream(this.sourceCameraStream);
+        this.sourceCameraStream = null;
+        closeStream(this.sourceScreenStream);
+        this.sourceScreenStream = null;
         if (this.blurManager) {
             this.blurManager.close();
             this.blurManager = undefined;
         }
-        Object.assign(this.state, {
-            updateAndBroadcastDebounce: undefined,
-            disconnectAudioMonitor: undefined,
-            outgoingSessions: new Set(),
-            videoTrack: undefined,
+        this.update({
             audioTrack: undefined,
-            selfSession: undefined,
-            sendCamera: false,
-            sendScreen: false,
-            channel: undefined,
+            cameraTrack: undefined,
+            connectionType: undefined,
+            disconnectAudioMonitor: undefined,
+            fallbackMode: false,
+            isSendingCamera: false,
+            isSendingScreen: false,
+            localChannel: undefined,
+            localSession: undefined,
+            micAudioTrack: undefined,
+            screenAudioTrack: undefined,
+            screenTrack: undefined,
+            serverInfo: undefined,
+            updateAndBroadcastDebounce: undefined,
         });
-    }
-
-    async sendNotifications() {
-        if (this.state.isPendingNotify) {
-            return;
-        }
-        this.state.isPendingNotify = true;
-        await new Promise((resolve) => setTimeout(resolve, PEER_NOTIFICATION_WAIT_DELAY));
-        const ids = [];
-        const notifications = [];
-        this.state.notificationsToSend.forEach((notification, id) => {
-            ids.push(id);
-            notifications.push([
-                notification.sender.id,
-                notification.sessions.map((session) => session.id),
-                JSON.stringify({
-                    event: notification.event,
-                    channelId: notification.channelId,
-                    payload: notification.payload,
-                }),
-            ]);
-        });
-        try {
-            await this.rpc(
-                "/mail/rtc/session/notify_call_members",
-                {
-                    peer_notifications: notifications,
-                },
-                { silent: true }
-            );
-            for (const id of ids) {
-                this.state.notificationsToSend.delete(id);
-            }
-        } finally {
-            this.state.isPendingNotify = false;
-            if (this.state.notificationsToSend.size > 0) {
-                this.sendNotifications();
-            }
-        }
+        this.pipService?.closePip();
     }
 
     /**
-     * @param {Boolean} isDeaf
+     * @param {Boolean} is_deaf
      */
-    async setDeaf(isDeaf) {
-        this.updateAndBroadcast({ isDeaf });
-        for (const session of Object.values(this.state.channel.rtcSessions)) {
+    async setDeaf(is_deaf) {
+        this.updateAndBroadcast({ is_deaf });
+        for (const session of this.localChannel.rtc_session_ids) {
             if (!session.audioElement) {
                 continue;
             }
-            session.audioElement.muted = isDeaf;
+            session.audioElement.muted = is_deaf;
         }
-        await this.refreshAudioStatus();
+        await this.refreshMicAudioStatus();
+    }
+
+    async setOutputDevice(deviceId) {
+        const promises = [];
+        for (const session of this.localChannel.rtc_session_ids) {
+            if (!session.audioElement) {
+                continue;
+            }
+            promises.push(session.audioElement.setSinkId(deviceId));
+        }
+        await Promise.all(promises);
     }
 
     /**
-     * @param {Boolean} isSelfMuted
+     * @param {Boolean} is_muted
      */
-    async setMute(isSelfMuted) {
-        this.updateAndBroadcast({ isSelfMuted });
-        await this.refreshAudioStatus();
+    async setMute(is_muted) {
+        this.updateAndBroadcast({ is_muted });
+        await this.refreshMicAudioStatus();
     }
 
     /**
      * @param {Boolean} raise
      */
     async raiseHand(raise) {
-        if (!this.state.selfSession || !this.state.channel) {
+        if (this.isRemote) {
+            this._remoteAction({ raisingHand: raise });
             return;
         }
-        this.state.selfSession.raisingHand = raise ? new Date() : undefined;
-        await this.notify(Object.values(this.state.channel.rtcSessions), "raise_hand", {
-            active: this.state.selfSession.raisingHand,
-        });
+        if (!this.localSession || !this.localChannel) {
+            return;
+        }
+        this.localSession.raisingHand = raise ? new Date() : undefined;
+        await this._updateInfo();
     }
 
     /**
      * @param {boolean} isTalking
      */
     async setTalking(isTalking) {
-        if (!this.state.selfSession || isTalking === this.state.selfSession.isTalking) {
+        if (!this.localSession || isTalking === this.localSession.isTalking) {
             return;
         }
-        this.state.selfSession.isTalking = isTalking;
-        if (!this.state.selfSession.isMute) {
-            await this.refreshAudioStatus();
+        this.localSession.isTalking = isTalking;
+        if (!this.localSession.isMute) {
+            this.pttExtService.notifyIsTalking(isTalking);
+            await this.refreshMicAudioStatus();
         }
+    }
+
+    /**
+     * Applies blur effect to a video stream using BlurManager.
+     *
+     * @param {MediaStream} videoStream - input video stream.
+     * @returns {Promise<BlurManager>} - BlurManager instance.
+     */
+    async applyBlurEffect(videoStream) {
+        return new BlurManager(videoStream, {
+            backgroundBlur: this.store.settings.backgroundBlurAmount,
+            edgeBlur: this.store.settings.edgeBlurAmount,
+        });
     }
 
     /**
      * @param {string} type
-     * @param {boolean} [force]
+     * @param {Object} [options]
+     * @param {boolean} [options.force] if defined, bypass the toggle to force the state
+     * @param {import("@web/env").OdooEnv} [options.env]
+     * @param {boolean} [options.refreshStream] if true, the stream be requested from the device again instead of
+     *     potentially reusing the current stream.
      */
-    async toggleVideo(type, force) {
-        if (!this.state.channel.id) {
+    async toggleVideo(type, options) {
+        let force;
+        let env;
+        let refreshStream;
+        if (typeof options === "boolean") {
+            force = options;
+        } else {
+            force = options?.force;
+            env = options?.env;
+            refreshStream = options?.refreshStream;
+        }
+        if (this.isRemote) {
+            this.notification.add(UNAVAILABLE_AS_REMOTE, {
+                type: "warning",
+            });
+            return;
+        }
+        if (!this.localChannel?.id) {
             return;
         }
         switch (type) {
             case "camera": {
-                const sendCamera = force ?? !this.state.sendCamera;
-                await this.setVideo(type, sendCamera);
+                if (this.cameraPermission === "prompt" && !this.cameraTrack) {
+                    this.showMediaPermissionDialog("camera");
+                    return;
+                }
+                const track = this.cameraTrack;
+                const isSendingCamera = force ?? !this.isSendingCamera;
+                this.isSendingCamera = false;
+                await this.setVideo(track, type, {
+                    activateVideo: isSendingCamera,
+                    env,
+                    refreshStream,
+                });
                 break;
             }
             case "screen": {
-                const sendScreen = force ?? !this.state.sendScreen;
-                await this.setVideo(type, sendScreen);
+                const track = this.screenTrack;
+                const isSendingScreen = force ?? !this.isSendingScreen;
+                this.isSendingScreen = false;
+                await this.setVideo(track, type, { activateVideo: isSendingScreen, env });
                 break;
             }
         }
-        if (this.state.selfSession) {
-            if (!this.state.videoTrack) {
-                this.removeVideoFromSession(this.state.selfSession);
-            } else {
-                this.updateStream(this.state.selfSession, this.state.videoTrack);
+        if (this.localSession) {
+            switch (type) {
+                case "camera": {
+                    this.removeVideoFromSession(this.localSession, {
+                        type: "camera",
+                        cleanup: false,
+                    });
+                    if (this.cameraTrack) {
+                        this.updateStream(this.localSession, this.cameraTrack);
+                    }
+                    break;
+                }
+                case "screen": {
+                    if (!this.screenTrack) {
+                        this.removeVideoFromSession(this.localSession, {
+                            type: "screen",
+                            cleanup: false,
+                        });
+                    } else {
+                        this.updateStream(this.localSession, this.screenTrack);
+                    }
+                    break;
+                }
             }
         }
-        for (const session of Object.values(this.state.channel.rtcSessions)) {
-            if (session.id === this.state.selfSession.id) {
-                continue;
-            }
-            await this.updateRemote(session, "video");
-        }
-        if (!this.state.selfSession) {
+        const updatedTrack = type === "camera" ? this.cameraTrack : this.screenTrack;
+        await this.network?.updateUpload(type, updatedTrack);
+        if (!this.localSession) {
             return;
         }
-        this.updateAndBroadcast({
-            isScreenSharingOn: !!this.state.sendScreen,
-            isCameraOn: !!this.state.sendCamera,
-        });
-    }
-
-    updateAndBroadcast(data) {
-        const session = this.state.selfSession;
-        Object.assign(session, data);
-        this.state.updateAndBroadcastDebounce?.();
+        switch (type) {
+            case "camera": {
+                this.updateAndBroadcast({
+                    is_camera_on: !!this.isSendingCamera,
+                });
+                break;
+            }
+            case "screen": {
+                this.updateAndBroadcast({
+                    is_screen_sharing_on: !!this.isSendingScreen,
+                });
+                break;
+            }
+        }
     }
 
     /**
-     * Sets the enabled property of the local audio track based on the
+     * @param {object} data
+     * @param {boolean} [data.is_camera_on]
+     * @param {boolean} [data.is_screen_sharing_on]
+     * @param {boolean} [data.is_muted]
+     * @param {boolean} [data.is_deaf]
+     */
+    updateAndBroadcast(data) {
+        this._updateRemoteTabs({ [this.localSession.id]: data });
+        assignDefined(this.localSession, data);
+        this.updateAndBroadcastDebounce?.();
+    }
+
+    /**
+     * Sets the enabled property of the local microphone audio track based on the
      * current session state. And notifies peers of the new audio state.
      */
-    async refreshAudioStatus() {
-        if (!this.state.audioTrack) {
+    async refreshMicAudioStatus() {
+        if (!this.micAudioTrack) {
             return;
         }
-        this.state.audioTrack.enabled =
-            !this.state.selfSession.isMute && this.state.selfSession.isTalking;
-        await this.notify(Object.values(this.state.channel.rtcSessions), "trackChange", {
-            type: "audio",
-            state: {
-                isTalking: this.state.selfSession.isTalking && !this.state.selfSession.isSelfMuted,
-                isSelfMuted: this.state.selfSession.isSelfMuted,
-                isDeaf: this.state.selfSession.isDeaf,
-            },
-        });
+        this.micAudioTrack.enabled = !this.localSession.isMute && this.localSession.isTalking;
+        this._updateInfo();
     }
 
     /**
+     * @param {MediaStreamTrack} track
      * @param {String} type 'camera' or 'screen'
+     * @param {Object} [options] options
+     * @param {Boolean} [options.activateVideo=false] options
+     * @param {import("@web/env").OdooEnv} [options.env]
+     * @param {Boolean} [options.refreshStream] whether we are requesting a new stream
      */
-    async setVideo(type, activateVideo = false) {
-        this.state.sendScreen = false;
-        this.state.sendCamera = false;
-        if (this.blurManager) {
-            this.blurManager.close();
-            this.blurManager = undefined;
+    async setVideo(track, type, options) {
+        let activateVideo;
+        let env;
+        if (typeof options === "boolean") {
+            activateVideo = options ?? false;
+        } else {
+            activateVideo = options?.activateVideo ?? false;
+            env = options?.env;
         }
         const stopVideo = () => {
-            if (this.state.videoTrack) {
-                this.state.videoTrack.stop();
+            if (track) {
+                track.stop();
             }
-            this.state.videoTrack = undefined;
-            closeStream(this.state.sourceCameraStream);
-            this.state.sourceCameraStream = null;
+            switch (type) {
+                case "camera": {
+                    this.cameraTrack = undefined;
+                    closeStream(this.sourceCameraStream);
+                    this.sourceCameraStream = null;
+                    break;
+                }
+                case "screen": {
+                    this.screenTrack = undefined;
+                    closeStream(this.sourceScreenStream);
+                    this.sourceScreenStream = null;
+                    break;
+                }
+            }
         };
         if (!activateVideo) {
             if (type === "screen") {
                 this.soundEffectsService.play("screen-sharing");
             }
+            if (type === "camera" && this.blurManager) {
+                this.blurManager.close();
+                this.blurManager = undefined;
+            }
             stopVideo();
             return;
         }
+        /** @type {MediaStream} */
         let sourceStream;
+        const sourceWindow = env?.pipWindow ?? browser;
         try {
             if (type === "camera") {
-                if (this.state.sourceCameraStream && this.state.sendCamera) {
-                    sourceStream = this.state.sourceCameraStream;
+                if (this.sourceCameraStream && !options?.refreshStream) {
+                    sourceStream = this.sourceCameraStream;
                 } else {
-                    sourceStream = await browser.navigator.mediaDevices.getUserMedia({
-                        video: VIDEO_CONFIG,
+                    closeStream(this.sourceCameraStream);
+                    sourceStream = await sourceWindow.navigator.mediaDevices.getUserMedia({
+                        video: this.store.settings.cameraConstraints,
                     });
                 }
             }
             if (type === "screen") {
-                sourceStream = await browser.navigator.mediaDevices.getDisplayMedia({
-                    video: VIDEO_CONFIG,
-                });
+                if (this.sourceScreenStream) {
+                    sourceStream = this.sourceScreenStream;
+                } else {
+                    let controller = {};
+                    try {
+                        controller = new window.CaptureController();
+                        controller.setFocusBehavior("no-focus-change");
+                    } catch {
+                        console.warn("CaptureController not supported");
+                    }
+                    sourceStream = await sourceWindow.navigator.mediaDevices.getDisplayMedia({
+                        video: SCREEN_CONFIG,
+                        audio: true,
+                        controller,
+                    });
+                }
                 this.soundEffectsService.play("screen-sharing");
             }
         } catch {
-            const str =
-                type === "camera"
-                    ? _t('%s" requires "camera" access')
-                    : _t('%s" requires "screen recording" access');
-            this.notification.add(sprintf(str, window.location.host), { type: "warning" });
+            this.showMediaUnavailableWarning({
+                camera: type === "camera",
+                screen: type === "screen",
+            });
             stopVideo();
             return;
         }
-        let videoStream = sourceStream;
-        if (this.userSettingsService.useBlur && type === "camera") {
-            try {
-                this.blurManager = new BlurManager(sourceStream, {
-                    backgroundBlur: this.userSettingsService.backgroundBlurAmount,
-                    edgeBlur: this.userSettingsService.edgeBlurAmount,
-                });
-                videoStream = await this.blurManager.stream;
-            } catch (_e) {
-                this.notification.add(
-                    sprintf(_t("%(name)s: %(message)s)"), {
-                        name: _e.name,
-                        message: _e.message,
-                    }),
-                    { type: "warning" }
-                );
-                this.userSettingsService.useBlur = false;
-            }
-        }
-        const track = videoStream ? videoStream.getVideoTracks()[0] : undefined;
-        if (track) {
-            track.addEventListener("ended", async () => {
-                await this.toggleVideo(type, false);
-            });
-        }
-        // ensures that the previous stream is stopped before overwriting it
-        if (this.state.sourceCameraStream && sourceStream.id !== this.state.sourceCameraStream.id) {
-            closeStream(this.state.sourceCameraStream);
-        }
-        Object.assign(this.state, {
-            sourceCameraStream: sourceStream,
-            videoTrack: track,
-            sendCamera: Boolean(type === "camera" && track),
-            sendScreen: Boolean(type === "screen" && track),
-        });
-    }
-
-    /**
-     * Updates the track that is broadcasted to the RTCPeerConnection.
-     * This will start new transaction by triggering a negotiationneeded event
-     * on the peerConnection given as parameter.
-     *
-     * negotiationneeded -> offer -> answer -> ...
-     */
-    async updateRemote(session, trackKind, initTransceiver = false) {
-        this.log(session, `updating ${trackKind} transceiver`);
-        const track = trackKind === "audio" ? this.state.audioTrack : this.state.videoTrack;
-        let transceiverDirection = track ? "sendrecv" : "recvonly";
-        if (trackKind === "video") {
-            transceiverDirection = this.getTransceiverDirection(session, Boolean(track));
-        }
-        let transceiver;
-        if (initTransceiver) {
-            transceiver = session.peerConnection.addTransceiver(trackKind);
-        } else {
-            transceiver = getTransceiver(session.peerConnection, trackKind);
-        }
-        try {
-            await transceiver.sender.replaceTrack(track || null);
-            transceiver.direction = transceiverDirection;
-        } catch {
-            this.log(session, `failed to update ${trackKind} transceiver`);
-        }
-        if (!track && trackKind === "video") {
-            this.notify([session], "trackChange", {
-                type: "video",
-                state: { isSendingVideo: false },
-            });
-        }
-    }
-
-    async resetAudioTrack({ force = false }) {
-        if (this.state.audioTrack) {
-            this.state.audioTrack.stop();
-            this.state.audioTrack = undefined;
-        }
-        if (!this.state.channel) {
+        if (!this.selfSession) {
+            closeStream(sourceStream);
             return;
         }
+        let outputTrack = sourceStream ? sourceStream.getVideoTracks()[0] : undefined;
+        const screenAudioTrack = sourceStream ? sourceStream.getAudioTracks()[0] : undefined;
+        if (outputTrack) {
+            outputTrack.addEventListener("ended", async () => {
+                await this.toggleVideo(type, { force: false });
+            });
+            if (type === "camera" && isMobileOS()) {
+                const settings = outputTrack.getSettings();
+                if (settings?.facingMode) {
+                    this.store.settings.cameraFacingMode = settings.facingMode;
+                } else if (!this.store.settings.cameraFacingMode) {
+                    this.store.settings.cameraFacingMode = "user";
+                }
+            }
+        }
+        if (this.store.settings.useBlur && type === "camera") {
+            this.blurManager?.close();
+            this.blurManager = undefined;
+            try {
+                this.blurManager = await this.applyBlurEffect(sourceStream);
+                const blurredStream = await this.blurManager.stream;
+                outputTrack = blurredStream.getVideoTracks()[0];
+            } catch (_e) {
+                this.notification.add(_e.message, { type: "warning" });
+                this.store.settings.useBlur = false;
+                outputTrack = sourceStream.getVideoTracks()[0];
+            }
+        } else if (!this.store.settings.useBlur && type === "camera") {
+            this.blurManager?.close();
+            this.blurManager = undefined;
+        }
+        switch (type) {
+            case "camera": {
+                Object.assign(this, {
+                    cameraTrack: outputTrack,
+                    isSendingCamera: Boolean(outputTrack),
+                    sourceCameraStream: sourceStream,
+                });
+                break;
+            }
+            case "screen": {
+                Object.assign(this, {
+                    isSendingScreen: Boolean(outputTrack),
+                    screenAudioTrack: screenAudioTrack,
+                    screenTrack: outputTrack,
+                    sourceScreenStream: sourceStream,
+                });
+                break;
+            }
+        }
+        if (this.screenAudioTrack) {
+            this.updateAudioTrack();
+        }
+    }
+
+    async updateAudioTrack() {
+        const { micAudioTrack, screenAudioTrack } = this;
+        if (!micAudioTrack && !screenAudioTrack) {
+            return;
+        }
+        if (micAudioTrack && screenAudioTrack) {
+            await this.audioContext?.close();
+            this.audioContext = undefined;
+            this.audioContext = new AudioContext();
+            const micSource = this.audioContext.createMediaStreamSource(
+                new MediaStream([micAudioTrack])
+            );
+            const screenSource = this.audioContext.createMediaStreamSource(
+                new MediaStream([screenAudioTrack])
+            );
+            const destination = this.audioContext.createMediaStreamDestination();
+            micSource.connect(destination);
+            screenSource.connect(destination);
+            this.audioTrack = destination.stream.getAudioTracks()[0];
+        } else {
+            this.audioTrack = micAudioTrack ?? screenAudioTrack;
+        }
+        await this.network?.updateUpload("audio", this.audioTrack);
+    }
+
+    async resetMicAudioTrack({ force = false }) {
+        this.micAudioTrack?.stop();
+        this.micAudioTrack = undefined;
+        this.audioTrack?.stop();
+        this.audioTrack = undefined;
+        if (!this.localChannel) {
+            return;
+        }
+        if (this.localSession) {
+            this.setMute(true);
+        }
         if (force) {
-            let audioTrack;
+            let micAudioTrack;
             try {
                 const audioStream = await browser.navigator.mediaDevices.getUserMedia({
-                    audio: this.userSettingsService.audioConstraints,
+                    audio: this.store.settings.audioConstraints,
                 });
-                audioTrack = audioStream.getAudioTracks()[0];
-            } catch {
-                this.notification.add(
-                    sprintf(_t('"%(hostname)s" requires microphone access'), {
-                        hostname: window.location.host,
-                    }),
-                    { type: "warning" }
-                );
-                if (this.state.selfSession) {
-                    this.updateAndBroadcast({ isSelfMuted: true });
+                micAudioTrack = audioStream.getAudioTracks()[0];
+                if (this.localSession) {
+                    this.setMute(false);
                 }
+            } catch {
+                this.showMediaUnavailableWarning({ microphone: true });
                 return;
             }
-            if (!this.state.selfSession) {
+            if (!this.localSession) {
                 // The getUserMedia promise could resolve when the call is ended
                 // in which case the track is no longer relevant.
-                audioTrack.stop();
+                micAudioTrack.stop();
                 return;
             }
-            audioTrack.addEventListener("ended", async () => {
+            micAudioTrack.addEventListener("ended", async () => {
                 // this mostly happens when the user retracts microphone permission.
-                await this.resetAudioTrack({ force: false });
-                this.updateAndBroadcast({ isSelfMuted: true });
-                await this.refreshAudioStatus();
+                await this.resetMicAudioTrack({ force: false });
+                this.setMute(true);
             });
-            this.updateAndBroadcast({ isSelfMuted: false });
-            audioTrack.enabled = !this.state.selfSession.isMute && this.state.selfSession.isTalking;
-            this.state.audioTrack = audioTrack;
-            await this.linkVoiceActivation();
-            for (const session of Object.values(this.state.channel.rtcSessions)) {
-                if (session.id === this.state.selfSession.id) {
-                    continue;
-                }
-                await this.updateRemote(session, "audio");
-            }
+            micAudioTrack.enabled = !this.localSession.isMute && this.localSession.isTalking;
+            this.micAudioTrack = micAudioTrack;
+            this.linkVoiceActivationDebounce();
+            this.updateAudioTrack();
         }
     }
 
@@ -1364,25 +2193,21 @@ export class Rtc {
      * attaches an audio monitor for voice activation if necessary.
      */
     async linkVoiceActivation() {
-        this.state.disconnectAudioMonitor?.();
-        if (!this.state.selfSession) {
+        this.disconnectAudioMonitor?.();
+        if (!this.localSession) {
             return;
         }
-        if (
-            this.userSettingsService.usePushToTalk ||
-            !this.state.channel ||
-            !this.state.audioTrack
-        ) {
-            this.state.selfSession.isTalking = false;
-            await this.refreshAudioStatus();
+        if (this.store.settings.usePushToTalk || !this.localChannel || !this.micAudioTrack) {
+            this.localSession.isTalking = false;
+            await this.refreshMicAudioStatus();
             return;
         }
         try {
-            this.state.disconnectAudioMonitor = await monitorAudio(this.state.audioTrack, {
+            this.disconnectAudioMonitor = await monitorAudio(this.micAudioTrack, {
                 onThreshold: async (isAboveThreshold) => {
                     this.setTalking(isAboveThreshold);
                 },
-                volumeThreshold: this.userSettingsService.voiceActivationThreshold,
+                volumeThreshold: this.store.settings.voiceActivationThreshold,
             });
         } catch {
             /**
@@ -1393,66 +2218,34 @@ export class Rtc {
             this.notification.add(_t("Your browser does not support voice activation"), {
                 type: "warning",
             });
-            this.state.selfSession.isTalking = true;
+            this.localSession.isTalking = true;
         }
-        await this.refreshAudioStatus();
+        await this.refreshMicAudioStatus();
+    }
+
+    notifyServerDisconnect() {
+        this.log(this.localSession, "self session deleted by the server, ending call", {
+            important: true,
+        });
+        this.notification.add(_t("Disconnected from the call by the server"), {
+            type: "warning",
+        });
+    }
+
+    formatInfo() {
+        this.localSession.is_camera_on = Boolean(this.cameraTrack);
+        this.localSession.is_screen_sharing_on = Boolean(this.screenTrack);
+        return this.localSession.info;
     }
 
     /**
-     * @param {Object} data
-     * @returns {RtcSession}
-     */
-    insertSession(data) {
-        let session;
-        if (this.store.rtcSessions[data.id]) {
-            session = this.store.rtcSessions[data.id];
-        } else {
-            session = new RtcSession();
-            session._store = this.store;
-        }
-        const { channelMember, ...remainingData } = data;
-        for (const key in remainingData) {
-            session[key] = remainingData[key];
-        }
-        if (channelMember?.channel) {
-            session.channelId = channelMember.channel.id;
-        }
-        if (channelMember) {
-            const channelMemberRecord = this.channelMemberService.insert(channelMember);
-            channelMemberRecord.rtcSessionId = session.id;
-            session.channelMemberId = channelMemberRecord.id;
-            if (channelMemberRecord.thread) {
-                channelMemberRecord.thread.rtcSessions[session.id] = session;
-            }
-        }
-        this.store.rtcSessions[session.id] = session;
-        // return reactive version
-        return this.store.rtcSessions[session.id];
-    }
-
-    /**
-     * @param {import("@mail/discuss/call/common/rtc_session_model").id} id
-     */
-    deleteSession(id) {
-        const session = this.store.rtcSessions[id];
-        if (session) {
-            if (this.state.selfSession && session.id === this.state.selfSession.id) {
-                this.endCall();
-            }
-            delete this.store.threads[createLocalId("discuss.channel", session.channelId)]
-                ?.rtcSessions[id];
-            this.disconnect(session);
-        }
-        delete this.store.rtcSessions[id];
-    }
-
-    /**
-     * @param {RtcSession} session
+     * @param {import("models").RtcSession} session
      * @param {MediaStreamTrack} track
      * @param {Object} [parm1]
      * @param {boolean} [parm1.mute]
+     * @param {VideoType} [parm1.videoType]
      */
-    async updateStream(session, track, { mute } = {}) {
+    async updateStream(session, track, { mute, videoType } = {}) {
         const stream = new window.MediaStream();
         stream.addTrack(track);
         if (track.kind === "audio") {
@@ -1460,126 +2253,266 @@ export class Rtc {
             audioElement.srcObject = stream;
             audioElement.load();
             audioElement.muted = mute;
-            audioElement.volume = this.userSettingsService.getVolume(session);
+            audioElement.volume = this.store.settings.getVolume(session);
             // Using both autoplay and play() as safari may prevent play() outside of user interactions
             // while some browsers may not support or block autoplay.
             audioElement.autoplay = true;
             session.audioElement = audioElement;
             session.audioStream = stream;
-            session.isSelfMuted = false;
+            session.is_muted = false;
             session.isTalking = false;
             await session.playAudio();
         }
         if (track.kind === "video") {
-            session.videoStream = stream;
+            videoType = videoType
+                ? videoType
+                : track.id === this.cameraTrack?.id
+                ? "camera"
+                : "screen";
+            session.videoStreams.set(videoType, stream);
+            this.updateActiveSession(session, videoType, { addVideo: true });
         }
     }
 
-    removeVideoFromSession(session) {
-        closeStream(session.videoStream);
-        session.videoStream = undefined;
-    }
-
-    updateVideoDownload(rtcSession, { viewCountIncrement }) {
-        rtcSession.videoComponentCount += viewCountIncrement;
-        if (!rtcSession.peerConnection) {
-            return;
-        }
-        const transceivers = rtcSession.peerConnection.getTransceivers();
-        const transceiver = transceivers[ORDERED_TRANSCEIVER_NAMES.indexOf("video")];
-        if (!transceiver) {
-            return;
-        }
-        transceiver.direction = this.getTransceiverDirection(
-            rtcSession,
-            Boolean(this.state.videoTrack)
-        );
-    }
-
-    getTransceiverDirection(session, allowUpload = false) {
-        if (session.videoComponentCount > 0) {
-            return allowUpload ? "sendrecv" : "recvonly";
+    /**
+     * @param {import("models").RtcSession} session
+     * @param {Object} [param1]
+     * @param {import("@mail/discuss/call/common/rtc_service").VideoType} [param1.type]
+     * @param {boolean} [param1.cleanup] when removing streams from the local session, we may still want to keep
+     * them alive, set to false to prevent the streams from being closed.
+     */
+    removeVideoFromSession(session, { type, cleanup = true } = {}) {
+        if (type) {
+            this.updateActiveSession(session, type);
+            if (cleanup) {
+                closeStream(session.videoStreams.get(type));
+            }
+            session.videoStreams.delete(type);
+            if (
+                this.selfSession.videoStreams.size === 0 &&
+                this.selfSession.eq(this.localChannel.activeRtcSession)
+            ) {
+                this.localChannel.activeRtcSession = undefined;
+            }
         } else {
-            return allowUpload ? "sendonly" : "inactive";
+            if (cleanup) {
+                for (const stream of session.videoStreams.values()) {
+                    closeStream(stream);
+                }
+            }
+            session.videoStreams.clear();
+        }
+    }
+    /**
+     * @param {import("models").RtcSession} session
+     */
+    removeAudioFromSession(session) {
+        closeStream(session.audioStream);
+        if (session.audioElement) {
+            session.audioElement.pause();
+            try {
+                session.audioElement.srcObject = undefined;
+            } catch {
+                // ignore error during remove, the value will be overwritten at next usage anyway
+            }
+        }
+        session.audioStream = undefined;
+    }
+
+    /**
+     * @param {import("models").RtcSession} session
+     * @param {VideoType} [videoType]
+     * @param {Object} [parm2]
+     * @param {boolean} [parm2.addVideo]
+     */
+    updateActiveSession(session, videoType, { addVideo = false } = {}) {
+        const activeRtcSession = this.localChannel.activeRtcSession;
+        if (addVideo) {
+            if (videoType === "screen") {
+                this.localChannel.activeRtcSession = session;
+                session.mainVideoStreamType = videoType;
+                return;
+            }
+            if (activeRtcSession && session.hasVideo && !session.isMainVideoStreamActive) {
+                session.mainVideoStreamType = videoType;
+            }
+            return;
+        }
+        if (!activeRtcSession || activeRtcSession.notEq(session)) {
+            return;
+        }
+        if (activeRtcSession.isMainVideoStreamActive) {
+            if (videoType === session.mainVideoStreamType) {
+                if (videoType === "screen") {
+                    session.mainVideoStreamType = "camera";
+                } else if (
+                    this.actionsStack.includes("camera-on") &&
+                    this.actionsStack.includes("share-screen")
+                ) {
+                    session.mainVideoStreamType = "screen";
+                }
+            }
         }
     }
 
-    updateRtcSessions(channelId, sessionsData, command) {
-        const channel = this.store.threads[createLocalId("discuss.channel", channelId)];
-        if (!channel) {
-            return;
+    /**
+     * @param {import("models").RtcSession} rtcSession
+     * @param {Object} [param1]
+     * @param {number} [param1.viewCountIncrement=0] can be a negative value to decrement
+     */
+    updateVideoDownload(rtcSession, { viewCountIncrement = 0 } = {}) {
+        rtcSession.videoComponentCount += viewCountIncrement;
+        const downloadTimeout = this.downloadTimeouts.get(rtcSession.id);
+        if (downloadTimeout) {
+            this.downloadTimeouts.delete(rtcSession.id);
+            browser.clearTimeout(downloadTimeout);
         }
-        const oldCount = Object.keys(channel.rtcSessions).length;
-        switch (command) {
-            case "insert-and-unlink":
-                for (const sessionData of sessionsData) {
-                    this.deleteSession(sessionData.id);
-                }
-                break;
-            case "insert":
-                for (const sessionData of sessionsData) {
-                    const session = this.insertSession(sessionData);
-                    channel.rtcSessions[session.id] = session;
-                }
-                break;
-        }
-        if (Object.keys(channel.rtcSessions).length > oldCount) {
-            this.soundEffectsService.play("channel-join");
-        } else if (Object.keys(channel.rtcSessions).length < oldCount) {
-            this.soundEffectsService.play("member-leave");
+        if (rtcSession.videoComponentCount > 0) {
+            this.network?.updateDownload(rtcSession.id, {
+                camera: true,
+                screen: true,
+            });
+        } else {
+            /**
+             * We wait a bit before pausing a download to avoid flickering, if the user stops downloading and starts again
+             * soon after, it is not worth pausing the download.
+             */
+            this.downloadTimeouts.set(
+                rtcSession.id,
+                browser.setTimeout(() => {
+                    this.downloadTimeouts.delete(rtcSession.id);
+                    this.network?.updateDownload(rtcSession.id, {
+                        camera: false,
+                        screen: false,
+                    });
+                }, 1000)
+            );
         }
     }
 }
 
+Rtc.register();
+
 export const rtcService = {
     dependencies: [
-        "discuss.channel.member",
+        "bus_service",
+        "discuss.p2p",
+        "discuss.pip_service",
+        "discuss.ptt_extension",
+        "mail.fullscreen",
+        "mail.sound_effects",
         "mail.store",
         "notification",
-        "rpc",
-        "bus_service",
-        "mail.sound_effects",
-        "mail.user_settings",
-        "mail.thread",
-        "mail.persona",
+        "presence",
     ],
+    /**
+     * @param {import("@web/env").OdooEnv} env
+     * @param {import("services").ServiceFactories} services
+     */
     start(env, services) {
-        const rtc = new Rtc(env, services);
-        services["bus_service"].subscribe(
-            "discuss.channel.rtc.session/peer_notification",
-            ({ sender, notifications }) => {
-                for (const content of notifications) {
-                    rtc.handleNotification(sender, content);
+        const store = env.services["mail.store"];
+        const rtc = store.rtc;
+        rtc.pipService = services["discuss.pip_service"];
+        onChange(rtc.pipService.state, "active", () => {
+            const isPipMode = rtc.pipService.state.active;
+            if (!isPipMode) {
+                if (rtc.hadFullscreen && rtc.channel) {
+                    rtc.enterFullscreen();
                 }
+                rtc.hadFullscreen = false;
+                rtc.channel?.openChatWindow();
+            }
+            rtc.isPipMode = isPipMode;
+            rtc._postToTabs({
+                type: CROSS_TAB_HOST_MESSAGE.PIP_CHANGE,
+                changes: { isPipMode },
+            });
+        });
+        rtc.fullscreen = services["mail.fullscreen"];
+        onChange(rtc.fullscreen, "id", () => {
+            const wasFullscreen = rtc.isFullscreen;
+            rtc.isFullscreen = rtc.fullscreen.id === CALL_FULLSCREEN_ID;
+            if (
+                rtc.screenTrack &&
+                rtc.displaySurface !== "browser" &&
+                rtc.fullscreen.id === CALL_FULLSCREEN_ID
+            ) {
+                rtc.screenTrack.enabled = false;
+            } else if (!rtc.isFullscreen) {
+                if (wasFullscreen && rtc.screenTrack) {
+                    rtc.screenTrack.enabled = true;
+                }
+            }
+        });
+        browser.navigator.permissions?.query({ name: "microphone" }).then((status) => {
+            rtc.microphonePermission = status.state;
+            status.onchange = () => (rtc.microphonePermission = status.state);
+        });
+        browser.navigator.permissions?.query({ name: "camera" }).then((status) => {
+            rtc.cameraPermission = status.state;
+            status.onchange = () => (rtc.cameraPermission = status.state);
+        });
+        rtc.p2pService = services["discuss.p2p"];
+        rtc.p2pService.acceptOffer = async (id, sequence) => {
+            const session = await store["discuss.channel.rtc.session"].getWhenReady(Number(id));
+            /**
+             * We only accept offers for new connections (higher sequence),
+             * or offers that renegotiate an existing connection (same sequence).
+             */
+            return sequence >= session?.sequence;
+        };
+        services["bus_service"].subscribe(
+            "discuss.channel.rtc.session/sfu_hot_swap",
+            async ({ serverInfo }) => {
+                if (!rtc.localSession) {
+                    return;
+                }
+                if (rtc.serverInfo?.channelUUID === serverInfo.channelUUID) {
+                    // we clear peers as inbound p2p connections may still be active
+                    rtc.p2pService.removeALlPeers();
+                    // no reason to swap if the server is the same, if at some point we want to force a swap
+                    // there should be an explicit flag in the event payload.
+                    return;
+                }
+                rtc.serverInfo = serverInfo;
+                await rtc._initConnection();
             }
         );
         services["bus_service"].subscribe("discuss.channel.rtc.session/ended", ({ sessionId }) => {
-            if (rtc.state.selfSession?.id === sessionId) {
+            if (rtc.localSession?.id === sessionId) {
+                rtc.notifyServerDisconnect();
                 rtc.endCall();
-                services.notification.add(_t("Disconnected from the RTC call by the server"), {
-                    type: "warning",
-                });
+            }
+        });
+        services["bus_service"].subscribe("res.users.settings.volumes", (payload) => {
+            if (payload) {
+                rtc.store.Volume.insert(payload);
             }
         });
         services["bus_service"].subscribe(
-            "discuss.channel/rtc_sessions_update",
-            ({ id, rtcSessions }) => {
-                const sessionsData = rtcSessions[0][1];
-                const command = rtcSessions[0][0];
-                rtc.updateRtcSessions(id, sessionsData, command);
+            "discuss.channel.rtc.session/update_and_broadcast",
+            (payload) => {
+                const { data, channelId } = payload;
+                /**
+                 * If this event comes from the channel of the current call, information is shared in real time
+                 * through the peer to peer connection. So we do not use this less accurate broadcast.
+                 */
+                if (channelId !== rtc.channel?.id) {
+                    rtc.store.insert(data);
+                }
             }
         );
-        services["bus_service"].subscribe("discuss.channel/joined", ({ channel }) => {
-            const rtcSessions = channel.rtcSessions;
-            const sessionsData = rtcSessions[0][1];
-            const command = rtcSessions[0][0];
-            rtc.updateRtcSessions(channel.id, sessionsData, command);
-        });
-        services["bus_service"].subscribe("mail.record/insert", ({ RtcSession }) => {
-            if (RtcSession) {
-                rtc.insertSession(RtcSession);
-            }
-        });
+        /**
+         * Attempts to play RTC medias when a user shows signs of presence (interaction with the page) as
+         * they cannot be played on windows that have not been interacted with.
+         */
+        services["presence"].bus.addEventListener(
+            "presence",
+            () => {
+                env.bus.trigger("RTC-SERVICE:PLAY_MEDIA");
+            },
+            { once: true }
+        );
         return rtc;
     },
 };

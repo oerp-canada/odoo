@@ -6,24 +6,26 @@
         <field name="inherit_id" ref="website_forum.forum_forum_view_form"/>
         <field name="arch" type="xml">
             <xpath expr="//group[@name='group_order']" position="after">
-                <group string="eLearning" name="group_slides" attrs="{'invisible': [('slide_channel_id', '=', False)]}">
+                <group string="eLearning" name="group_slides" invisible="not slide_channel_id">
                     <field name="slide_channel_id" readonly="True"/>
                 </group>
             </xpath>
             <xpath expr="//field[@name='privacy']" position="attributes">
-                <attribute name="attrs">{'invisible': [('slide_channel_id', '!=', False)], 'required': [('slide_channel_id', '=', 'False')]}</attribute>
+                <attribute name="invisible">slide_channel_id</attribute>
+                <attribute name="required">slide_channel_id == 'False'</attribute>
             </xpath>
             <xpath expr="//field[@name='authorized_group_id']" position="attributes">
-                <attribute name="attrs">{'invisible': ['|', ('privacy', '!=', 'private'), ('slide_channel_id', '!=', False)], 'required': [('privacy', '=', 'private')]}</attribute>
+                <attribute name="invisible">privacy != 'private' or slide_channel_id</attribute>
+                <attribute name="required">privacy == 'private'</attribute>
             </xpath>
             <xpath expr="//field[@name='privacy']" position="before">
-                <field name="visibility" attrs="{'invisible': [('slide_channel_id', '=', False)]}"/>
+                <field name="visibility" invisible="not slide_channel_id"/>
             </xpath>
         </field>
     </record>
 
     <record id="forum_forum_view_tree_slides" model="ir.ui.view">
-        <field name="name">forum.forum.view.tree.slides</field>
+        <field name="name">forum.forum.view.list.slides</field>
         <field name="model">forum.forum</field>
         <field name="mode">primary</field>
         <field name="priority" eval="20"/>
@@ -39,8 +41,8 @@
     <record id="forum_forum_action_channel" model="ir.actions.act_window">
         <field name="name">Forums</field>
         <field name="res_model">forum.forum</field>
-        <field name="view_mode">tree,form</field>
-        <field name="domain">[('slide_channel_ids', '!=', 'False')]</field>
+        <field name="view_mode">list,form</field>
+        <field name="domain">[('slide_channel_ids', '!=', False)]</field>
         <field name="view_id" ref="forum_forum_view_tree_slides"/>
         <field name="help" type="html">
             <p class="o_view_nocontent_smiling_face">

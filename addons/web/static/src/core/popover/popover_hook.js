@@ -1,8 +1,11 @@
-/** @odoo-module **/
-
+import { useComponent } from "@web/owl2/utils";
+import { onWillUnmount, status } from "@odoo/owl";
 import { useService } from "@web/core/utils/hooks";
 
-import { onWillUnmount, status, useComponent } from "@odoo/owl";
+/**
+ * @typedef {import("@web/core/popover/popover_service").PopoverServiceAddFunction} PopoverServiceAddFunction
+ * @typedef {import("@web/core/popover/popover_service").PopoverServiceAddOptions} PopoverServiceAddOptions
+ */
 
 /**
  * @typedef PopoverHookReturnType
@@ -16,35 +19,55 @@ import { onWillUnmount, status, useComponent } from "@odoo/owl";
  */
 
 /**
- * Manages a component to be used as a popover.
- *
+ * @param {PopoverServiceAddFunction} addFn
  * @param {typeof import("@odoo/owl").Component} component
- * @param {import("@web/core/popover/popover_service").PopoverServiceAddOptions} [options]
+ * @param {PopoverServiceAddOptions} options
  * @returns {PopoverHookReturnType}
  */
-export function usePopover(component, options = {}) {
+export function makePopover(addFn, component, options) {
     let removeFn = null;
-    const popover = useService("popover");
-    const owner = useComponent();
     function close() {
         removeFn?.();
     }
-    onWillUnmount(close);
     return {
         open(target, props) {
             close();
             const newOptions = Object.create(options);
-            newOptions.onClose = function () {
+            newOptions.onClose = () => {
                 removeFn = null;
-                if (status(owner) !== "destroyed") {
-                    options.onClose?.();
-                }
+                options.onClose?.();
             };
-            removeFn = popover.add(target, component, props, newOptions);
+            removeFn = addFn(target, component, props, newOptions);
         },
         close,
         get isOpen() {
             return Boolean(removeFn);
         },
     };
+}
+
+/**
+ * Manages a component to be used as a popover.
+ *
+ * @param {typeof import("@odoo/owl").Component} component
+ * @param {PopoverServiceAddOptions} [options]
+ * @returns {PopoverHookReturnType}
+ */
+export function usePopover(component, options = {}) {
+    let service;
+    if (options.useBottomSheet) {
+        service = useService("bottom_sheet");
+    } else {
+        service = useService("popover");
+    }
+    const owner = useComponent();
+    const newOptions = Object.create(options);
+    newOptions.onClose = () => {
+        if (status(owner) !== "destroyed") {
+            options.onClose?.();
+        }
+    };
+    const popover = makePopover(service.add, component, newOptions);
+    onWillUnmount(popover.close);
+    return popover;
 }

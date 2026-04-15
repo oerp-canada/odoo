@@ -4,6 +4,7 @@ from freezegun import freeze_time
 
 from odoo.tests import HttpCase
 from odoo.tests.common import tagged
+from odoo.addons.hr.tests.test_utils import get_admin_employee
 
 from datetime import date
 
@@ -13,7 +14,10 @@ class TestHrHolidaysTour(HttpCase):
     @freeze_time('01/17/2022')
     def test_hr_holidays_tour(self):
         admin_user = self.env.ref('base.user_admin')
-        admin_employee = admin_user.employee_id
+        admin_user.write({
+            'email': 'mitchell.admin@example.com',
+        })
+        admin_employee = get_admin_employee(self.env)
         HRLeave = self.env['hr.leave']
         date_from = date(2022, 1, 17)
         date_to = date(2022, 1, 18)
@@ -24,23 +28,26 @@ class TestHrHolidaysTour(HttpCase):
         ])
         leaves_on_freeze_date.sudo().unlink()
 
-        LeaveType = self.env['hr.leave.type'].with_user(admin_user)
+        HrWorkEntryType = self.env['hr.work.entry.type'].with_user(admin_user)
 
-        holidays_type_1 = LeaveType.create({
+        holidays_type_1 = HrWorkEntryType.create({
             'name': 'NotLimitedHR',
-            'requires_allocation': 'no',
+            'code': 'NotLimitedHR',
+            'requires_allocation': False,
             'leave_validation_type': 'hr',
+            'request_unit': 'day',
+            'unit_of_measure': 'day',
+            'count_as': 'absence',
         })
         # add allocation
-        allocation = self.env['hr.leave.allocation'].create({
+        self.env['hr.leave.allocation'].create({
             'name': 'Expired Allocation',
             'employee_id': admin_employee.id,
-            'holiday_status_id': holidays_type_1.id,
+            'work_entry_type_id': holidays_type_1.id,
             'number_of_days': 1,
             'state': 'confirm',
             'date_from': '2022-01-01',
             'date_to': '2022-12-31',
         })
-        allocation.action_validate()
 
-        self.start_tour('/web', 'hr_holidays_tour', login="admin")
+        self.start_tour('/odoo', 'hr_holidays_tour', login="admin")

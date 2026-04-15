@@ -1,11 +1,17 @@
 <?xml version="1.0" encoding="utf-8"?>
 <odoo>
+    <record model="res.groups.privilege" id="res_groups_privilege_maintenance">
+        <field name="name">Maintenance</field>
+        <field name="category_id" ref="base.module_category_supply_chain"/>
+    </record>
+
     <!-- This group is only allowed to deal with equipment registration and maintenance -->
     <record id="group_equipment_manager" model="res.groups">
         <field name="name">Equipment Manager</field>
-        <field name="category_id" ref="base.module_category_manufacturing_maintenance"/>
+        <field name="sequence">10</field>
+        <field name="privilege_id" ref="res_groups_privilege_maintenance"/>
         <field name="implied_ids" eval="[(4, ref('base.group_user'))]"/>
-        <field name="users" eval="[(4, ref('base.user_root')), (4, ref('base.user_admin'))]"/>
+        <field name="user_ids" eval="[(4, ref('base.user_root')), (4, ref('base.user_admin'))]"/>
         <field name="comment">The user will be able to manage equipment.</field>
     </record>
 
@@ -43,25 +49,25 @@
     <record id="maintenance_request_comp_rule" model="ir.rule">
         <field name="name">Maintenance Request Multi-company rule</field>
         <field name="model_id" ref="model_maintenance_request"/>
-        <field name="domain_force">['|',('company_id','=',False),('company_id', 'in', company_ids)]</field>
+        <field name="domain_force">[('company_id', 'in', company_ids + [False])]</field>
     </record>
 
     <record id="maintenance_equipment_comp_rule" model="ir.rule">
         <field name="name">Maintenance Equipment Multi-company rule</field>
         <field name="model_id" ref="model_maintenance_equipment"/>
-        <field name="domain_force">['|',('company_id','=',False),('company_id', 'in', company_ids)]</field>
+        <field name="domain_force">[('company_id', 'in', company_ids + [False])]</field>
     </record>
 
     <record id="maintenance_team_comp_rule" model="ir.rule">
         <field name="name">Maintenance Team Multi-company rule</field>
         <field name="model_id" ref="model_maintenance_team"/>
-        <field name="domain_force">['|',('company_id','=',False),('company_id', 'in', company_ids)]</field>
+        <field name="domain_force">[('company_id', 'in', company_ids + [False])]</field>
     </record>
 
     <record id="maintenance_equipment_category_comp_rule" model="ir.rule">
         <field name="name">Maintenance Equipment Category Multi-company rule</field>
         <field name="model_id" ref="model_maintenance_equipment_category"/>
-        <field name="domain_force">['|',('company_id','=',False),('company_id', 'in', company_ids)]</field>
+        <field name="domain_force">[('company_id', 'in', company_ids + [False])]</field>
     </record>
 
     </data>

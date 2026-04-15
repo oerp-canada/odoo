@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Part of Odoo. See LICENSE file for full copyright and licensing details.
 
 {
@@ -8,6 +7,10 @@
         'l10n_din5008',
         'purchase',
     ],
+    'data': [
+        'report/din5008_purchase_order_templates.xml',
+    ],
     'auto_install': True,
+    'author': 'Odoo S.A.',
     'license': 'LGPL-3',
 }

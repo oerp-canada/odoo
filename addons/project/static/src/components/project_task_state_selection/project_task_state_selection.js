@@ -1,18 +1,23 @@
-/** @odoo-module */
-
+import { useState } from "@web/owl2/utils";
+import { _t } from "@web/core/l10n/translation";
 import {
     StateSelectionField,
     stateSelectionField,
 } from "@web/views/fields/state_selection/state_selection_field";
-import { sprintf } from "@web/core/utils/strings";
 import { useCommand } from "@web/core/commands/command_hook";
 import { formatSelection } from "@web/views/fields/formatters";
 
 import { registry } from "@web/core/registry";
 
-const { useState } = owl;
-
 export class ProjectTaskStateSelection extends StateSelectionField {
+    static template = "project.ProjectTaskStateSelection";
+
+    static props = {
+        ...stateSelectionField.component.props,
+        isToggleMode: { type: Boolean, optional: true },
+        viewType: { type: String },
+    };
+
     setup() {
         this.state = useState({
             isStateButtonHighlighted: false,
@@ -31,7 +36,7 @@ export class ProjectTaskStateSelection extends StateSelectionField {
             "02_changes_requested": "o_status_changes_requested",
             "1_done": "text-success",
             "1_canceled": "text-danger",
-            "04_waiting_normal": "",
+            "04_waiting_normal": "btn-outline-info",
         };
         this.colorButton = {
             "01_in_progress": "btn-outline-secondary",
@@ -39,12 +44,12 @@ export class ProjectTaskStateSelection extends StateSelectionField {
             "02_changes_requested": "btn-outline-warning",
             "1_done": "btn-outline-success",
             "1_canceled": "btn-outline-danger",
-            "04_waiting_normal": "btn-outline-secondary",
+            "04_waiting_normal": "btn-outline-info",
         };
         if (this.props.viewType != 'form') {
             super.setup();
         } else {
-            const commandName = sprintf(this.env._t(`Set state as...`));
+            const commandName = _t("Set state as...");
             useCommand(
                 commandName,
                 () => {
@@ -73,19 +78,13 @@ export class ProjectTaskStateSelection extends StateSelectionField {
     }
 
     get options() {
-        const options = [
-            ["1_canceled", this.env._t("Canceled")],
-            ["1_done", this.env._t("Done")],
-        ];
-        if (this.currentValue != "04_waiting_normal") {
-            return [
-                ["01_in_progress", this.env._t("In Progress")],
-                ["02_changes_requested", this.env._t("Changes Requested")],
-                ["03_approved", this.env._t("Approved")],
-                ...options,
-            ];
+        const labels = new Map(super.options);
+        const states = ["1_canceled", "1_done"];
+        const currentState = this.props.record.data[this.props.name];
+        if (currentState != "04_waiting_normal") {
+            states.unshift("01_in_progress", "02_changes_requested", "03_approved");
         }
-        return options;
+        return states.map((state) => [state, labels.get(state)]);
     }
 
     get availableOptions() {
@@ -94,8 +93,8 @@ export class ProjectTaskStateSelection extends StateSelectionField {
     }
 
     get label() {
-        const fullSelection = [...this.options];
-        fullSelection.push(["04_waiting_normal", "Waiting"]);
+        const waitOption = super.options.findLast(([state, _]) => state === "04_waiting_normal");
+        const fullSelection = [...this.options, waitOption];
         return formatSelection(this.currentValue, {
             selection: fullSelection,
         });
@@ -131,14 +130,14 @@ export class ProjectTaskStateSelection extends StateSelectionField {
     }
 
     getDropdownPosition() {
-        if (this.isView(['kanban', 'list', 'calendar']) || this.env.isSmall) {
+        if (this.isView(['activity', 'kanban', 'list', 'calendar']) || this.env.isSmall) {
             return '';
         }
         return 'bottom-end';
     }
 
     getTogglerClass(currentValue) {
-        if (this.isView(['kanban', 'list', 'calendar']) || this.env.isSmall) {
+        if (this.isView(['activity', 'kanban', 'list', 'calendar']) || this.env.isSmall) {
             return 'btn btn-link d-flex p-0';
         }
         return 'o_state_button btn rounded-pill ' + this.colorButton[currentValue];
@@ -169,19 +168,17 @@ export class ProjectTaskStateSelection extends StateSelectionField {
     }
 }
 
-ProjectTaskStateSelection.template = "project.ProjectTaskStateSelection";
-
-ProjectTaskStateSelection.props = {
-    ...stateSelectionField.component.props,
-    isToggleMode: { type: Boolean, optional: true },
-    viewType: { type: String },
-}
-
-
 export const projectTaskStateSelection = {
     ...stateSelectionField,
     component: ProjectTaskStateSelection,
     fieldDependencies: [{ name: "project_id", type: "many2one" }],
+    supportedOptions: [
+        ...stateSelectionField.supportedOptions, {
+            label: _t("Is toggle mode"),
+            name: "is_toggle_mode",
+            type: "boolean"
+        }
+    ],
     extractProps({ options, viewType }) {
         const props = stateSelectionField.extractProps(...arguments);
         props.isToggleMode = Boolean(options.is_toggle_mode);

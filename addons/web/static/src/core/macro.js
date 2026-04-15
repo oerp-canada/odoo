@@ -1,258 +1,165 @@
-/** @odoo-module **/
-
-import { browser } from "@web/core/browser/browser";
+import { validate } from "@web/owl2/utils";
 import { isVisible } from "@web/core/utils/ui";
-import { Mutex } from "@web/core/utils/concurrency";
+import { delay } from "@web/core/utils/concurrency";
 
-/**
- * @typedef MacroStep
- * @property {string} [trigger]
- * - An action returning a "truthy" value means that the step isn't successful.
- * - Current step index won't be incremented.
- * @property {string | (el: Element, step: MacroStep) => undefined | string} [action]
- * @property {*} [*] - any payload to the step.
- */
-
-export const ACTION_HELPERS = {
-    click(el, _step) {
-        el.dispatchEvent(new MouseEvent("mouseover"));
-        el.dispatchEvent(new MouseEvent("mouseenter"));
-        el.dispatchEvent(new MouseEvent("mousedown"));
-        el.dispatchEvent(new MouseEvent("mouseup"));
-        el.click();
-        el.dispatchEvent(new MouseEvent("mouseout"));
-        el.dispatchEvent(new MouseEvent("mouseleave"));
+const macroSchema = {
+    name: { type: String, optional: true },
+    timeout: { type: Number, optional: true },
+    allowDelayToRemove: { type: Boolean, optional: true },
+    steps: {
+        type: Array,
+        element: {
+            type: Object,
+            shape: {
+                action: { type: [Function, String], optional: true },
+                timeout: { type: Number, optional: true },
+                trigger: { type: [Function, String], optional: true },
+            },
+            validate: (step) => step.action || step.trigger,
+        },
     },
-    text(el, step) {
-        // simulate an input (probably need to add keydown/keyup events)
-        this.click(el, step);
-        el.value = step.value;
-        el.dispatchEvent(new InputEvent("input", { bubbles: true }));
-        el.dispatchEvent(new InputEvent("change", { bubbles: true }));
-    },
+    onComplete: { type: Function, optional: true },
+    onStep: { type: Function, optional: true },
+    onError: { type: Function, optional: true },
 };
 
-const mutex = new Mutex();
-
-class TimeoutError extends Error {}
-
-class Macro {
-    constructor(descr) {
-        this.name = descr.name || "anonymous";
-        this.timeoutDuration = descr.timeout || 0;
-        this.timeout = null;
-        this.currentIndex = 0;
-        this.checkDelay = descr.checkDelay || 0;
-        this.isComplete = false;
-        this.steps = descr.steps;
-        this.onStep = descr.onStep || (() => {});
-        this.onError = descr.onError;
-        this.onTimeout = descr.onTimeout;
-        this.setTimer();
-    }
-
-    async advance() {
-        if (this.isComplete) {
-            return;
-        }
-        const step = this.steps[this.currentIndex];
-        const [proceedToAction, el] = this.checkTrigger(step);
-        if (proceedToAction) {
-            this.safeCall(this.onStep, el, step);
-            const actionResult = await this.performAction(el, step);
-            if (!actionResult) {
-                // If falsy action result, it means the action worked properly.
-                // So we can proceed to the next step.
-                this.currentIndex++;
-                if (this.currentIndex === this.steps.length) {
-                    this.isComplete = true;
-                    browser.clearTimeout(this.timeout);
-                } else {
-                    this.setTimer();
-                    await this.advance();
-                }
-            }
-        }
-    }
-
-    /**
-     * Find the trigger and assess whether it can continue on performing the actions.
-     * @param {{ trigger: string | () => Element | null }} param0
-     * @returns {[proceedToAction: boolean; el: Element | undefined]}
-     */
-    checkTrigger({ trigger }) {
-        let el;
-
-        if (!trigger) {
-            return [true, el];
-        }
-
-        if (typeof trigger === "function") {
-            el = this.safeCall(trigger);
-        } else if (typeof trigger === "string") {
-            const triggerEl = document.querySelector(trigger);
-            el = isVisible(triggerEl) && triggerEl;
-        } else {
-            throw new Error(`Trigger can only be string or function.`);
-        }
-
-        if (el) {
-            return [true, el];
-        } else {
-            return [false, el];
-        }
-    }
-
-    /**
-     * Calls the `step.action` expecting no return to be successful.
-     * @param {Element} el
-     * @param {Step} step
-     */
-    async performAction(el, step) {
-        const action = step.action;
-        let actionResult;
-        if (action in ACTION_HELPERS) {
-            actionResult = ACTION_HELPERS[action](el, step);
-        } else if (typeof action === "function") {
-            actionResult = await this.safeCall(action, el, step);
-        }
-        return actionResult;
-    }
-
-    safeCall(fn, ...args) {
-        if (this.isComplete) {
-            return;
-        }
-        try {
-            return fn(...args);
-        } catch (e) {
-            this.handleError(e);
-        }
-    }
-
-    setTimer() {
-        if (this.timeoutDuration) {
-            browser.clearTimeout(this.timeout);
-            this.timeout = browser.setTimeout(() => {
-                if (this.onTimeout) {
-                    const index = this.currentIndex;
-                    const step = this.steps[index];
-                    this.safeCall(this.onTimeout, step, index);
-                } else {
-                    const error = new TimeoutError("Step timeout");
-                    this.handleError(error);
-                }
-            }, this.timeoutDuration);
-        }
-    }
-
-    handleError(error) {
-        // mark the macro as complete, so it can be cleaned up from the
-        // engine
-        this.isComplete = true;
-        browser.clearTimeout(this.timeout);
-        if (this.onError) {
-            const index = this.currentIndex;
-            const step = this.steps[index];
-            this.onError(error, step, index);
-        } else {
-            console.error(error);
-        }
+class MacroError extends Error {
+    constructor(type, message, options) {
+        super(message, options);
+        this.type = type;
     }
 }
 
-export class MacroEngine {
-    constructor(params = {}) {
-        this.isRunning = false;
-        this.timeout = null;
-        this.target = params.target || document.body;
-        this.defaultCheckDelay = params.defaultCheckDelay ?? 750;
-        this.macros = new Set();
-        this.observerOptions = {
-            attributes: true,
-            childList: true,
-            subtree: true,
-            characterData: true,
-        };
-        this.observer = new MutationObserver(this.delayedCheck.bind(this));
-        this.iframeObserver = new MutationObserver(() => {
-            const iframeEl = document.querySelector("iframe.o_iframe");
-            if (iframeEl) {
-                iframeEl.addEventListener("load", () => {
-                    if (iframeEl.contentDocument) {
-                        this.observer.observe(iframeEl.contentDocument, this.observerOptions);
-                    }
-                });
-                // If the iframe was added without a src, its load event was immediately fired and
-                // will not fire again unless another src is set. Unfortunately, the case of this
-                // happening and the iframe content being altered programmaticaly may happen.
-                // (E.g. at the moment this was written, the mass mailing editor iframe is added
-                // without src and its content rewritten immediately afterwards).
-                if (!iframeEl.src) {
-                    if (iframeEl.contentDocument) {
-                        this.observer.observe(iframeEl.contentDocument, this.observerOptions);
-                    }
-                }
-            }
-        });
+async function performAction(trigger, action) {
+    if (!action) {
+        return;
     }
-
-    async activate(descr) {
-        // micro task tick to make sure we add the macro in a new call stack,
-        // so we are guaranteed that we are not iterating on the current macros
-        await Promise.resolve();
-        const macro = new Macro(descr);
-        this.macros.add(macro);
-        this.start();
-    }
-
-    start() {
-        if (!this.isRunning) {
-            this.isRunning = true;
-            this.observer.observe(this.target, this.observerOptions);
-            this.iframeObserver.observe(this.target, { childList: true, subtree: true });
-        }
-        this.delayedCheck();
-    }
-
-    stop() {
-        if (this.isRunning) {
-            this.isRunning = false;
-            browser.clearTimeout(this.timeout);
-            this.timeout = null;
-            this.observer.disconnect();
-        }
-    }
-
-    delayedCheck() {
-        if (this.timeout) {
-            browser.clearTimeout(this.timeout);
-        }
-        this.timeout = browser.setTimeout(
-            () => mutex.exec(this.advanceMacros.bind(this)),
-            this.getCheckDelay() || this.defaultCheckDelay
+    try {
+        return await action(trigger);
+    } catch (error) {
+        throw new MacroError(
+            "Action",
+            error.stack || `ERROR during perform action: ${error.message}`,
+            { cause: error }
         );
     }
+}
 
-    getCheckDelay() {
-        // If a macro has a checkDelay different from 0, use it. Select the minimum.
-        // For example knowledge has a macro with a delay of 10ms. We don't want to wait
-        // longer because of other running tours.
-        return [...this.macros]
-            .map((m) => m.checkDelay)
-            .filter((delay) => delay > 0)
-            .reduce((m, v) => Math.min(m, v), this.defaultCheckDelay);
+async function waitForTrigger(trigger, waitDelay = false) {
+    if (!trigger) {
+        return;
+    }
+    try {
+        if (waitDelay) {
+            await delay(50);
+        }
+        return await waitUntil(() => {
+            if (typeof trigger === "function") {
+                return trigger();
+            } else if (typeof trigger === "string") {
+                const triggerEl = document.querySelector(trigger);
+                return isVisible(triggerEl) && triggerEl;
+            }
+        });
+    } catch (error) {
+        throw new MacroError("Trigger", `ERROR during find trigger:\n${error.message}`, {
+            cause: error,
+        });
+    }
+}
+
+export async function waitUntil(predicate) {
+    const result = predicate();
+    if (result) {
+        return Promise.resolve(result);
+    }
+    let handle;
+    return new Promise((resolve) => {
+        const runCheck = () => {
+            const result = predicate();
+            if (result) {
+                resolve(result);
+            }
+            handle = requestAnimationFrame(runCheck);
+        };
+        handle = requestAnimationFrame(runCheck);
+    }).finally(() => {
+        cancelAnimationFrame(handle);
+    });
+}
+
+export class Macro {
+    currentIndex = 0;
+    isComplete = false;
+    constructor(descr) {
+        try {
+            validate(descr, macroSchema);
+        } catch (error) {
+            throw new Error(
+                `Error in schema for Macro ${JSON.stringify(descr, null, 4)}\n${error.message}`
+            );
+        }
+        Object.assign(this, descr);
+        this.onComplete = this.onComplete || (() => {});
+        this.onStep = this.onStep || (() => {});
+        this.onError =
+            this.onError ||
+            ((error, step, index) => {
+                console.error(error.message, step, index);
+            });
     }
 
-    async advanceMacros() {
-        await Promise.all([...this.macros].map((macro) => macro.advance()));
-        for (const macro of this.macros) {
-            if (macro.isComplete) {
-                this.macros.delete(macro);
-            }
-        }
-        if (this.macros.size === 0) {
+    async start() {
+        await this.advance();
+    }
+
+    async advance() {
+        if (this.isComplete || this.currentIndex >= this.steps.length) {
             this.stop();
+            return;
+        }
+        try {
+            const step = this.steps[this.currentIndex];
+            const timeoutDelay = step.timeout || this.timeout || 10000;
+            const executeStep = async () => {
+                // To be remove ASAP because it allows non deterministic behaviors.
+                const trigger = await waitForTrigger(step.trigger, this.allowDelayToRemove);
+                const result = await performAction(trigger, step.action);
+                await this.onStep({ step, trigger, index: this.currentIndex });
+                return result;
+            };
+            const launchTimer = async () => {
+                await delay(timeoutDelay);
+                throw new MacroError(
+                    "Timeout",
+                    `TIMEOUT step failed to complete within ${timeoutDelay} ms.`
+                );
+            };
+            // If falsy action result, it means the action worked properly.
+            // So we can proceed to the next step.
+            const actionResult = await Promise.race([executeStep(), launchTimer()]);
+            if (actionResult) {
+                this.stop();
+                return;
+            }
+        } catch (error) {
+            this.stop(error);
+            return;
+        }
+        this.currentIndex++;
+        await this.advance();
+    }
+
+    stop(error) {
+        if (this.isComplete) {
+            return;
+        }
+        this.isComplete = true;
+        if (error) {
+            const step = this.steps[this.currentIndex];
+            this.onError({ error, step, index: this.currentIndex });
+        } else if (this.currentIndex === this.steps.length) {
+            this.onComplete();
         }
     }
 }

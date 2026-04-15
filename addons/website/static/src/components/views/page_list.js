@@ -1,22 +1,29 @@
-/** @odoo-module **/
+import { _t } from "@web/core/l10n/translation";
+import { usePageManager } from "./page_manager_hook";
+import { PageSearchModel } from "./page_search_model";
+import { registry } from "@web/core/registry";
+import { listView } from "@web/views/list/list_view";
+import { ConfirmationDialog } from "@web/core/confirmation_dialog/confirmation_dialog";
+import { DeletePageDialog, DuplicatePageDialog } from "@website/components/dialog/page_properties";
+import { useService } from "@web/core/utils/hooks";
+import { rpc } from "@web/core/network/rpc";
 
-import {PageControllerMixin, PageRendererMixin} from "./page_views_mixin";
-import {registry} from '@web/core/registry';
-import {listView} from '@web/views/list/list_view';
-import {ConfirmationDialog} from "@web/core/confirmation_dialog/confirmation_dialog";
-import {useService} from "@web/core/utils/hooks";
-import {sprintf} from "@web/core/utils/strings";
-import {DeletePageDialog} from '@website/components/dialog/page_properties';
-import {SearchDropdownItem} from "@web/search/search_dropdown_item/search_dropdown_item";
+export class PageListController extends listView.Controller {
+    static components = {
+        ...listView.Controller.components,
+    };
 
-
-export class PageListController extends PageControllerMixin(listView.Controller) {
     /**
      * @override
      */
     setup() {
         super.setup();
-        this.orm = useService('orm');
+        this.orm = useService("orm");
+        this.dialog = useService("dialog");
+        this.pageManager = usePageManager({
+            resModel: this.props.resModel,
+            createAction: this.props.context.create_action,
+        });
         if (this.props.resModel === "website.page") {
             this.archiveEnabled = false;
         }
@@ -26,7 +33,7 @@ export class PageListController extends PageControllerMixin(listView.Controller)
      * @override
      */
     onClickCreate() {
-        return this.createWebsiteContent();
+        return this.pageManager.createWebsiteContent();
     }
 
     /**
@@ -36,65 +43,76 @@ export class PageListController extends PageControllerMixin(listView.Controller)
      */
     getStaticActionMenuItems() {
         const menuItems = super.getStaticActionMenuItems();
-        menuItems.publish = {
-            sequence: 15,
-            icon: "fa fa-globe",
-            description: this.env._t("Publish"),
-            callback: async () => {
-                this.dialogService.add(ConfirmationDialog, {
-                    title: this.env._t("Publish Website Content"),
-                    body: sprintf(
-                        this.env._t(
-                            "%s record(s) selected, are you sure you want to publish them all?"
+        if (Object.prototype.hasOwnProperty.call(this.props.fields, "is_published")) {
+            menuItems.publish = {
+                sequence: 15,
+                icon: "fa fa-globe",
+                description: _t("Publish"),
+                callback: async () => {
+                    this.dialogService.add(ConfirmationDialog, {
+                        title: _t("Publish Website Content"),
+                        body: _t(
+                            "%s record(s) selected, are you sure you want to publish them all?",
+                            this.model.root.selection.length
                         ),
-                        this.model.root.selection.length
-                    ),
-                    confirm: () => this.togglePublished(true),
+                        confirm: () => this.togglePublished(true),
+                    });
+                },
+            };
+            menuItems.unpublish = {
+                sequence: 16,
+                icon: "fa fa-chain-broken",
+                description: _t("Unpublish"),
+                callback: async () => this.togglePublished(false),
+            };
+        }
+        if (this.props.resModel === "website.page") {
+            menuItems.duplicate.callback = async (records = []) => {
+                const resIds = this.model.root.selection.map((record) => record.resId);
+                this.dialog.add(DuplicatePageDialog, {
+                    pageIds: resIds,
+                    onDuplicate: () => {
+                        this.env.searchModel.refreshFilterForAllWebsites();
+                    },
                 });
-            },
-        };
-        menuItems.unpublish = {
-            sequence: 16,
-            icon: "fa fa-chain-broken",
-            description: this.env._t("Unpublish"),
-            callback: async () => this.togglePublished(false),
-        };
+            };
+        }
         return menuItems;
     }
 
-    onDeleteSelectedRecords() {
+    async onDeleteSelectedRecords() {
+        const pageIds = this.model.root.selection.map((record) => record.resId);
+        const newPageTemplateRecords = await rpc("/website/get_new_pages", {
+            page_ids: pageIds,
+        });
         this.dialogService.add(DeletePageDialog, {
-            resIds: this.model.root.selection.map((record) => record.resId),
+            resIds: pageIds,
             resModel: this.props.resModel,
             onDelete: () => {
                 this.model.root.deleteRecords();
             },
+            hasNewPageTemplate: newPageTemplateRecords.some(
+                (record) => record.is_new_page_template
+            ),
         });
     }
 
     async togglePublished(publish) {
-        const resIds = this.model.root.selection.map(record => record.resId);
-        await this.orm.write(this.props.resModel, resIds, {is_published: publish});
-        this.actionService.switchView('list');
+        const resIds = this.model.root.selection.map((record) => record.resId);
+        await this.orm.write(this.props.resModel, resIds, { is_published: publish });
+        this.actionService.switchView("list");
     }
 }
-PageListController.template = `website.PageListView`;
-PageListController.components = {
-    ...listView.Controller.components,
-    SearchDropdownItem,
-};
 
-export class PageListRenderer extends PageRendererMixin(listView.Renderer) {}
-PageListRenderer.props = [
-    ...listView.Renderer.props,
-    "activeWebsite",
-];
-PageListRenderer.recordRowTemplate = "website.PageListRenderer.RecordRow";
+export class PageListRenderer extends listView.Renderer {
+    static recordRowTemplate = "website.PageListRenderer.RecordRow";
+}
 
 export const PageListView = {
     ...listView,
     Renderer: PageListRenderer,
     Controller: PageListController,
+    SearchModel: PageSearchModel,
 };
 
 registry.category("views").add("website_pages_list", PageListView);

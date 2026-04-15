@@ -5,10 +5,11 @@ import json
 import re
 from datetime import datetime
 
-from odoo import models, fields, _
+from odoo import models, fields, _, api
 from odoo.exceptions import UserError
 
 _logger = logging.getLogger(__name__)
+
 
 class AccountMove(models.Model):
     _inherit = 'account.move'
@@ -17,6 +18,18 @@ class AccountMove(models.Model):
     l10n_ke_cu_serial_number = fields.Char(string='CU Serial Number', copy=False)
     l10n_ke_cu_invoice_number = fields.Char(string='CU Invoice Number', copy=False)
     l10n_ke_cu_qrcode = fields.Char(string='CU QR Code', copy=False)
+    l10n_ke_cu_show_send_button = fields.Boolean(string='Show Send to Tremol button', compute='_compute_l10n_ke_cu_show_send_button')
+
+    @api.depends('country_code', 'l10n_ke_cu_qrcode', 'state', 'move_type', 'company_id')
+    def _compute_l10n_ke_cu_show_send_button(self):
+        for move in self:
+            move.l10n_ke_cu_show_send_button = (
+                move.country_code == 'KE'
+                and not move.l10n_ke_cu_qrcode
+                and move.state == 'posted'
+                and move.move_type in ['out_invoice', 'out_refund']
+                and not move.company_id.l10n_ke_oscu_is_active
+            )
 
     # -------------------------------------------------------------------------
     # HELPERS
@@ -68,20 +81,30 @@ class AccountMove(models.Model):
                 move_errors.append(_("This credit note must reference the previous invoice, and this previous invoice must have already been submitted."))
 
             for line in self.invoice_line_ids.filtered(lambda l: l.display_type == 'product'):
-                if not line.tax_ids or len(line.tax_ids) > 1:
-                    move_errors.append(_("On line %s, you must select one and only one tax.", line.name))
+                vat_taxes = line.tax_ids.filtered(lambda tax: tax.amount in (16, 8, 0))
+                if not vat_taxes or len(vat_taxes) > 1:
+                    move_errors.append(_("On line %s, you must select one and only one VAT tax.", line.name))
                 else:
-                    if line.tax_ids.amount == 0 and not (line.product_id and line.product_id.l10n_ke_hsn_code and line.product_id.l10n_ke_hsn_name):
-                        move_errors.append(_("On line %s, a product with a HS Code and HS Name must be selected, since the tax is 0%% or exempt.", line.name))
-
-            for tax in move.invoice_line_ids.tax_ids:
-                if tax.amount not in (16, 8, 0):
-                    move_errors.append(_("Tax '%s' is used, but only taxes of 16%%, 8%%, 0%% or Exempt can be sent. Please reconfigure or change the tax.", tax.name))
+                    if vat_taxes[0].amount == 0 and not line.tax_ids[0].l10n_ke_item_code_id:
+                        move_errors.append(_("On line %s, a tax with a KRA item code must be selected, since the tax is 0%% or exempt.", line.name))
 
             if move_errors:
                 errors.append((move.name, move_errors))
 
         return errors
+
+    def _l10n_ke_fiscal_device_details_filled(self):
+        self.ensure_one()
+        # If the company is configured for OSCU, don't block the Send & Print.
+        if self.company_id.l10n_ke_oscu_is_active:
+            return True
+        return all([
+            self.country_code == 'KE',
+            self.l10n_ke_cu_invoice_number,
+            self.l10n_ke_cu_serial_number,
+            self.l10n_ke_cu_qrcode,
+            self.l10n_ke_cu_datetime,
+        ])
 
     # -------------------------------------------------------------------------
     # SERIALISERS
@@ -96,13 +119,14 @@ class AccountMove(models.Model):
         headquarter_address = (self.commercial_partner_id.street or '') + (self.commercial_partner_id.street2 or '')
         customer_address = (self.partner_id.street or '') + (self.partner_id.street2 or '')
         postcode_and_city = (self.partner_id.zip or '') + '' +  (self.partner_id.city or '')
+        vat = (self.commercial_partner_id.vat or '').strip() if self.commercial_partner_id.country_id.code == 'KE' else ''
         invoice_elements = [
             b'1',                                                   # Reserved - 1 symbol with value '1'
             b'     0',                                              # Reserved - 6 symbols with value ‘     0’
             b'0',                                                   # Reserved - 1 symbol with value '0'
             b'1' if self.move_type == 'out_invoice' else b'A',      # 1 symbol with value '1' (new invoice), 'A' (credit note), or '@' (debit note)
             self._l10n_ke_fmt(self.commercial_partner_id.name, 30), # 30 symbols for Company name
-            self._l10n_ke_fmt(self.commercial_partner_id.vat, 14),  # 14 Symbols for the client PIN number
+            self._l10n_ke_fmt(vat, 14),                             # 14 Symbols for the client PIN number
             self._l10n_ke_fmt(headquarter_address, 30),             # 30 Symbols for customer headquarters
             self._l10n_ke_fmt(customer_address, 30),                # 30 Symbols for the address
             self._l10n_ke_fmt(postcode_and_city, 30),               # 30 symbols for the customer post code and city
@@ -141,8 +165,11 @@ class AccountMove(models.Model):
         # The device expects all monetary values in Kenyan Shillings
         if self.currency_id == self.company_id.currency_id:
             currency_rate = 1
+        # In the case of a refund, use the currency rate of the original invoice
+        elif self.move_type == 'out_refund' and self.reversed_entry_id:
+            currency_rate = abs(self.reversed_entry_id.amount_total_signed / self.reversed_entry_id.amount_total)
         else:
-            currency_rate = abs(lines[0].balance / lines[0].price_subtotal)
+            currency_rate = abs(self.amount_total_signed / self.amount_total)
 
         discount_dict = {line.id: line.discount for line in lines if line.price_total > 0}
         for line in lines:
@@ -162,36 +189,30 @@ class AccountMove(models.Model):
                     discount_dict[candidate.id] += rest_to_discount
                     break
 
-        vat_class = {16.0: 'A', 8.0: 'B'}
         msgs = []
+        tax_details = self._prepare_invoice_aggregated_taxes()
         for line in self.invoice_line_ids.filtered(lambda l: l.display_type == 'product' and l.quantity and l.price_total > 0 and not discount_dict.get(l.id) >= 100):
             # Here we use the original discount of the line, since it the distributed discount has not been applied in the price_total
-            price = round(line.price_total / abs(line.quantity) * 100 / (100 - line.discount), 2) * currency_rate
-            percentage = line.tax_ids[0].amount
-
-            # Letter to classify tax, 0% taxes are handled conditionally, as the tax can be zero-rated or exempt
-            letter = ''
-            if percentage in vat_class:
-                letter = vat_class[percentage]
-            else:
-                report_line_ids = line.tax_ids.invoice_repartition_line_ids.tag_ids._get_related_tax_report_expressions().report_line_id.ids
-                try:
-                    exempt_report_line = self.env.ref('l10n_ke.tax_report_line_exempt_sales')
-                except ValueError:
-                    raise UserError(_("Tax exempt report line cannot be found, please update the l10n_ke module."))
-                letter = 'E' if exempt_report_line.id in report_line_ids else 'C'
-
+            price_total = 0
+            percentage = 0
+            item_code = line.tax_ids[0].l10n_ke_item_code_id
+            for tax in tax_details['tax_details_per_record'][line]['tax_details']:
+                if tax.amount in (16, 8, 0):  # This should only occur once
+                    line_tax_details = tax_details['tax_details_per_record'][line]['tax_details'][tax]
+                    price_total = abs(line_tax_details['base_amount_currency']) + abs(line_tax_details['tax_amount_currency'])
+                    percentage = tax.amount
+            price = round(price_total / abs(line.quantity) * 100 / (100 - line.discount), line.currency_id.decimal_places) * currency_rate
+            price = ('%.5f' % price).rstrip('0').rstrip('.')
             uom = line.product_uom_id and line.product_uom_id.name or ''
-            hscode = re.sub('[^0-9.]+', '', line.product_id.l10n_ke_hsn_code)[:10].ljust(10).encode('cp1251') if letter not in ('A', 'B') else b''.ljust(10)
-            hsname = self._l10n_ke_fmt(line.product_id.l10n_ke_hsn_name, 20) if letter not in ('A', 'B') else b''.ljust(20)
+
             line_data = b';'.join([
-                self._l10n_ke_fmt(line.name, 36),               # 36 symbols for the article's name
-                self._l10n_ke_fmt(letter, 1),                   # 1 symbol for article's vat class ('A', 'B', 'C', 'D', or 'E')
-                str(price)[:13].encode('cp1251'),               # 1 to 13 symbols for article's price
-                self._l10n_ke_fmt(uom, 3),                      # 3 symbols for unit of measure
-                hscode,                                         # 10 symbols for HS code in the format xxxx.xx.xx (can be empty)
-                hsname,                                         # 20 symbols for the HS name (can be empty)
-                str(percentage).encode('cp1251')[:5]            # up to 5 symbols for vat rate
+                self._l10n_ke_fmt(line.name, 36),                       # 36 symbols for the article's name
+                self._l10n_ke_fmt(item_code.tax_rate or 'A', 1),        # 1 symbol for article's vat class ('A', 'B', 'C', 'D', or 'E')
+                price[:15].encode('cp1251'),                    # 1 to 15 symbols for article's price with up to 5 digits after decimal point
+                self._l10n_ke_fmt(uom, 3),                              # 3 symbols for unit of measure
+                (item_code.code or '').ljust(10).encode('cp1251'),      # 10 symbols for KRA item code in the format xxxx.xx.xx (can be empty)
+                self._l10n_ke_fmt(item_code.description or '', 20),     # 20 symbols for KRA item code description (can be empty)
+                str(percentage).encode('cp1251')[:5]                    # up to 5 symbols for vat rate
             ])
             # 1 to 10 symbols for quantity
             line_data += b'*' + str(abs(line.quantity)).encode('cp1251')[:10]
@@ -227,13 +248,18 @@ class AccountMove(models.Model):
         """ Returns the client action descriptor dictionary for sending the
             invoice(s) to the control unit (the fiscal device).
         """
+        # If l10n_ke_edi_oscu is configured for the company, disable sending via TREMOL.
+        if self.company_id.l10n_ke_oscu_is_active:
+            raise UserError(
+                _('An OSCU has been initialized for this company. Please send the e-invoice via Send and Print -> Send to eTIMS instead.')
+            )
         # Check the configuration of the invoice
         errors = self._l10n_ke_validate_move()
         if errors:
             error_msg = ""
             for move, error_list in errors:
                 error_list = '\n'.join(error_list)
-                error_msg += _("Invalid invoice configuration on %s:\n%s\n\n", move, error_list)
+                error_msg += _("Invalid invoice configuration on %(invoice)s:\n%(error_list)s\n\n", invoice=move, error_list=error_list)
             raise UserError(error_msg)
         return {
             'type': 'ir.actions.client',

@@ -1,16 +1,14 @@
-/** @odoo-module alias=purchase.purchase_steps **/
-
-import core from "web.core";
-
-var PurchaseAdditionalTourSteps = core.Class.extend({
-    _get_purchase_stock_steps: function () {
+class PurchaseAdditionalTourSteps {
+    _get_purchase_stock_steps() {
         return [
             {
-                auto: true, // Useless final step to trigger congratulation message
+                // Useless final step to trigger congratulation message
+                isActive: ["auto"],
                 trigger: ".o_purchase_order",
+                run: "click",
             },
         ];
-    },
-});
+    }
+}
 
 export default PurchaseAdditionalTourSteps;

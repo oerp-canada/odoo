@@ -1,44 +1,83 @@
 // ------- View with SearchPanel -------
 
-.o_component_with_search_panel,
-.o_controller_with_searchpanel {
-    display: flex;
-    align-items: flex-start;
+.o_component_with_search_panel {
+    @include media-breakpoint-up(md) {
+        display: flex;
 
-    .o_renderer,
-    .o_renderer_with_searchpanel {
-        flex: 1 1 100%;
-        overflow: auto; // make the renderer and search panel scroll individually
-        max-height: 100%;
-        position: relative;
-
-        @include media-breakpoint-down(md) {
-            overflow: visible;
-        }    
+        .o_renderer {
+            overflow: auto;
+            width: 100%;
+        }
     }
 }
 
 // ------- SearchPanel -------
 
 .o_search_panel {
+    --treeEntry-padding-h: #{map-get($spacers, 3)};
+    --treeEntry-padding-v: #{map-get($spacers, 2)};
+    --searchPanelHeader-margin-y: #{map-get($spacers, 1) * .5};
+
     width: var(--SearchPanel-width, #{$o-search-panel-width});
     font-size: var(--SearchPanel-fontSize, #{$o-search-panel-font-size});
-    
+
     @include media-breakpoint-up(md) {
         border-right: $border-width solid $border-color;
     }
 
-    .o_search_panel_category_value,
-    .o_search_panel_filter_value input,
-    .o_search_panel_filter_value .o_search_panel_label_title,
-    .o_search_panel_group_header input,
-    .o_search_panel_group_header .o_search_panel_label_title
-    {
-        cursor: pointer;
+    .o_toggle_fold {
+        width: var(--searchPanelHeader-toggle-fold-width, map-get($spacers, 3));
+
+        &:focus-visible {
+            box-shadow: inset 0 0 0 $focus-ring-width $focus-ring-color;
+        }
     }
 
-    .o_toggle_fold {
-        width: map-get($spacers, 4);
+    .o_search_panel_counter {
+        font-variant-numeric: tabular-nums;
+    }
+
+    .list-group-item {
+        --list-group-color: #{$gray-800};
+        --list-group-item-padding-y: var(--searchPanelHeader-padding-y, calc(#{map-get($spacers, 2)} - var(--searchPanelHeader-margin-y)));
+        --list-group-item-padding-x: 0;
+
+        &:where(:not(.list-group-item-action)) {
+            // This acts as a margin, we use padding to avoid space between
+            // pseudo elements used to display the tree.
+            --list-group-item-padding-y: var(--searchPanelHeader-margin-y);
+
+            + .list-group-item {
+                padding-top: 0;
+            }
+        }
+
+        border-radius: var(--searchPanelHeader-border-radius, var(--border-radius));
+    }
+}
+
+.o_search_panel_resize {
+    cursor: col-resize;
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    margin: 0px -2px;
+    width: 10px;
+    height: 100%;
+    z-index: 1;
+}
+
+.o_search_panel_sidebar {
+    writing-mode: vertical-rl;
+    text-orientation: mixed;
+    width: 3rem;
+    @include media-breakpoint-up(md) {
+        border-right: $border-width solid $border-color;
+    }
+
+    &:hover .o_search_panel_sidebar_button {
+        background-color: var(--btn-hover-bg);
+        color: var(--btn-hover-color);
     }
 }
 
@@ -48,13 +87,57 @@
 }
 
 @include media-breakpoint-down(md) {
-    .o_component_with_search_panel,
-    .o_controller_with_searchpanel {
+    .o_component_with_search_panel {
         flex-direction: column;
         align-items: initial;
+    }
+}
 
-        .o_renderer_with_searchpanel.o_list_view {
-            width: 100%;
+.o_search_panel_section {
+    .o_bottom_sheet & .list-group {
+        --#{$prefix}list-group-bg: transparent;
+    }
+}
+
+.o_search_panel:has(.o_treeEntry:hover) {
+    .o_treeEntry::before,
+    .o_treeEntry::after {
+        background-color: var(--treeEntry--beforeAfter-color, #{$border-color});
+    }
+
+    .o_search_panel_category_value_header_expanded::before {
+        background-color: $body-color;
+    }
+
+    .o_search_panel_category_value:hover > header {
+        --list-group-color: #{$black};
+    }
+
+    // Unfolded parent tree entry and hovered entry
+    .o_treeEntry:hover,
+    .o_treeEntry:has(.o_treeEntry:hover) {
+        &::before {
+            height: var(--treeEntry-branch-top);
+        }
+
+        &::before, &::after {
+            background-color: $body-color;
+        }
+    }
+
+    .o_treeEntry:has(~ .o_treeEntry:hover, ~ .o_treeEntry .o_treeEntry:hover)::before {
+        background-color: $body-color;
+    }
+}
+
+.o_search_panel_category_value {
+    .o_toggle_fold {
+        color: $text-muted;
+    }
+
+    header.active:hover {
+        .o_toggle_fold {
+            color: var(--searchPanelHeader-hover-fold-color, #{$black});
         }
     }
 }

@@ -1,8 +1,7 @@
-/** @odoo-module **/
-
+import { useExternalListener, useLayoutEffect, useState } from "@web/owl2/utils";
 import { browser } from "@web/core/browser/browser";
 
-import { Component, useEffect, useExternalListener, useState } from "@odoo/owl";
+import { Component } from "@odoo/owl";
 
 /**
  * @typedef Common
@@ -24,22 +23,32 @@ import { Component, useEffect, useExternalListener, useState } from "@odoo/owl";
  */
 
 /**
- * The RainbowMan widget is the widget displayed by default as a 'fun/rewarding'
- * effect in some cases.  For example, when the user marked a large deal as won,
- * or when he cleared its inbox.
+ * The RainbowMan Component is meant to display a 'fun/rewarding' message.  For
+ * example, when the user marked a large deal as won, or when he cleared its inbox.
  *
- * This widget is mostly a picture and a message with a rainbow animation around
+ * This component is mostly a picture and a message with a rainbow animation around.
  * If you want to display a RainbowMan, you probably do not want to do it by
  * importing this file.  The usual way to do that would be to use the effect
- * service (by triggering the 'show_effect' event)
+ * service.
  */
 export class RainbowMan extends Component {
+    static template = "web.RainbowMan";
+    static rainbowFadeouts = { slow: 4500, medium: 3500, fast: 2000, no: false };
+    static props = {
+        fadeout: String,
+        close: Function,
+        message: String,
+        imgUrl: String,
+        Component: { type: Function, optional: true },
+        props: { type: Object, optional: true },
+    };
+
     setup() {
         useExternalListener(document.body, "click", this.closeRainbowMan);
         this.state = useState({ isFading: false });
         this.delay = RainbowMan.rainbowFadeouts[this.props.fadeout];
         if (this.delay) {
-            useEffect(
+            useLayoutEffect(
                 () => {
                     const timeout = browser.setTimeout(() => {
                         this.state.isFading = true;
@@ -62,13 +71,3 @@ export class RainbowMan extends Component {
         this.props.close();
     }
 }
-RainbowMan.template = "web.RainbowMan";
-RainbowMan.props = {
-    fadeout: String,
-    close: Function,
-    message: String,
-    imgUrl: String,
-    Component: { type: Function, optional: true },
-    props: { type: Object, optional: true },
-};
-RainbowMan.rainbowFadeouts = { slow: 4500, medium: 3500, fast: 2000, no: false };

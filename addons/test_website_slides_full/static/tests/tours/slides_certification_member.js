@@ -1,159 +1,160 @@
-/** @odoo-module **/
-
 import { registry } from "@web/core/registry";
-import tourUtils from 'website_sale.tour_utils';
 
 /**
- * The purpose of this tour is to check the whole certification flow:
+ * This tour validates the complete certification flow for a student (= portal user).
  *
- * -> student (= demo user) checks 'on payment' course content
- * -> clicks on "buy course"
- * -> is redirected to webshop on the product page
- * -> buys the course
- * -> fails 3 times, exhausting their attempts
- * -> is removed to the members of the course
- * -> buys the course again
- * -> succeeds the certification
- * -> has the course marked as completed
- * -> has the certification in their user profile
+ * The tour consists of two main scenarios:
  *
+ * 1. **Failure Attempts**
+ *    - The student is redirected to the "All Courses" page.
+ *    - Navigates to the certification course.
+ *    - Starts the certification process.
+ *    - Fails the test 3 times, exhausting all attempts.
+ *    - Is removed from the course members.
+ *
+ * 2. **Successful Attempt**
+ *    - The student is redirected to the "All Courses" page.
+ *    - Navigates to the certification course.
+ *    - Starts the certification process.
+ *    - Successfully completes the certification.
+ *    - The course is marked as completed.
+ *    - The certification is added to their user profile.
  */
 
-var initTourSteps = [{
+var startCertificationSurvey = [{
     content: 'eLearning: go to certification course',
-    trigger: 'a:contains("DIY Furniture - TEST")'
-}, {
-    content: 'eLearning: does not have access to certification',
-    trigger: '.o_wslides_course_main',
-    run: function () {
-        // check that user doesn't have access to course content
-        if ($('.o_wslides_slides_list_slide .o_wslides_js_slides_list_slide_link').length === 0) {
-            $('.o_wslides_course_main').addClass('empty-content-success');
-        }
-    }
-}, {
-    content: 'eLearning: previous step check',
-    trigger: '.o_wslides_course_main.empty-content-success',
-    run: function () {} // check that previous step succeeded
-}];
-
-var buyCertificationSteps = [{
-    content: 'eLearning: try to buy course',
-    trigger: 'a:contains("Add to Cart")'
-},
-    tourUtils.goToCart(),
-{
-    content: 'eCommerce: Process Checkout',
-    trigger: 'a:contains("Process Checkout")'
-}, {
-    content: 'eCommerce: select Test payment provider',
-    trigger: '.o_payment_option_card:contains("Demo")'
-}, {
-    content: 'eCommerce: add card number',
-    trigger: 'input[name="customer_input"]',
-    run: 'text 4242424242424242'
-}, {
-    content: 'eCommerce: pay',
-    trigger: 'button[name="o_payment_submit_button"]'
-}, {
-    content: 'eCommerce: check that the payment is successful',
-    trigger: '.oe_website_sale_tx_status:contains("Your payment has been successfully processed.")',
-    run: function () {}
-}, {
-    content: 'eCommerce: go back to e-learning home page',
-    trigger: '.nav-link:contains("Courses")'
-}, {
-    content: 'eLearning: go into bought course',
-    trigger: 'a:contains("DIY Furniture")'
+    trigger: 'a:contains("DIY Furniture - TEST")',
+    run: "click",
+    expectUnloadPage: true,
 }, {
     content: 'eLearning: user should be enrolled',
     trigger: '.o_wslides_js_course_join:contains("You\'re enrolled")',
-    run: function () {}
 }, {
     content: 'eLearning: start course',
-    trigger: '.o_wslides_js_slides_list_slide_link'
+    trigger: '.o_wslides_js_slides_list_slide_link',
+    run: "click",
+    expectUnloadPage: true,
 }];
 
 var failCertificationSteps = [{
     content: 'eLearning: start certification',
-    trigger: 'button:contains("Start Certification")'
+    trigger: 'button:contains("Start Certification")',
+    run: "click",
 }, { // Question: What type of wood is the best for furniture?
     content: 'Survey: selecting answer "Fir"',
-    trigger: 'div.js_question-wrapper:contains("What type of wood is the best for furniture") label:contains("Fir")'
+    trigger: 'div.o_survey_question:contains("What type of wood is the best for furniture") label:contains("Fir")',
+    run: "click",
 }, { // Question: Select all the furniture shown in the video
     content: 'Survey: ticking answer "Table"',
-    trigger: 'div.js_question-wrapper:contains("Select all the furniture shown in the video") label:contains("Table")'
+    trigger: 'div.o_survey_question:contains("Select all the furniture shown in the video") label:contains("Table")',
+    run: "click",
 }, {
     content: 'Survey: ticking answer "Bed"',
-    trigger: 'div.js_question-wrapper:contains("Select all the furniture shown in the video") label:contains("Bed")'
+    trigger: 'div.o_survey_question:contains("Select all the furniture shown in the video") label:contains("Bed")',
+    run: "click",
 }, {
     content: 'Survey: submitting the certification with wrong answers',
-    trigger: 'button:contains("Submit")'
+    trigger: 'button:contains("Submit")',
+    run: "click",
+}, {
+    content: "Click on Submit",
+    trigger: 'button.btn-primary:contains("Yes, submit")',
+    run: "click",
 }];
 
 var retrySteps = [{
     content: 'Survey: retry certification',
-    trigger: 'a:contains("Retry")'
+    trigger: 'a:contains("Retry")',
+    run: "click",
+    expectUnloadPage: true,
 }];
 
 var succeedCertificationSteps = [{
     content: 'eLearning: start certification',
-    trigger: 'button:contains("Start Certification")'
+    trigger: 'button:contains("Start Certification")',
+    run: "click",
 }, { // Question: What type of wood is the best for furniture?
     content: 'Survey: selecting answer "Oak"',
-    trigger: 'div.js_question-wrapper:contains("What type of wood is the best for furniture") label:contains("Oak")',
+    trigger: 'div.o_survey_question:contains("What type of wood is the best for furniture") label:contains("Oak")',
+    run: "click",
 }, { // Question: Select all the furniture shown in the video
     content: 'Survey: ticking answer "Chair"',
-    trigger: 'div.js_question-wrapper:contains("Select all the furniture shown in the video") label:contains("Chair")'
+    trigger: 'div.o_survey_question:contains("Select all the furniture shown in the video") label:contains("Chair")',
+    run: "click",
 }, {
     content: 'Survey: ticking answer "Shelve"',
-    trigger: 'div.js_question-wrapper:contains("Select all the furniture shown in the video") label:contains("Shelve")'
+    trigger: 'div.o_survey_question:contains("Select all the furniture shown in the video") label:contains("Shelve")',
+    run: "click",
 }, {
     content: 'Survey: ticking answer "Desk"',
-    trigger: 'div.js_question-wrapper:contains("Select all the furniture shown in the video") label:contains("Desk")'
+    trigger: 'div.o_survey_question:contains("Select all the furniture shown in the video") label:contains("Desk")',
+    run: "click",
 }, {
     content: 'Survey: submitting the certification with correct answers',
-    trigger: 'button:contains("Submit")'
+    trigger: 'button:contains("Submit")',
+    run: "click",
+}, {
+    content: "Click on Submit",
+    trigger: 'button.btn-primary:contains("Yes, submit")',
+    run: "click",
 }];
 
 var certificationCompletionSteps = [{
     content: 'Survey: check certification successful',
     trigger: 'div:contains("Congratulations, you have passed the test")',
-    run: function () {}
+}, { // Sharing the certification
+    trigger: 'a.o_wslides_share',
+    run: "click",
+}, {
+    trigger: '.o_wslides_js_share_email input',
+    run: "edit friend@example.com",
+}, {
+    trigger: '.o_wslides_js_share_email button',
+    run: "click",
+}, {
+    trigger: '.o_wslides_js_share_email .alert:not(.d-none):contains("Sharing is caring")',
+}, {
+    trigger: 'button.btn-close',  // close sharing modal,
+    run: "click",
 }, {
     content: 'Survey: back to course home page',
-    trigger: 'a:contains("Go back to course")'
-}, {
-    content: 'eLearning: back to e-learning home page',
-    trigger: '.nav-link:contains("Courses")'
+    trigger: 'a:contains("Go back to course")',
+    run: "click",
+    expectUnloadPage: true,
 }, {
     content: 'eLearning: course should be completed',
-    trigger: '.o_wslides_course_card:contains("DIY Furniture") .rounded-pill:contains("Completed")',
-    run: function () {}
+    trigger: '.o_wslides_channel_completion_completed',
 }];
 
 var profileSteps = [{
+    content: 'eLearning: back to e-learning home page',
+    trigger: 'a:contains("Courses")',
+    run: "click",
+    expectUnloadPage: true,
+}, {
     content: 'eLearning: access user profile',
-    trigger: '.o_wslides_home_aside_loggedin a:contains("View")'
+    trigger: '.o_wslides_home_aside_loggedin a:contains("View")',
+    run: "click",
+    expectUnloadPage: true,
 }, {
     content: 'eLearning: check that the user profile certifications include the new certification',
     trigger: '.o_wprofile_slides_course_card_body:contains("Furniture Creation Certification")',
-    run: function () {}
 }];
 
-registry.category("web_tour.tours").add('certification_member', {
-    url: '/slides',
-    test: true,
-    steps: [].concat(
-        initTourSteps,
-        buyCertificationSteps,
+registry.category("web_tour.tours").add('certification_member_failure', {
+    steps: () => [].concat(
+        startCertificationSurvey,
         failCertificationSteps,
         retrySteps,
         failCertificationSteps,
         retrySteps,
-        failCertificationSteps,
-        [{trigger: 'a:contains("Go back to course")'}],
-        buyCertificationSteps,
+        failCertificationSteps
+    )
+});
+
+registry.category("web_tour.tours").add('certification_member_success', {
+    steps: () => [].concat(
+        startCertificationSurvey,
         succeedCertificationSteps,
         certificationCompletionSteps,
         profileSteps

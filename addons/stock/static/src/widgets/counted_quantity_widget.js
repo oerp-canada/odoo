@@ -1,10 +1,7 @@
-/** @odoo-module **/
-
+import { useLayoutEffect, useRef } from "@web/owl2/utils";
 import { FloatField, floatField } from "@web/views/fields/float/float_field";
 import { registry } from "@web/core/registry";
 import { getActiveHotkey } from "@web/core/hotkeys/hotkey_service";
-
-const { useEffect, useRef } = owl;
 
 export class CountedQuantityWidgetField extends FloatField {
     setup() {
@@ -13,14 +10,16 @@ export class CountedQuantityWidgetField extends FloatField {
 
         const inputRef = useRef("numpadDecimal");
 
-        useEffect(
+        useLayoutEffect(
             (inputEl) => {
                 if (inputEl) {
-                    inputEl.addEventListener("input", this.onInput.bind(this));
-                    inputEl.addEventListener("keydown", this.onKeydown.bind(this));
+                    const boundOnKeydown = this.onKeydown.bind(this);
+                    const boundOnBlur = this.onBlur.bind(this);
+                    inputEl.addEventListener("keydown", boundOnKeydown);
+                    inputEl.addEventListener("blur", boundOnBlur);
                     return () => {
-                        inputEl.removeEventListener("input", this.onInput.bind(this));
-                        inputEl.removeEventListener("keydown", this.onKeydown.bind(this));
+                        inputEl.removeEventListener("keydown", boundOnKeydown);
+                        inputEl.removeEventListener("blur", boundOnBlur);
                     };
                 }
             },
@@ -28,18 +27,21 @@ export class CountedQuantityWidgetField extends FloatField {
         );
     }
 
-    onInput(ev) {
-        return this.props.record.update({ inventory_quantity_set: true });
+    updateValue(ev){
+        try {
+            const val = this.parse(ev.target.value);
+            this.props.record.update({ [this.props.name]: val, inventory_quantity_set: true });
+        } catch {} // ignore since it will be handled later
+    }
+
+    onBlur(ev) {
+        this.updateValue(ev);
     }
 
     onKeydown(ev) {
         const hotkey = getActiveHotkey(ev);
         if (["enter", "tab", "shift+tab"].includes(hotkey)) {
-            try {
-                const val = this.parse(ev.target.value);
-                this.props.record.update({ [this.props.name]: val });
-            } catch {} // ignore since it will be handled later
-            this.onInput(ev);
+            this.updateValue(ev);
         }
     }
 

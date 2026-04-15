@@ -1,8 +1,7 @@
-/** @odoo-module **/
-
+import { useComponent } from "@web/owl2/utils";
 import { usePopover } from "@web/core/popover/popover_hook";
 import { useService } from "@web/core/utils/hooks";
-import { useComponent } from "@odoo/owl";
+import { _t } from "@web/core/l10n/translation";
 import { DynamicPlaceholderPopover } from "./dynamic_placeholder_popover";
 
 export function useDynamicPlaceholder(elementRef) {
@@ -12,8 +11,8 @@ export function useDynamicPlaceholder(elementRef) {
     let closeCallback;
     let positionCallback;
     const popover = usePopover(DynamicPlaceholderPopover, {
-        onclose: () => closeCallback?.(),
-        onPositioned: () => positionCallback?.(),
+        onClose: () => closeCallback?.(),
+        onPositioned: (popper, position) => positionCallback?.(popper, position),
     });
     const notification = useService("notification");
 
@@ -27,10 +26,10 @@ export function useDynamicPlaceholder(elementRef) {
         let rangeIndex = parseInt(element.getAttribute("data-oe-dynamic-placeholder-range-index"));
         // When the user cancel/close the popover, the path is empty.
         if (path) {
-            let dynamicPlaceholder = "{{object." + path;
-            dynamicPlaceholder +=
-                defaultValue && defaultValue !== "" ? ` or '''${defaultValue}'''}}` : "}}";
-
+            defaultValue = defaultValue.replace("|||", "");
+            const dynamicPlaceholder = ` {{object.${path}${
+                defaultValue?.length ? ` ||| ${defaultValue}` : ""
+            }}}`;
             const baseValue = element.value;
             const splitedValue = [baseValue.slice(0, rangeIndex), baseValue.slice(rangeIndex)];
             const newValue =
@@ -64,9 +63,7 @@ export function useDynamicPlaceholder(elementRef) {
     async function open(opts) {
         if (!model) {
             return notification.add(
-                ownerField.env._t(
-                    "You need to select a model before opening the dynamic placeholder selector."
-                ),
+                _t("You need to select a model before opening the dynamic placeholder selector."),
                 { type: "danger" }
             );
         }

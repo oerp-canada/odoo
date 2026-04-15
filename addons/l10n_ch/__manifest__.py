@@ -1,7 +1,7 @@
 # Part of Odoo. See LICENSE file for full copyright and licensing details.
 {
     'name': 'Switzerland - Accounting',
-    'website': 'https://www.odoo.com/documentation/master/applications/finance/fiscal_localizations/switzerland.html',
+    'website': 'https://www.odoo.com/documentation/latest/applications/finance/fiscal_localizations/switzerland.html',
     'icon': '/account/static/description/l10n.png',
     'countries': ['ch'],
     'description': """
@@ -16,16 +16,17 @@ A QR-bill will be generated if:
     - A correct account number/QR IBAN is set on your bank journal
     - (when using a QR-IBAN): the payment reference of the invoice is a QR-reference
 
-The generation of the QR-bill is automatic if you meet the previous criteria. The QR-bill will be appended after the invoice when printing or sending by mail. 
+The generation of the QR-bill is automatic if you meet the previous criteria. The QR-bill will be appended after the invoice when printing or sending by mail.
 
     """,
-    'version': '11.1',
+    'version': '11.3',
     'category': 'Accounting/Localizations/Account Charts',
     'depends': [
         'account',
-        'base_iban',
+        'account_edi_ubl_cii',
         'l10n_din5008',
     ],
+    'auto_install': ['account'],
     'data': [
         'security/ir.model.access.csv',
         'data/account_tax_report_data.xml',
@@ -48,5 +49,6 @@ The generation of the QR-bill is automatic if you meet the previous criteria. Th
         ],
     }
 ,
+    'author': 'Odoo S.A.',
     'license': 'LGPL-3',
 }

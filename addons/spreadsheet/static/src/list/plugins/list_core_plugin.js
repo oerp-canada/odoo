@@ -1,60 +1,65 @@
-/** @odoo-module */
+import { CommandResult } from "../../o_spreadsheet/cancelled_reason";
+import { helpers } from "@odoo/o-spreadsheet";
+import { OdooCorePlugin } from "@spreadsheet/plugins";
 
-import * as spreadsheet from "@odoo/o-spreadsheet";
-import CommandResult from "../../o_spreadsheet/cancelled_reason";
-import { getMaxObjectId } from "../../helpers/helpers";
-import { TOP_LEVEL_STYLE } from "../../helpers/constants";
-import { _t } from "@web/core/l10n/translation";
-import { globalFiltersFieldMatchers } from "@spreadsheet/global_filters/plugins/global_filters_core_plugin";
-import { sprintf } from "@web/core/utils/strings";
-import { checkFilterFieldMatching } from "@spreadsheet/global_filters/helpers";
+const { getMaxObjectId, deepEquals, deepCopy } = helpers;
+
+/**
+ * @typedef {Object} ListColumn
+ * @property {string} name The technical field path of the column
+ * @property {string} string The custom display name of the column
+ * @property {boolean} [hidden] Whether the column is hidden or not
+ */
 
 /**
  * @typedef {Object} ListDefinition
- * @property {Array<string>} columns
+ * @property {Array<ListColumn>} columns
  * @property {Object} context
  * @property {Array<Array<string>>} domain
- * @property {string} id The id of the list
  * @property {string} model The technical name of the model we are listing
  * @property {string} name Name of the list
  * @property {Array<string>} orderBy
- *
- * @typedef {Object} List
- * @property {string} id
- * @property {string} dataSourceId
- * @property {ListDefinition} definition
- * @property {Object} fieldMatching
- *
- * @typedef {import("@spreadsheet/global_filters/plugins/global_filters_core_plugin").FieldMatching} FieldMatching
+ * @property {string} actionXmlId
  */
 
-const { CorePlugin } = spreadsheet;
-
-export default class ListCorePlugin extends CorePlugin {
+export class ListCorePlugin extends OdooCorePlugin {
+    static getters = /** @type {const} */ ([
+        "getListDisplayName",
+        "getListDefinition",
+        "getListIds",
+        "getListName",
+        "getNextListId",
+        "isExistingList",
+    ]);
     constructor(config) {
         super(config);
 
         this.nextId = 1;
-        /** @type {Object.<string, List>} */
+        /** @type {Object.<string, ListDefinition>} */
         this.lists = {};
-
-        globalFiltersFieldMatchers["list"] = {
-            geIds: () => this.getters.getListIds(),
-            getDisplayName: (listId) => this.getters.getListName(listId),
-            getTag: (listId) => sprintf(_t("List #%s"), listId),
-            getFieldMatching: (listId, filterId) => this.getListFieldMatching(listId, filterId),
-            getModel: (listId) => this.getListDefinition(listId).model,
-        };
     }
 
+    /**
+     * @param {AllCoreCommand} cmd
+     *
+     * @returns {string | string[]}
+     */
     allowDispatch(cmd) {
         switch (cmd.type) {
             case "INSERT_ODOO_LIST":
-                if (cmd.id !== this.nextId.toString()) {
+                if (cmd.listId !== this.nextId.toString()) {
                     return CommandResult.InvalidNextId;
                 }
-                if (this.lists[cmd.id]) {
+                if (this.lists[cmd.listId]) {
                     return CommandResult.ListIdDuplicated;
+                }
+                return this._checkDefinition(cmd.definition);
+            case "DUPLICATE_ODOO_LIST":
+                if (!this.lists[cmd.listId]) {
+                    return CommandResult.ListIdNotFound;
+                }
+                if (cmd.newListId !== this.nextId.toString()) {
+                    return CommandResult.InvalidNextId;
                 }
                 break;
             case "RENAME_ODOO_LIST":
@@ -65,38 +70,52 @@ export default class ListCorePlugin extends CorePlugin {
                     return CommandResult.EmptyName;
                 }
                 break;
-            case "ADD_GLOBAL_FILTER":
-            case "EDIT_GLOBAL_FILTER":
-                if (cmd.list) {
-                    return checkFilterFieldMatching(cmd.list);
+            case "UPDATE_ODOO_LIST":
+                if (!(cmd.listId in this.lists)) {
+                    return CommandResult.ListIdNotFound;
                 }
+                if (deepEquals(this.lists[cmd.listId], cmd.list)) {
+                    return CommandResult.ListDefinitionUnchanged;
+                }
+                return this._checkDefinition(cmd.list);
+            case "UPDATE_ODOO_LIST_DOMAIN":
+                if (!(cmd.listId in this.lists)) {
+                    return CommandResult.ListIdNotFound;
+                }
+                break;
         }
         return CommandResult.Success;
     }
 
     /**
-     * Handle a spreadsheet command
+     * @param {AllCoreCommand} cmd
      *
-     * @param {Object} cmd Command
      */
     handle(cmd) {
         switch (cmd.type) {
             case "INSERT_ODOO_LIST": {
-                const { sheetId, col, row, id, definition, linesNumber, columns } = cmd;
+                const { sheetId, col, row, definition, listId, linesNumber, mode } = cmd;
                 const anchor = [col, row];
-                this._addList(id, definition);
-                this._insertList(sheetId, anchor, id, linesNumber, columns);
-                this.history.update("nextId", parseInt(id, 10) + 1);
+                this._addList(listId, definition);
+                const columns = this.lists[listId].columns;
+                this._insertList(sheetId, anchor, listId, linesNumber, columns, mode);
+                break;
+            }
+            case "DUPLICATE_ODOO_LIST": {
+                const { listId, newListId, duplicatedListName } = cmd;
+                const duplicatedList = deepCopy(this.lists[listId]);
+                duplicatedList.name = duplicatedListName ?? duplicatedList.name + " (copy)";
+                this._addList(newListId, duplicatedList);
                 break;
             }
             case "RE_INSERT_ODOO_LIST": {
-                const { sheetId, col, row, id, linesNumber, columns } = cmd;
+                const { sheetId, col, row, listId, linesNumber, columns, mode } = cmd;
                 const anchor = [col, row];
-                this._insertList(sheetId, anchor, id, linesNumber, columns);
+                this._insertList(sheetId, anchor, listId, linesNumber, columns, mode);
                 break;
             }
             case "RENAME_ODOO_LIST": {
-                this.history.update("lists", cmd.listId, "definition", "name", cmd.name);
+                this.history.update("lists", cmd.listId, "name", cmd.name);
                 break;
             }
             case "REMOVE_ODOO_LIST": {
@@ -106,25 +125,13 @@ export default class ListCorePlugin extends CorePlugin {
                 break;
             }
             case "UPDATE_ODOO_LIST_DOMAIN": {
-                this.history.update(
-                    "lists",
-                    cmd.listId,
-                    "definition",
-                    "searchParams",
-                    "domain",
-                    cmd.domain
-                );
+                this.history.update("lists", cmd.listId, "domain", cmd.domain);
                 break;
             }
-            case "ADD_GLOBAL_FILTER":
-            case "EDIT_GLOBAL_FILTER":
-                if (cmd.list) {
-                    this._setListFieldMatching(cmd.filter.id, cmd.list);
-                }
+            case "UPDATE_ODOO_LIST": {
+                this.history.update("lists", cmd.listId, cmd.list);
                 break;
-            case "REMOVE_GLOBAL_FILTER":
-                this._onFilterDeletion(cmd.id);
-                break;
+            }
         }
     }
 
@@ -145,15 +152,7 @@ export default class ListCorePlugin extends CorePlugin {
      * @returns {string}
      */
     getListName(id) {
-        return _t(this.lists[id].definition.name);
-    }
-
-    /**
-     * @param {string} id
-     * @returns {string}
-     */
-    getListFieldMatch(id) {
-        return this.lists[id].fieldMatching;
+        return this.lists[id].name;
     }
 
     /**
@@ -179,20 +178,7 @@ export default class ListCorePlugin extends CorePlugin {
      * @returns {ListDefinition}
      */
     getListDefinition(id) {
-        const def = this.lists[id].definition;
-        return {
-            columns: [...def.metaData.columns],
-            domain: [...def.searchParams.domain],
-            model: def.metaData.resModel,
-            context: { ...def.searchParams.context },
-            orderBy: [...def.searchParams.orderBy],
-            id,
-            name: def.name,
-        };
-    }
-
-    getListModelDefinition(id) {
-        return this.lists[id].definition;
+        return this.lists[id];
     }
 
     /**
@@ -210,100 +196,44 @@ export default class ListCorePlugin extends CorePlugin {
     // Private
     // ---------------------------------------------------------------------
 
-    /**
-     * Get the current FieldMatching on a list
-     *
-     * @param {string} listId
-     * @param {string} filterId
-     */
-    getListFieldMatching(listId, filterId) {
-        return this.lists[listId].fieldMatching[filterId];
+    _addList(id, definition) {
+        this.history.update("lists", id, definition);
+        this.history.update("nextId", parseInt(id, 10) + 1);
     }
 
     /**
-     * Sets the current FieldMatching on a list
-     *
-     * @param {string} filterId
-     * @param {Record<string,FieldMatching>} listFieldMatches
-     */
-    _setListFieldMatching(filterId, listFieldMatches) {
-        const lists = { ...this.lists };
-        for (const [listId, fieldMatch] of Object.entries(listFieldMatches)) {
-            lists[listId].fieldMatching[filterId] = fieldMatch;
-        }
-        this.history.update("lists", lists);
-    }
-
-    _onFilterDeletion(filterId) {
-        const lists = { ...this.lists };
-        for (const listId in lists) {
-            this.history.update("lists", listId, "fieldMatching", filterId, undefined);
-        }
-    }
-
-    _addList(id, definition, fieldMatching = {}) {
-        const lists = { ...this.lists };
-        lists[id] = {
-            id,
-            definition,
-            fieldMatching,
-        };
-
-        this.history.update("lists", lists);
-    }
-
-    /**
-     * Build an Odoo List
+     * Build an Odoo list
      * @param {string} sheetId Id of the sheet
      * @param {[number,number]} anchor Top-left cell in which the list should be inserted
      * @param {string} id Id of the list
      * @param {number} linesNumber Number of records to insert
      * @param {Array<Object>} columns Columns ({name, type})
      */
-    _insertList(sheetId, anchor, id, linesNumber, columns) {
-        this._resizeSheet(sheetId, anchor, columns.length, linesNumber + 1);
-        this._insertHeaders(sheetId, anchor, id, columns);
-        this._insertValues(sheetId, anchor, id, columns, linesNumber);
+    _insertList(sheetId, anchor, id, linesNumber, columns, mode) {
+        if (mode === "static") {
+            this._resizeSheet(sheetId, anchor, columns.length, linesNumber + 1);
+            this._insertHeaders(sheetId, anchor, id, columns);
+            this._insertValues(sheetId, anchor, id, columns, linesNumber);
+        } else {
+            this._resizeSheet(sheetId, anchor, columns.length, linesNumber + 1);
+            this._insertSplillableList(sheetId, anchor, id, linesNumber);
+        }
     }
 
     _insertHeaders(sheetId, anchor, id, columns) {
         let [col, row] = anchor;
         for (const column of columns) {
+            const content = column.string
+                ? `=ODOO.LIST.HEADER(${id},"${column.name}","${column.string}")`
+                : `=ODOO.LIST.HEADER(${id},"${column.name}")`;
             this.dispatch("UPDATE_CELL", {
                 sheetId,
                 col,
                 row,
-                content: `=ODOO.LIST.HEADER(${id},"${column.name}")`,
+                content,
             });
             col++;
         }
-        this.dispatch("SET_FORMATTING", {
-            sheetId,
-            style: TOP_LEVEL_STYLE,
-            target: [
-                {
-                    top: anchor[1],
-                    bottom: anchor[1],
-                    left: anchor[0],
-                    right: anchor[0] + columns.length - 1,
-                },
-            ],
-        });
-        this.dispatch("SET_ZONE_BORDERS", {
-            sheetId,
-            target: [
-                {
-                    top: anchor[1],
-                    bottom: anchor[1],
-                    left: anchor[0],
-                    right: anchor[0] + columns.length - 1,
-                },
-            ],
-            border: {
-                position: "external",
-                color: "#2D7E84",
-            },
-        });
     }
 
     _insertValues(sheetId, anchor, id, columns, linesNumber) {
@@ -316,26 +246,21 @@ export default class ListCorePlugin extends CorePlugin {
                     sheetId,
                     col,
                     row,
-                    content: `=ODOO.LIST(${id},${i},"${column.name}")`,
+                    content: `=ODOO.LIST.VALUE(${id},${i},"${column.name}")`,
                 });
                 col++;
             }
             row++;
         }
-        this.dispatch("SET_ZONE_BORDERS", {
+    }
+
+    _insertSplillableList(sheetId, anchor, id, linesNumber) {
+        const content = linesNumber ? `=ODOO.LIST(${id}, ${linesNumber})` : `=ODOO.LIST(${id})`;
+        this.dispatch("UPDATE_CELL", {
             sheetId,
-            target: [
-                {
-                    top: anchor[1],
-                    bottom: anchor[1] + linesNumber,
-                    left: anchor[0],
-                    right: anchor[0] + columns.length - 1,
-                },
-            ],
-            border: {
-                position: "external",
-                color: "#2D7E84",
-            },
+            col: anchor[0],
+            row: anchor[1],
+            content,
         });
     }
 
@@ -373,6 +298,16 @@ export default class ListCorePlugin extends CorePlugin {
         }
     }
 
+    _checkDefinition(definition) {
+        if (
+            !definition.columns ||
+            definition.columns.some((column) => !column.name || !column.string)
+        ) {
+            return CommandResult.InvalidListDefinition;
+        }
+        return CommandResult.Success;
+    }
+
     // ---------------------------------------------------------------------
     // Import/Export
     // ---------------------------------------------------------------------
@@ -385,19 +320,7 @@ export default class ListCorePlugin extends CorePlugin {
     import(data) {
         if (data.lists) {
             for (const [id, list] of Object.entries(data.lists)) {
-                const definition = {
-                    metaData: {
-                        resModel: list.model,
-                        columns: list.columns,
-                    },
-                    searchParams: {
-                        domain: list.domain,
-                        context: list.context,
-                        orderBy: list.orderBy,
-                    },
-                    name: list.name,
-                };
-                this._addList(id, definition, list.fieldMatching);
+                this._addList(id, list);
             }
         }
         this.nextId = data.listNextId || getMaxObjectId(this.lists) + 1;
@@ -411,20 +334,7 @@ export default class ListCorePlugin extends CorePlugin {
         data.lists = {};
         for (const id in this.lists) {
             data.lists[id] = JSON.parse(JSON.stringify(this.getListDefinition(id)));
-            data.lists[id].fieldMatching = this.lists[id].fieldMatching;
         }
         data.listNextId = this.nextId;
     }
 }
-
-ListCorePlugin.getters = [
-    "getListDisplayName",
-    "getListDefinition",
-    "getListModelDefinition",
-    "getListIds",
-    "getListName",
-    "getNextListId",
-    "isExistingList",
-    "getListFieldMatch",
-    "getListFieldMatching",
-];

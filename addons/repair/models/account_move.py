@@ -1,22 +1,25 @@
-# -*- coding: utf-8 -*-
-
-from odoo import models, fields
+# Part of Odoo. See LICENSE file for full copyright and licensing details.
+from odoo import fields, models
+from odoo.exceptions import UserError
 
 
 class AccountMove(models.Model):
+    _name = 'account.move'
     _inherit = 'account.move'
 
-    repair_ids = fields.One2many('repair.order', 'invoice_id', readonly=True, copy=False)
+    repair_order_id = fields.Many2one('repair.order', string='Repair Order', index='btree_not_null', copy=False)
 
-    def unlink(self):
-        repairs = self.sudo().repair_ids.filtered(lambda repair: repair.state != 'cancel')
-        if repairs:
-            repairs.sudo(False).state = '2binvoiced'
-        return super().unlink()
+    def action_show_repair(self):
+        self.ensure_one()
+        return {
+            'type': 'ir.actions.act_window',
+            'res_model': 'repair.order',
+            'views': [[False, 'form']],
+            'res_id': self.repair_order_id.id,
+        }
 
-
-class AccountMoveLine(models.Model):
-    _inherit = 'account.move.line'
-
-    repair_line_ids = fields.One2many('repair.line', 'invoice_line_id', readonly=True, copy=False)
-    repair_fee_ids = fields.One2many('repair.fee', 'invoice_line_id', readonly=True, copy=False)
+    def button_draft(self):
+        draft_invoices = self.repair_order_id.invoice_ids.filtered(lambda move: move.state == 'draft')
+        if draft_invoices:
+            raise UserError(self.env._('You can only have one invoice linked to a repair order.'))
+        super().button_draft()

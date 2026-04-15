@@ -1,11 +1,8 @@
-/** @odoo-module **/
-
-import { _lt } from "@web/core/l10n/translation";
 import { registry } from "@web/core/registry";
 import { BoardController } from "./board_controller";
-import { XMLParser } from "@web/core/utils/xml";
+import { visitXML } from "@web/core/utils/xml";
 import { Domain } from "@web/core/domain";
-export class BoardArchParser extends XMLParser {
+export class BoardArchParser {
     parse(arch, customViewId) {
         let nextId = 1;
         const archInfo = {
@@ -18,7 +15,7 @@ export class BoardArchParser extends XMLParser {
         };
         let currentIndex = -1;
 
-        this.visitXML(arch, (node) => {
+        visitXML(arch, (node) => {
             switch (node.tagName) {
                 case "form":
                     archInfo.title = node.getAttribute("string");
@@ -44,7 +41,7 @@ export class BoardArchParser extends XMLParser {
                         isFolded,
                     };
                     if (node.hasAttribute("domain")) {
-                        let domain = node.getAttribute("domain");
+                        const domain = node.getAttribute("domain");
                         action.domain = new Domain(domain).toList();
                         // so it can be serialized when reexporting board xml
                         action.domain.toString = () => node.getAttribute("domain");
@@ -60,7 +57,6 @@ export class BoardArchParser extends XMLParser {
 
 export const boardView = {
     type: "form",
-    display_name: _lt("Board"),
     Controller: BoardController,
 
     props: (genericProps, view) => {

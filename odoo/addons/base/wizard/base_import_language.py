@@ -1,13 +1,11 @@
-# -*- coding: utf-8 -*-
 # Part of Odoo. See LICENSE file for full copyright and licensing details.
 
-import base64
 import logging
 import operator
 from tempfile import TemporaryFile
 from os.path import splitext
 
-from odoo import api, fields, models, tools, sql_db, _
+from odoo import fields, models, tools
 from odoo.exceptions import UserError
 from odoo.tools.translate import TranslationImporter
 
@@ -15,11 +13,11 @@ _logger = logging.getLogger(__name__)
 
 
 class BaseLanguageImport(models.TransientModel):
-    _name = "base.language.import"
+    _name = 'base.language.import'
     _description = "Language Import"
 
     name = fields.Char('Language Name', required=True)
-    code = fields.Char('ISO Code', size=6, required=True,
+    code = fields.Char('ISO Code', required=True,
                        help="ISO Language and Country code, e.g. en_US")
     data = fields.Binary('File', required=True, attachment=False)
     filename = fields.Char('File Name', required=True)
@@ -37,15 +35,15 @@ class BaseLanguageImport(models.TransientModel):
                     Lang._create_lang(base_lang_import.code, lang_name=base_lang_import.name)
                 try:
                     with TemporaryFile('wb+') as buf:
-                        buf.write(base64.decodebytes(base_lang_import.data))
+                        buf.write(base_lang_import.data)
                         fileformat = splitext(base_lang_import.filename)[-1][1:].lower()
                         translation_importer.load(buf, fileformat, base_lang_import.code)
                 except Exception as e:
                     _logger.warning('Could not import the file due to a format mismatch or it being malformed.')
                     raise UserError(
-                        _('File %r not imported due to format mismatch or a malformed file.'
-                          ' (Valid formats are .csv, .po, .pot)\n\nTechnical Details:\n%s') % \
-                        (base_lang_import.filename, tools.ustr(e))
+                        self.env._('File "%(file_name)s" not imported due to format mismatch or a malformed file.'
+                          ' (Valid formats are .csv, .po)\n\nTechnical Details:\n%(error_message)s',
+                          file_name=base_lang_import.filename, error_message=e),
                     )
             translation_importer.save(overwrite=overwrite)
         return True

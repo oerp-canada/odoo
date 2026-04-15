@@ -1,15 +1,17 @@
-/* @odoo-module */
+import { useLayoutEffect, useState } from "@web/owl2/utils";
+import { Gif } from "@mail/core/common/gif";
+import { useOnBottomScrolled, useSequential } from "@mail/utils/common/hooks";
 
-import { useStore } from "@mail/core/common/messaging_hook";
-import { removeFromArrayWithPredicate } from "@mail/utils/common/arrays";
-import { useOnBottomScrolled } from "@mail/utils/common/hooks";
-import { markEventHandled } from "@web/core/utils/misc";;
-
-import { Component, onWillStart, useRef, useState } from "@odoo/owl";
-
-import { usePopover } from "@web/core/popover/popover_hook";
+import { Component, onWillStart } from "@odoo/owl";
+import { user } from "@web/core/user";
 import { useService, useAutofocus } from "@web/core/utils/hooks";
 import { useDebounced } from "@web/core/utils/timing";
+import { rpc } from "@web/core/network/rpc";
+import { PICKER_PROPS, usePicker } from "@web/core/emoji_picker/emoji_picker";
+
+export function useGifPicker(...args) {
+    return usePicker(GifPicker, ...args);
+}
 
 /**
  * @typedef {Object} TenorCategory
@@ -43,49 +45,31 @@ import { useDebounced } from "@web/core/utils/timing";
  */
 
 /**
- * @param {import("@web/core/utils/common/hooks").Ref} ref
- * @param {{ onSelected: function, className: String }} options
- */
-export function useGifPicker(refName, options) {
-    const ref = useRef(refName);
-    const popover = usePopover(GifPicker, {
-        position: "top",
-        popoverClass: "o-fast-popover",
-    });
-    function toggle() {
-        if (popover.isOpen) {
-            popover.close();
-        } else {
-            popover.open(ref.el, options);
-        }
-    }
-    return { toggle };
-}
-
-/**
  * @typedef {Object} Props
- * @property {function} onSelected Callback to use when the gif is selected
+ * @property {function} onSelect Callback to use when the gif is selected
  * @property {string} [className]
  * @property {function} [close]
+ * @property {Object} [state]
  * @extends {Component<Props, Env>}
  */
+
 export class GifPicker extends Component {
     static template = "discuss.GifPicker";
-    static props = ["onSelected", "className?", "close?"];
+    static props = PICKER_PROPS;
+    static components = { Gif };
 
     setup() {
-        this.rpc = useService("rpc");
+        super.setup();
         this.orm = useService("orm");
-        this.store = useStore();
-        this.userService = useService("user");
-        useAutofocus();
+        this.store = useService("mail.store");
+        this.sequential = useSequential();
+        this.inputRef = useAutofocus();
         useOnBottomScrolled(
             "scroller",
             () => {
                 if (!this.state.showCategories) {
-                    this.state.loadingGif = true;
                     if (!this.showFavorite) {
-                        this.searchDebounced();
+                        this.search();
                     } else {
                         this.loadFavoritesDebounced(this.offset);
                     }
@@ -109,37 +93,75 @@ export class GifPicker extends Component {
             loadingGif: false,
             loadingError: false,
             evenGif: {
-                /** @type {TenorGif[]} */
-                gifs: [],
+                /** @type {Map<Number, TenorGif>} */
+                gifs: new Map(),
                 /** Size, in pixel, of the column. */
                 columnSize: 0,
             },
             oddGif: {
-                /** @type {TenorGif[]} */
-                gifs: [],
+                /** @type {Map<Number, TenorGif>} */
+                gifs: new Map(),
                 /** Size, in pixel, of the column. */
                 columnSize: 0,
             },
+            focused: false,
         });
-        this.searchDebounced = useDebounced(this.search, 200);
         this.loadFavoritesDebounced = useDebounced(this.loadFavorites, 200);
         onWillStart(() => {
             this.loadCategories();
         });
-        if (!this.store.guest) {
+        if (this.store.self_user) {
             onWillStart(() => {
                 this.loadFavorites();
             });
         }
+        useLayoutEffect(
+            () => {
+                if (this.props.state?.picker !== this.props.PICKERS?.GIF) {
+                    return;
+                }
+                this.clear();
+                this.search();
+                if (this.searchTerm) {
+                    this.closeCategories();
+                } else {
+                    this.openCategories();
+                }
+            },
+            () => [this.searchTerm, this.props.state?.picker]
+        );
+    }
+
+    get style() {
+        return "";
+    }
+
+    get searchTerm() {
+        return this.props.state ? this.props.state.searchTerm : this.state.searchTerm;
+    }
+
+    set searchTerm(value) {
+        if (this.props.state) {
+            this.props.state.searchTerm = value;
+        } else {
+            this.state.searchTerm = value;
+        }
     }
 
     async loadCategories() {
+        if (!this.store.hasGifPickerFeature) {
+            return;
+        }
         try {
-            const { tags } = await this.rpc(
+            let { language, region } = new Intl.Locale(user.lang);
+            if (!region && language === "sr") {
+                region = "RS";
+            }
+            const { tags } = await rpc(
                 "/discuss/gif/categories",
                 {
-                    country: this.userService.lang.slice(3, 5),
-                    locale: this.userService.lang,
+                    country: region,
+                    locale: `${language}_${region}`,
                 },
                 { silent: true }
             );
@@ -152,8 +174,9 @@ export class GifPicker extends Component {
     }
 
     openCategories() {
+        this.showFavorite = false;
         this.state.showCategories = true;
-        this.state.searchTerm = "";
+        this.searchTerm = "";
         this.clear();
     }
 
@@ -162,32 +185,41 @@ export class GifPicker extends Component {
     }
 
     async search() {
-        if (!this.state.searchTerm) {
+        if (!this.searchTerm) {
             return;
         }
-        this.state.loadingGif = true;
         try {
+            let { language, region } = new Intl.Locale(user.lang);
+            if (!region && language === "sr") {
+                region = "RS";
+            }
             const params = {
-                country: this.userService.lang.slice(3, 5),
-                locale: this.userService.lang,
-                search_term: this.state.searchTerm,
+                country: region,
+                locale: `${language}_${region}`,
+                search_term: this.searchTerm,
             };
             if (this.next) {
                 params.position = this.next;
             }
-            const { results, next } = await this.rpc("/discuss/gif/search", params, {
-                silent: true,
+            const res = await this.sequential(() => {
+                this.state.loadingGif = true;
+                const res = rpc("/discuss/gif/search", params, {
+                    silent: true,
+                });
+                this.state.loadingGif = false;
+                return res;
             });
-            if (results) {
+            if (res) {
+                const { next, results } = res;
                 this.next = next;
                 for (const gif of results) {
                     this.pushGif(gif);
                 }
+                this.state.loadingError = false;
             }
         } catch {
             this.state.loadingError = true;
         }
-        this.state.loadingGif = false;
     }
 
     /**
@@ -195,41 +227,26 @@ export class GifPicker extends Component {
      */
     pushGif(gif) {
         if (this.state.evenGif.columnSize <= this.state.oddGif.columnSize) {
-            this.state.evenGif.gifs.push(gif);
+            this.state.evenGif.gifs.set(gif.id, gif);
             this.state.evenGif.columnSize += gif.media_formats.tinygif.dims[1];
         } else {
-            this.state.oddGif.gifs.push(gif);
+            this.state.oddGif.gifs.set(gif.id, gif);
             this.state.oddGif.columnSize += gif.media_formats.tinygif.dims[1];
         }
-    }
-
-    onInput() {
-        this.clear();
-        this.state.loadingGif = true;
-        this.searchDebounced();
-        if (this.state.searchTerm) {
-            this.closeCategories();
-        } else {
-            this.openCategories();
-        }
-    }
-
-    onClick(ev) {
-        markEventHandled(ev, "GifPicker.onClick");
     }
 
     /**
      * @param {TenorGif} gif
      */
     onClickGif(gif) {
-        this.props.onSelected(gif);
-        this.props.close();
+        this.props.onSelect(gif, true);
+        this.props.close?.();
     }
 
     clear() {
-        this.state.evenGif.gifs = [];
+        this.state.evenGif.gifs.clear();
         this.state.evenGif.columnSize = 0;
-        this.state.oddGif.gifs = [];
+        this.state.oddGif.gifs.clear();
         this.state.oddGif.columnSize = 0;
     }
 
@@ -238,8 +255,8 @@ export class GifPicker extends Component {
      */
     async onClickCategory(category) {
         this.clear();
-        this.state.searchTerm = category.searchterm;
-        await this.search();
+        this.searchTerm = category.searchterm;
+        this.inputRef.el?.focus();
         this.closeCategories();
     }
 
@@ -251,26 +268,29 @@ export class GifPicker extends Component {
             this.state.favorites.gifs.push(gif);
             await this.orm.silent.create("discuss.gif.favorite", [{ tenor_gif_id: gif.id }]);
         } else {
-            removeFromArrayWithPredicate(this.state.favorites.gifs, ({ id }) => id === gif.id);
-            await this.rpc(
-                "/discuss/gif/remove_favorite",
-                { tenor_gif_id: gif.id },
-                { silent: true }
-            );
+            const index = this.state.favorites.gifs.findIndex(({ id }) => id === gif.id);
+            if (index >= 0) {
+                this.state.favorites.gifs.splice(index, 1);
+            }
+            await rpc("/discuss/gif/remove_favorite", { tenor_gif_id: gif.id }, { silent: true });
         }
     }
 
     async loadFavorites() {
+        if (!this.store.hasGifPickerFeature) {
+            return;
+        }
         this.state.loadingGif = true;
-        const [results] = await this.rpc(
-            "/discuss/gif/favorites",
-            { offset: this.offset },
-            { silent: true }
-        );
-        this.offset += 20;
-        this.state.favorites.gifs.push(...results);
-        for (const gif of results) {
-            this.pushGif(gif);
+        try {
+            const [results] = await rpc(
+                "/discuss/gif/favorites",
+                { offset: this.offset },
+                { silent: true }
+            );
+            this.offset += 20;
+            this.state.favorites.gifs.push(...results);
+        } catch {
+            this.state.loadingError = true;
         }
         this.state.loadingGif = false;
     }
@@ -288,5 +308,9 @@ export class GifPicker extends Component {
             this.pushGif(gif);
         }
         this.closeCategories();
+    }
+
+    onClickOpenDiscussSetting() {
+        this.env.services.action.doAction("mail.action_open_discuss_settings");
     }
 }

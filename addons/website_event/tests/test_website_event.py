@@ -4,31 +4,80 @@
 from datetime import datetime, timedelta
 from dateutil.relativedelta import relativedelta
 
-from odoo import fields
-from odoo.addons.base.tests.common import HttpCaseWithUserDemo
+from odoo import fields, http
+from odoo.addons.base.tests.common import HttpCaseWithUserDemo, HttpCaseWithUserPortal
+from odoo.addons.http_routing.tests.common import MockRequest
 from odoo.addons.mail.tests.common import mail_new_test_user
-from odoo.addons.website.tests.test_base_url import TestUrlCommon
-from odoo.addons.website_event.tests.common import OnlineEventCase
+from odoo.addons.website_event.tests.common import TestEventOnlineCommon, OnlineEventCase
 from odoo.exceptions import AccessError
-from odoo.tests import tagged
+from odoo.tests import HttpCase, tagged
 from odoo.tools import mute_logger
 from odoo.tests.common import users
 
+
+class TestEventRegisterUTM(HttpCase, TestEventOnlineCommon):
+    def test_event_registration_utm_values(self):
+        self.event_0.registration_ids.unlink()
+        self.event_0.write({
+            'event_ticket_ids': [
+                (5, 0),
+                (0, 0, {
+                    'name': 'First Ticket',
+                }),
+            ],
+            'is_published': True
+        })
+        event_campaign = self.env['utm.campaign'].create({'name': 'utm event test'})
+
+        self.authenticate(None, None)
+        self.opener.cookies.update({
+            'odoo_utm_campaign': event_campaign.name,
+            'odoo_utm_source': self.env.ref('utm.utm_source_newsletter').name,
+            'odoo_utm_medium': self.env.ref('utm.utm_medium_email').name
+        })
+        event_questions = self.event_0.question_ids
+        name_question = event_questions.filtered(lambda q: q.question_type == 'name')
+        email_question = event_questions.filtered(lambda q: q.question_type == 'email')
+        self.assertTrue(name_question and email_question)
+        # get 1 free ticket
+        self.url_open(f'/event/{self.event_0.id}/registration/confirm', data={
+            f'1-name-{name_question.id}': 'Bob',
+            f'1-email-{email_question.id}': 'bob@test.lan',
+            '1-event_ticket_id': self.event_0.event_ticket_ids[0].id,
+            'csrf_token': self.csrf_token(),
+        })
+        new_registration = self.event_0.registration_ids
+        self.assertEqual(len(new_registration), 1)
+        self.assertEqual(new_registration.utm_campaign_id, event_campaign)
+        self.assertEqual(new_registration.utm_source_id, self.env.ref('utm.utm_source_newsletter'))
+        self.assertEqual(new_registration.utm_medium_id, self.env.ref('utm.utm_medium_email'))
+
+
 @tagged('post_install', '-at_install')
-class TestUi(HttpCaseWithUserDemo):
+class TestUi(HttpCaseWithUserDemo, HttpCaseWithUserPortal):
 
     def test_website_event_tour_admin(self):
-        self.start_tour(self.env['website'].get_client_action_url('/'), 'website_event_tour', login='admin', step_delay=100)
+        self.upcoming_event = self.env['event.event'].create({
+            'name': 'Upcoming Event',
+            'date_begin': fields.Datetime.now() + relativedelta(days=10),
+            'date_end': fields.Datetime.now() + relativedelta(days=13),
+            'website_published': True,
+        })
+        self.start_tour(self.env['website'].get_client_action_url('/'), 'website_event_tour', login='admin')
 
     def test_website_event_pages_seo(self):
+        website = self.env['website'].get_current_website()
         event = self.env['event.event'].create({
             'name': 'Event With Menu',
             'website_menu': True,
+            'website_id': website.id,
         })
         intro_event_menu = event.introduction_menu_ids
         url = intro_event_menu.menu_id._clean_url()
         self.start_tour(self.env['website'].get_client_action_url(url), 'website_event_pages_seo', login='admin')
-        self.assertEqual(intro_event_menu.view_id.website_meta_title, "Hello, world!")
+        view_key = intro_event_menu.view_id.key
+        specific_view = website.with_context(website_id=website.id).viewref(view_key)
+        self.assertEqual(specific_view.website_meta_title, "Hello, world!")
         self.assertEqual(event.website_meta_title, False)
 
     def test_website_event_questions(self):
@@ -41,11 +90,14 @@ class TestUi(HttpCaseWithUserDemo):
             'date_end': fields.Datetime.now() + relativedelta(days=15),
             'event_ticket_ids': [(0, 0, {
                 'name': 'Free',
-                'start_sale_datetime': fields.Datetime.now() - relativedelta(days=15)
+                'start_sale_datetime': fields.Datetime.now() - relativedelta(days=15),
+                'limit_max_per_order': 22,
             }), (0, 0, {
                 'name': 'Other',
                 'start_sale_datetime': fields.Datetime.now() - relativedelta(days=15)
             })],
+            'seats_limited': True,
+            'seats_max': 28,
             'website_published': True,
             'question_ids': [(0, 0, {
                 'title': 'Name',
@@ -82,7 +134,7 @@ class TestUi(HttpCaseWithUserDemo):
             })]
         })
 
-        self.start_tour("/", 'test_tickets_questions', login="portal")
+        self.start_tour("/event", 'test_tickets_questions', login="portal")
 
         registrations = self.env['event.registration'].search([
             ('email', 'in', ['attendee-a@gmail.com', 'attendee-b@gmail.com'])
@@ -124,13 +176,47 @@ class TestUi(HttpCaseWithUserDemo):
             lambda answer: answer.question_id.title == 'How did you learn about this event?'
         ).value_answer_id.name, 'A friend')
 
+    def test_website_event_search(self):
+        """ Ensure filters are not reset when changing pages or performing a search. """
+        tag_category = self.env['event.tag.category'].create({'name': 'Test Category'})
 
-@tagged('-at_install', 'post_install')
-class TestURLs(TestUrlCommon):
+        tags = self.env['event.tag'].create([
+            {'name': 'tag 1', 'category_id': tag_category.id},
+            {'name': 'tag 2', 'category_id': tag_category.id},
+        ])
 
-    def test_canonical_url(self):
-        self._assertCanonical('/event?date=all', self.domain + '/event')
-        self._assertCanonical('/event?date=old', self.domain + '/event?date=old')
+        # Need to create a bunch of events to have severals pages
+        self.env['event.event'].create([
+            {
+                'name': f'Filter Test Event - {tag.name}',
+                'website_published': True,
+                'date_begin': datetime.today() - timedelta(days=1),
+                'date_end': datetime.today() + timedelta(days=1),
+                'tag_ids': tag,
+            }
+            for tag in tags
+            for _ in range(20)
+        ])
+
+        self.start_tour('/event', 'test_website_event_search', login='admin')
+
+    def test_website_event_social_image(self):
+        website = self.env['website'].get_current_website()
+        event = self.env['event.event'].create({
+            'name': 'Event With Menu',
+            'website_menu': True,
+            'website_id': website.id,
+        })
+        with MockRequest(self.env, website=website, url_root='http://example.com'):
+            event.cover_properties = """{"background-image": "url('/1.jpg')"}"""
+            meta = event.get_website_meta()
+            self.assertEqual(meta['opengraph_meta']['og:image'], 'http://example.com/1.jpg')
+            event.cover_properties = """{"background-image": "url(\\"/2.jpg\\")"}"""
+            meta = event.get_website_meta()
+            self.assertEqual(meta['opengraph_meta']['og:image'], 'http://example.com/2.jpg')
+            event.cover_properties = """{"background-image": "url(/3.jpg)"}"""
+            meta = event.get_website_meta()
+            self.assertEqual(meta['opengraph_meta']['og:image'], 'http://example.com/3.jpg')
 
 
 @tagged('post_install', '-at_install')
@@ -224,7 +310,7 @@ class TestWebsiteAccess(HttpCaseWithUserDemo, OnlineEventCase):
 
         unpublished_events = self.events.filtered(lambda event: not event.website_published)
         resp = self.url_open('/event/%i' % unpublished_events[0].id)
-        self.assertEqual(resp.status_code, 403, 'Public must not have access to unpublished event')
+        self.assertEqual(resp.status_code, 404, 'Public must not have access to unpublished event')
 
         resp = self.url_open('/event')
         self.assertTrue(published_events[0].name in resp.text, 'Public must see the published events.')
@@ -239,7 +325,7 @@ class TestWebsiteAccess(HttpCaseWithUserDemo, OnlineEventCase):
     @users('user_portal')
     def test_check_search_in_address(self):
         ret = self.env['event.event']._search_get_detail(
-            self.website, order=None, options={'displayDescription':'', 'displayDetail':''}
+            self.website, order=None, options={}
         )
         result = ret['search_extra'](self.env, 'Turlock')[0][-1].get_result_ids()
         self.assertEqual(*result, self.events[0].id, 'Event should exist for the searched term')

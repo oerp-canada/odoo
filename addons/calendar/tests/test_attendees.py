@@ -1,11 +1,15 @@
-# -*- coding: utf-8 -*-
 # Part of Odoo. See LICENSE file for full copyright and licensing details.
 
 from datetime import datetime
+from dateutil.relativedelta import relativedelta
 
 from odoo.tests.common import TransactionCase, new_test_user
+from odoo.tests import tagged, Form
+from odoo import fields, Command
+from freezegun import freeze_time
 
 
+@tagged('at_install', '-post_install')  # LEGACY at_install
 class TestEventNotifications(TransactionCase):
 
     @classmethod
@@ -34,7 +38,7 @@ class TestEventNotifications(TransactionCase):
         })
         self.assertTrue(event.attendee_ids, "It should have created an attendee")
         self.assertEqual(event.attendee_ids.partner_id, self.partner, "It should be linked to the partner")
-        self.assertIn(self.partner, event.message_follower_ids.partner_id, "He should be follower of the event")
+        self.assertNotIn(self.partner, event.message_follower_ids.partner_id, "He should not be automatically added in followers, no need")
 
     def test_attendee_added_create_with_specific_states(self):
         """
@@ -68,6 +72,11 @@ class TestEventNotifications(TransactionCase):
         events.partner_ids = self.partner
         self.assertEqual(len(events.attendee_ids), 2, "It should have created one attendee per event")
 
+    def test_attendee_added_write(self):
+        """Test that writing ids directly on partner_ids instead of commands is handled."""
+        self.event.write({'partner_ids': [self.partner.id]})
+        self.assertEqual(self.event.attendee_ids.partner_id, self.partner, "It should be linked to the partner")
+
     def test_existing_attendee_added(self):
         self.event.partner_ids = self.partner
         attendee = self.event.attendee_ids
@@ -90,6 +99,31 @@ class TestEventNotifications(TransactionCase):
         self.assertNotIn(self.partner, self.event.attendee_ids.partner_id, "It should have removed the attendee")
         self.assertNotIn(self.partner, self.event.message_follower_ids.partner_id, "It should have unsubscribed the partner")
         self.assertIn(partner_bis, self.event.attendee_ids.partner_id, "It should have left the attendee")
+
+    def test_attendee_unavailabilities(self):
+        partner1, partner2 = self.env['res.partner'].create([{
+            'name': 'Test partner 1',
+            'email': 'test1@example.com',
+        }, {
+            'name': 'Test partner 2',
+            'email': 'test2@example.com',
+        }])
+        event1 = self.env['calendar.event'].create({
+            'name': 'Meeting 1',
+            'start': datetime(2020, 12, 13, 17),
+            'stop': datetime(2020, 12, 13, 22),
+            'partner_ids': [(4, partner.id) for partner in (partner1, partner2)]
+        })
+        self.assertFalse(event1.unavailable_partner_ids)
+        event2 = self.env['calendar.event'].create({
+            'name': 'Meeting 2',
+            'start': datetime(2020, 12, 13, 17),
+            'stop': datetime(2020, 12, 13, 22),
+            'partner_ids': [(4, partner1.id)],
+        })
+        event1.invalidate_recordset()
+        self.assertEqual(event1.unavailable_partner_ids, partner1)
+        self.assertEqual(event2.unavailable_partner_ids, partner1)
 
     def test_attendee_without_email(self):
         self.partner.email = False
@@ -129,3 +163,50 @@ class TestEventNotifications(TransactionCase):
         })
         self.assertIn(self.partner, event.attendee_ids.partner_id, "Partner should be in attendee")
         self.assertNotIn(partner_bis, event.attendee_ids.partner_id, "Partner bis should not be in attendee")
+
+    def test_push_meeting_start(self):
+        """
+        Checks that you can push the start date of an all day meeting.
+        """
+        attendee = self.env['res.partner'].create({
+            'name': "Xavier",
+            'email': "xavier@example.com",
+            })
+        event = self.env['calendar.event'].create({
+            'name': "Doom's day",
+            'attendee_ids': [Command.create({'partner_id': attendee.id})],
+            'allday': True,
+            'start_date': fields.Date.today(),
+            'stop_date': fields.Date.today(),
+        })
+        initial_start = event.start
+        with Form(event) as event_form:
+            event_form.stop_date = datetime.today() + relativedelta(days=1)
+            event_form.start_date = datetime.today() + relativedelta(days=1)
+        self.assertFalse(initial_start == event.start)
+
+    @freeze_time("2019-10-24 09:00:00", tick=True)
+    def test_multi_attendee_mt_note_default(self):
+        mt_note = self.env.ref("mail.mt_note")
+        mt_note.default = True
+        user_exta = new_test_user(self.env, "extra", email="extra@il.com")
+        partner_extra = user_exta.partner_id
+        event = self.env["calendar.event"].create({
+            "name": "Team meeting",
+            "attendee_ids": [
+                (0, 0, {"partner_id": self.partner.id}),
+                (0, 0, {"partner_id": partner_extra.id})
+            ],
+            "start": datetime(2019, 10, 25, 8, 0),
+            "stop": datetime(2019, 10, 25, 10, 0),
+        })
+        messages = self.env["mail.message"].search([
+            ("model", "=", event._name),
+            ("res_id", "=", event.id),
+            ("message_type", "=", "user_notification")
+        ])
+        self.assertEqual(len(messages), 2)
+        mesage_user = messages.filtered(lambda x: self.partner in x.partner_ids)
+        self.assertNotIn(partner_extra, mesage_user.notified_partner_ids)
+        mesage_user_extra = messages.filtered(lambda x: partner_extra in x.partner_ids)
+        self.assertNotIn(self.partner, mesage_user_extra.notified_partner_ids)

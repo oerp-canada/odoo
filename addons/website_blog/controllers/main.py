@@ -1,21 +1,22 @@
-# -*- coding: utf-8 -*-
 # Part of Odoo. See LICENSE file for full copyright and licensing details.
 
-import werkzeug
-import itertools
-import pytz
-import babel.dates
 from collections import defaultdict
+from zoneinfo import ZoneInfo
 
-from odoo import http, fields, tools, models
-from odoo.addons.http_routing.models.ir_http import slug, unslug
+import babel.dates
+import werkzeug
+
+from odoo import http, tools, models
 from odoo.addons.website.controllers.main import QueryURL
-from odoo.addons.portal.controllers.portal import _build_url_w_params
+from odoo.fields import Domain
 from odoo.http import request
-from odoo.osv import expression
+from odoo.http.session import touch
 from odoo.tools import html2plaintext
 from odoo.tools.misc import get_lang
 from odoo.tools import sql
+from odoo.tools.translate import LazyTranslate
+
+_lt = LazyTranslate(__name__)
 
 
 class WebsiteBlog(http.Controller):
@@ -29,17 +30,16 @@ class WebsiteBlog(http.Controller):
         else:
             tag_ids.append(current_tag)
         tag_ids = request.env['blog.tag'].browse(tag_ids)
-        return ','.join(slug(tag) for tag in tag_ids)
+        return ','.join(request.env['ir.http']._slug(tag) for tag in tag_ids)
 
     def nav_list(self, blog=None):
         dom = blog and [('blog_id', '=', blog.id)] or []
-        if not request.env.user.has_group('website.group_website_designer'):
-            dom += [('post_date', '<=', fields.Datetime.now())]
+        dom += [('website_published', '=', True)]
         groups = request.env['blog.post']._read_group(
-            dom, groupby=['post_date:month'])
+            dom, groupby=['published_date:month'])
 
         locale = get_lang(request.env).code
-        tzinfo = pytz.timezone(request.context.get('tz', 'utc') or 'utc')
+        tzinfo = ZoneInfo(request.env.context.get('tz') or 'UTC')
         fmt = tools.DEFAULT_SERVER_DATETIME_FORMAT
 
         res = defaultdict(list)
@@ -55,11 +55,6 @@ class WebsiteBlog(http.Controller):
 
     def _get_blog_post_search_options(self, blog=None, active_tags=None, date_begin=None, date_end=None, state=None, **post):
         return {
-            'displayDescription': True,
-            'displayDetail': False,
-            'displayExtraDetail': False,
-            'displayExtraLink': False,
-            'displayImage': False,
             'allowFuzzy': not post.get('noFuzzy'),
             'blog': str(blog.id) if blog else None,
             'tag': ','.join([str(id) for id in active_tags.ids]),
@@ -77,41 +72,42 @@ class WebsiteBlog(http.Controller):
         domain = request.website.website_domain()
 
         if blog:
-            domain += [('blog_id', '=', blog.id)]
+            domain &= Domain('blog_id', '=', blog.id)
 
         if date_begin and date_end:
-            domain += [("post_date", ">=", date_begin), ("post_date", "<=", date_end)]
-        active_tag_ids = tags and [unslug(tag)[1] for tag in tags.split(',')] or []
+            domain &= Domain("published_date", ">=", date_begin) & Domain("published_date", "<=", date_end)
+        active_tag_ids = tags and [tag_id for tag_id in [request.env['ir.http']._unslug(tag)[1] for tag in tags.split(',')] if tag_id] or []
         active_tags = BlogTag
         if active_tag_ids:
             active_tags = BlogTag.browse(active_tag_ids).exists()
-            fixed_tag_slug = ",".join(slug(t) for t in active_tags)
+            fixed_tag_slug = ",".join(request.env['ir.http']._slug(t) for t in active_tags)
             if fixed_tag_slug != tags:
                 path = request.httprequest.full_path
                 new_url = path.replace("/tag/%s" % tags, fixed_tag_slug and "/tag/%s" % fixed_tag_slug or "", 1)
                 if new_url != path:  # check that really replaced and avoid loop
                     return request.redirect(new_url, 301)
-            domain += [('tag_ids', 'in', active_tags.ids)]
+            domain &= Domain('tag_ids', 'in', active_tags.ids)
 
+        published_count = 0
+        unpublished_count = 0
+        scheduled_count = 0
         if request.env.user.has_group('website.group_website_designer'):
-            count_domain = domain + [("website_published", "=", True), ("post_date", "<=", fields.Datetime.now())]
+            count_domain = domain & Domain("website_published", "=", True)
+            scheduled_domain = domain & Domain("publish_on", "!=", False)
             published_count = BlogPost.search_count(count_domain)
-            unpublished_count = BlogPost.search_count(domain) - published_count
+            scheduled_count = BlogPost.search_count(scheduled_domain)
+            unpublished_count = BlogPost.search_count(domain) - published_count - scheduled_count
 
             if state == "published":
-                domain += [("website_published", "=", True), ("post_date", "<=", fields.Datetime.now())]
+                domain &= Domain("website_published", "=", True)
             elif state == "unpublished":
-                domain += ['|', ("website_published", "=", False), ("post_date", ">", fields.Datetime.now())]
+                domain &= Domain("website_published", "=", False) & Domain("publish_on", "=", False)
+            elif state == "scheduled":
+                domain &= Domain("publish_on", "!=", False)
         else:
-            domain += [("post_date", "<=", fields.Datetime.now())]
+            domain &= Domain("website_published", "=", True)
 
-        use_cover = request.website.is_view_active('website_blog.opt_blog_cover_post')
-        fullwidth_cover = request.website.is_view_active('website_blog.opt_blog_cover_post_fullwidth_design')
-
-        # if blog, we show blog title, if use_cover and not fullwidth_cover we need pager + latest always
         offset = (page - 1) * self._blog_post_per_page
-        if not blog and use_cover and not fullwidth_cover and not tags and not date_begin and not date_end and not search:
-            offset += 1
 
         options = self._get_blog_post_search_options(
             blog=blog,
@@ -121,12 +117,9 @@ class WebsiteBlog(http.Controller):
             state=state,
             **post
         )
-        total, details, fuzzy_search_term = request.website._search_with_fuzzy("blog_posts_only", search,
-            limit=page * self._blog_post_per_page, order="is_published desc, post_date desc, id asc", options=options)
+        total, details, fuzzy_search_term = request.website._search_with_fuzzy('blog_post', search,
+            offset=0, limit=page * self._blog_post_per_page, order="is_published desc, published_date desc, id asc", options=options)
         posts = details[0].get('results', BlogPost)
-        first_post = BlogPost
-        if posts and not blog and posts[0].website_published:
-            first_post = posts[0]
         posts = posts[offset:offset + self._blog_post_per_page]
 
         url_args = dict()
@@ -151,32 +144,48 @@ class WebsiteBlog(http.Controller):
             all_tags = tools.lazy(lambda: blogs.all_tags(join=True) if not blog else blogs.all_tags().get(blog.id, request.env['blog.tag']))
         tag_category = tools.lazy(lambda: sorted(all_tags.mapped('category_id'), key=lambda category: category.name.upper()))
         other_tags = tools.lazy(lambda: sorted(all_tags.filtered(lambda x: not x.category_id), key=lambda tag: tag.name.upper()))
-        nav_list = tools.lazy(self.nav_list)
-        # for performance prefetch the first post with the others
-        post_ids = (first_post | posts).ids
+        nav_list = tools.lazy(lambda: self.nav_list(blog))
         # and avoid accessing related blogs one by one
         posts.blog_id
 
         return {
             'date_begin': date_begin,
             'date_end': date_end,
-            'first_post': first_post.with_prefetch(post_ids),
             'other_tags': other_tags,
             'tag_category': tag_category,
             'nav_list': nav_list,
             'tags_list': self.tags_list,
             'pager': pager,
-            'posts': posts.with_prefetch(post_ids),
+            'posts': posts.with_prefetch(),
             'tag': tags,
             'active_tag_ids': active_tags.ids,
             'domain': domain,
-            'state_info': state and {"state": state, "published": published_count, "unpublished": unpublished_count},
+            'state_info': state and {"state": state, "published": published_count, "unpublished": unpublished_count, "scheduled": scheduled_count},
             'blogs': blogs,
             'blog': blog,
             'search': fuzzy_search_term or search,
             'search_count': total,
             'original_search': fuzzy_search_term and search,
         }
+
+    def sitemap_blog(env, rule, qs):
+        Blog = env['blog.blog']
+        website = env['website'].get_current_website()
+        domain = website.website_domain()
+        blogs = tools.lazy(lambda: Blog.search(domain, order="sequence"))
+        slug = env['ir.http']._slug
+
+        def match(loc):
+            return not qs or qs.lower() in loc.lower()
+
+        if len(blogs) > 1:
+            if match('/blog'):
+                yield {'loc': '/blog'}
+
+        for blog in blogs:
+            loc = f'/blog/{slug(blog)}'
+            if match(loc):
+                yield {'loc': loc}
 
     @http.route([
         '/blog',
@@ -187,13 +196,13 @@ class WebsiteBlog(http.Controller):
         '''/blog/<model("blog.blog"):blog>/page/<int:page>''',
         '''/blog/<model("blog.blog"):blog>/tag/<string:tag>''',
         '''/blog/<model("blog.blog"):blog>/tag/<string:tag>/page/<int:page>''',
-    ], type='http', auth="public", website=True, sitemap=True)
+    ], type='http', auth="public", website=True, sitemap=sitemap_blog, list_as_website_content=_lt("Blogs"))
     def blog(self, blog=None, tag=None, page=1, search=None, **opt):
         Blog = request.env['blog.blog']
-        blogs = tools.lazy(lambda: Blog.search(request.website.website_domain(), order="create_date asc, id asc"))
+        blogs = tools.lazy(lambda: Blog.search(request.website.website_domain(), order="sequence"))
 
         if not blog and len(blogs) == 1:
-            url = QueryURL('/blog/%s' % slug(blogs[0]), search=search, **opt)()
+            url = QueryURL('/blog/%s' % request.env['ir.http']._slug(blogs[0]), search=search, **opt)()
             return request.redirect(url, code=302)
 
         date_begin, date_end = opt.get('date_begin'), opt.get('date_end')
@@ -222,21 +231,41 @@ class WebsiteBlog(http.Controller):
         v = {}
         v['blog'] = blog
         v['base_url'] = blog.get_base_url()
-        v['posts'] = request.env['blog.post'].search([('blog_id', '=', blog.id)], limit=min(int(limit), 50), order="post_date DESC")
+        v['posts'] = request.env['blog.post'].search([
+            ('blog_id', '=', blog.id),
+            ('website_published', '=', True),
+        ], limit=min(int(limit), 50), order="published_date DESC")
         v['html2plaintext'] = html2plaintext
         r = request.render("website_blog.blog_feed", v, headers=[('Content-Type', 'application/atom+xml')])
         return r
 
     @http.route([
-        '''/blog/<model("blog.blog"):blog>/post/<model("blog.post", "[('blog_id','=',blog.id)]"):blog_post>''',
+        '''/blog/<model("blog.blog"):blog>/post/<model("blog.post"):blog_post>''',
     ], type='http', auth="public", website=True, sitemap=False)
-    def old_blog_post(self, blog, blog_post, tag_id=None, page=1, enable_editor=None, **post):
+    def old_blog_post(self, blog, blog_post, **post):
         # Compatibility pre-v14
-        return request.redirect(_build_url_w_params("/blog/%s/%s" % (slug(blog), slug(blog_post)), request.params), code=301)
+        return request.redirect("/blog/%s/%s" % (request.env['ir.http']._slug(blog), request.env['ir.http']._slug(blog_post)), code=301)
+
+    def sitemap_blog_post(env, rule, qs):
+        BlogPost = env['blog.post']
+        IrHttp = env['ir.http']
+        posts = BlogPost.search([('website_published', '=', True)])
+
+        for post in posts:
+            # Canonical path: /blog/<blog>/<post>
+            blog = post.blog_id
+            canonical_url = f"/blog/{IrHttp._slug(blog)}/{IrHttp._slug(post)}"
+
+            if not qs or qs.lower() in canonical_url.lower():
+                # blog posts should also have lastmod for seo purposes.
+                yield {
+                    "loc": canonical_url,
+                    "lastmod": (post.write_date or post.create_date).date(),
+                }
 
     @http.route([
         '''/blog/<model("blog.blog"):blog>/<model("blog.post", "[('blog_id','=',blog.id)]"):blog_post>''',
-    ], type='http', auth="public", website=True, sitemap=True)
+    ], type='http', auth="public", website=True, sitemap=sitemap_blog_post)
     def blog_post(self, blog, blog_post, tag_id=None, page=1, enable_editor=None, **post):
         """ Prepare all values to display the blog.
 
@@ -255,7 +284,7 @@ class WebsiteBlog(http.Controller):
         date_begin, date_end = post.get('date_begin'), post.get('date_end')
 
         domain = request.website.website_domain()
-        blogs = blog.search(domain, order="create_date, id asc")
+        blogs = blog.search(domain, order="sequence")
 
         tag = None
         if tag_id:
@@ -263,26 +292,34 @@ class WebsiteBlog(http.Controller):
         blog_url = QueryURL('', ['blog', 'tag'], blog=blog_post.blog_id, tag=tag, date_begin=date_begin, date_end=date_end)
 
         if not blog_post.blog_id.id == blog.id:
-            return request.redirect("/blog/%s/%s" % (slug(blog_post.blog_id), slug(blog_post)), code=301)
+            return request.redirect("/blog/%s/%s" % (request.env['ir.http']._slug(blog_post.blog_id), request.env['ir.http']._slug(blog_post)), code=301)
 
         tags = request.env['blog.tag'].search([])
 
         # Find next Post
         blog_post_domain = [('blog_id', '=', blog.id)]
-        if not request.env.user.has_group('website.group_website_designer'):
-            blog_post_domain += [('post_date', '<=', fields.Datetime.now())]
+        if not request.env.user.has_group('website_blog.group_website_blog_manager'):
+            blog_post_domain += [('website_published', '=', True)]
 
         all_post = BlogPost.search(blog_post_domain)
 
         if blog_post not in all_post:
-            return request.redirect("/blog/%s" % (slug(blog_post.blog_id)))
+            return request.redirect("/blog/%s" % (request.env['ir.http']._slug(blog_post.blog_id)))
 
-        # should always return at least the current post
-        all_post_ids = all_post.ids
-        current_blog_post_index = all_post_ids.index(blog_post.id)
-        nb_posts = len(all_post_ids)
-        next_post_id = all_post_ids[(current_blog_post_index + 1) % nb_posts] if nb_posts > 1 else None
-        next_post = next_post_id and BlogPost.browse(next_post_id) or False
+        next_post = blog_post.recommended_next_post_id
+        is_next_post_recommended = True
+        if (
+            not next_post
+            or not next_post.sudo().is_published
+            or next_post.website_id.id not in (False, request.website.id)
+        ):
+            # Fallback to the next post in the list.
+            all_post_ids = all_post.ids
+            current_blog_post_index = all_post_ids.index(blog_post.id)
+            nb_posts = len(all_post_ids)
+            next_post_id = all_post_ids[(current_blog_post_index + 1) % nb_posts] if nb_posts > 1 else None
+            next_post = next_post_id and BlogPost.browse(next_post_id) or False
+            is_next_post_recommended = False
 
         values = {
             'tags': tags,
@@ -294,6 +331,7 @@ class WebsiteBlog(http.Controller):
             'nav_list': self.nav_list(blog),
             'enable_editor': enable_editor,
             'next_post': next_post,
+            'is_next_post_recommended': is_next_post_recommended,
             'date': date_begin,
             'blog_url': blog_url,
         }
@@ -304,5 +342,5 @@ class WebsiteBlog(http.Controller):
                 if not request.session.get('posts_viewed'):
                     request.session['posts_viewed'] = []
                 request.session['posts_viewed'].append(blog_post.id)
-                request.session.touch()
+                touch(request.session)
         return response

@@ -1,69 +1,169 @@
-/* @odoo-module */
+import { AND, fields, Record } from "@mail/model/export";
+import { generateEmojisOnHtml } from "@mail/utils/common/format";
+import { compareDatetime } from "@mail/utils/common/misc";
 
-import { ScrollPosition } from "@mail/core/common/scroll_position_model";
-import { createLocalId } from "@mail/utils/common/misc";
-
+import { rpc } from "@web/core/network/rpc";
 import { _t } from "@web/core/l10n/translation";
+import { user } from "@web/core/user";
 import { Deferred } from "@web/core/utils/concurrency";
-import { sprintf } from "@web/core/utils/strings";
 
 /**
- * @typedef SeenInfo
- * @property {{id: number|undefined}} lastFetchedMessage
- * @property {{id: number|undefined}} lastSeenMessage
- * @property {{id: number}} partner
  * @typedef SuggestedRecipient
  * @property {string} email
- * @property {import("@mail/core/common/persona_model").Persona|false} persona
+ * @property {import("models").Persona|false} persona
  * @property {string} lang
  * @property {string} reason
- * @property {boolean} checked
  */
 
-export class Thread {
+/**
+ * @typedef {Object} MessageFetchParams
+ * @property {number} [after]
+ * @property {number} [around]
+ * @property {number} [before]
+ */
+
+/**
+ * @typedef {Object} MessageRouteParams Specific overrides for the RPC route metadata usually provided by the caller component.
+ */
+
+export class Thread extends Record {
+    static id = AND("model", "id");
+    static _name = "mail.thread";
+    /**
+     * @param {string} localId
+     * @returns {string}
+     */
+    static localIdToActiveId(localId) {
+        if (!localId) {
+            return undefined;
+        }
+        // Transform "Thread,<model> AND <id>" to "<model>_<id>""
+        return localId.split(",").slice(1).join("_").replace(" AND ", "_");
+    }
+    static async getOrFetch(data, fieldNames = []) {
+        if (data.model === "discuss.channel") {
+            const channel = await this.store["discuss.channel"].getOrFetch(data.id);
+            return channel?.thread;
+        }
+        let thread = this.get(data);
+        if (
+            data.id > 0 &&
+            (!thread || fieldNames.some((fieldName) => thread[fieldName] === undefined))
+        ) {
+            await this.store.fetchStoreData("mail.thread", {
+                thread_model: data.model,
+                thread_id: data.id,
+                request_list: fieldNames,
+            });
+            thread = this.get(data);
+            if (!thread?.exists()) {
+                return;
+            }
+        }
+        return thread;
+    }
+
+    autofocus = 0;
+    activities = fields.Many("mail.activity", {
+        sort: (a, b) => compareDatetime(a.date_deadline, b.date_deadline) || a.id - b.id,
+        onDelete: (r) => r?.remove(),
+    });
+    create_uid = fields.One("res.users");
+    /**
+     * Server-side value used in chatter to determine if the thread has pinned messages without
+     * having to load them all. Dynamic value should count "pinnedMessages" instead.
+     * @type {boolean}
+     **/
+    has_pinned_messages;
     /** @type {number} */
     id;
     /** @type {string} */
     uuid;
     /** @type {string} */
     model;
-    /** @type {boolean} */
+    allMessages = fields.Many("mail.message", {
+        inverse: "thread",
+    });
     areAttachmentsLoaded = false;
-    /** @type {import("@mail/core/common/attachment_model").Attachment[]} */
-    attachments = [];
-    /** @type {integer} */
-    activeRtcSessionId;
-    /** @type {object|undefined} */
-    channel;
-    /** @type {import("@mail/core/common/channel_member_model").ChannelMember[]} */
-    channelMembers = [];
-    /** @type {RtcSession{}} */
-    rtcSessions = {};
-    invitingRtcSessionId;
-    /** @type {Set<number>} */
-    invitedMemberIds = new Set();
-    /** @type {integer} */
-    chatPartnerId;
-    /** @type {import("@mail/core/common/composer_model").Composer} */
-    composer;
+    group_public_id = fields.One("res.groups");
+    attachments = fields.Many("ir.attachment", {
+        /**
+         * @param {import("models").Attachment} a1
+         * @param {import("models").Attachment} a2
+         */
+        sort: (a1, a2) => (a1.id < a2.id ? 1 : -1),
+    });
+    can_react = true;
+    close_chat_window = fields.Attr(undefined, {
+        /** @this {import("models").Thread} */
+        onUpdate() {
+            if (this.close_chat_window) {
+                this.close_chat_window = undefined;
+                this.closeChatWindow();
+            }
+        },
+    });
+    composer = fields.One("Composer", {
+        compute: () => ({}),
+        inverse: "thread",
+        onDelete: (r) => r?.delete(),
+    });
     counter = 0;
+    counter_bus_id = 0;
     /** @type {string} */
-    customName;
+    defaultSubject;
     /** @type {string} */
     description;
-    /** @type {Set<import("@mail/core/common/follower_model").Follower>} */
-    followers = new Set();
-    isAdmin = false;
+    /** @type {string} */
+    display_name;
+    followers = fields.Many("mail.followers", {
+        /** @this {import("models").Thread} */
+        onAdd(r) {
+            r.thread = this;
+        },
+        onDelete: (r) => r?.delete(),
+    });
+    selfFollower = fields.One("mail.followers", {
+        /** @this {import("models").Thread} */
+        onAdd(r) {
+            r.thread = this;
+        },
+        onDelete: (r) => r?.delete(),
+    });
+    /** @type {integer|undefined} */
+    followersCount;
     loadOlder = false;
     loadNewer = false;
+    get isFocused() {
+        return this.isFocusedCounter !== 0;
+    }
+    isFocusedCounter = fields.Attr(0, {
+        onUpdate() {
+            if (this.isFocusedCounter < 0) {
+                this.isFocusedCounter = 0;
+            }
+        },
+    });
     isLoadingAttachments = false;
     isLoadedDeferred = new Deferred();
-    isLoaded = false;
-    /** @type {import("@mail/core/common/attachment_model").Attachment} */
-    mainAttachment;
-    memberCount = 0;
+    isLoaded = fields.Attr(false, {
+        /** @this {import("models").Thread} */
+        onUpdate() {
+            if (this.isLoaded) {
+                this.isLoadedDeferred.resolve();
+            } else {
+                const def = this.isLoadedDeferred;
+                this.isLoadedDeferred = new Deferred();
+                this.isLoadedDeferred.then(() => def.resolve());
+            }
+        },
+    });
+    /** @type {Boolean|undefined} */
+    has_mail_thread;
+    message_main_attachment_id = fields.One("ir.attachment");
     message_needaction_counter = 0;
-    message_unread_counter = 0;
+    message_needaction_counter_bus_id = 0;
+    messageInEdition = fields.One("mail.message", { inverse: "threadAsInEdition" });
     /**
      * Contains continuous sequence of messages to show in message list.
      * Messages are ordered from older to most recent.
@@ -72,10 +172,14 @@ export class Thread {
      * unknown in-between messages.
      *
      * Content should be fetched and inserted in a controlled way.
-     *
-     * @type {import("@mail/core/common/message_model").Message[]}
      */
-    messages = [];
+    messages = fields.Many("mail.message");
+    /**
+     * Phantom messages is a snapshot of `messages` while the thread is being loaded.
+     * In other words: when thread is not loaded or loading, phantom messages are the
+     * messages before thread loading.
+     */
+    phantomMessages = fields.Many("mail.message");
     /** @type {string} */
     modelName;
     /** @type {string} */
@@ -84,196 +188,152 @@ export class Thread {
      * Contains messages received from the bus that are not yet inserted in
      * `messages` list. This is a temporary storage to ensure nothing is lost
      * when fetching newer messages.
-     *
-     * @type {import("@mail/core/common/message_model").Message[]}
      */
-    pendingNewMessages = [];
-    /**
-     * Contains continuous sequence of needaction messages to show in messaging menu.
-     * Messages are ordered from older to most recent.
-     * There should not be any hole in this list: there can be unknown
-     * messages before start and after end, but there should not be any
-     * unknown in-between messages.
-     *
-     * Content should be fetched and inserted in a controlled way.
-     *
-     * @type {import("@mail/core/common/message_model").Message[]}
-     */
-    needactionMessages = [];
-    /** @type {string} */
-    name;
-    /** @type {number|false} */
-    seen_message_id;
-    /** @type {'open' | 'folded' | 'closed'} */
-    state;
+    pendingNewMessages = fields.Many("mail.message");
+    /** @type {'0'|'1'|'2'|'3'} */
+    priority;
+    /** @type {Array<[string,string]>} */
+    priority_definition;
+    needactionMessages = fields.Many("mail.message", {
+        inverse: "threadAsNeedaction",
+        sort: (message1, message2) => message1.id - message2.id,
+    });
+    // FIXME: should be in the portal/frontend bundle but live chat can be loaded
+    // before portal resulting in the field not being properly initialized.
+    portal_partner = fields.One("res.partner");
     status = "new";
-    /** @type {ScrollPosition} */
-    scrollPosition = new ScrollPosition();
-    showOnlyVideo = false;
-    transientMessages = [];
-    /** @type {import("@mail/core/common/store_service").Store} */
-    _store;
-    /** @type {string} */
-    defaultDisplayMode;
-    /** @type {SeenInfo[]} */
-    seenInfos = [];
-    /** @type {SuggestedRecipient[]} */
-    suggestedRecipients = [];
+    /**
+     * Stored scoll position of thread from top in ASC order.
+     *
+     * @type {number|'bottom'}
+     */
+    scrollTop = "bottom";
+    transientMessages = fields.Many("mail.message");
+    /* The additional recipients are the recipients that are manually added
+     * by the user by using the "To" field of the Chatter. */
+    additionalRecipients = fields.Attr([]);
+    /** @type {number|undefined} */
+    recipients = fields.Many("mail.followers");
+    recipientsCount = undefined;
+    /* The suggested recipients are the recipients that are suggested by the
+     * current model and includes the recipients of the last message. (e.g: for
+     * a crm lead, the model will suggest the customer associated to the lead). */
+    suggestedRecipients = fields.Attr([]);
+    /** @type {Boolean|undefined} */
+    showSubjectInSmallComposer;
+    /** 
+     * similar to suggested recipients, except for the subject and optional per model.
+    @type {String|undefined} */
+    suggestedSubject;
+    /** @type {String[]|undefined} */
+    partner_fields;
+    /** @type {String|undefined} */
+    primary_email_field;
     hasLoadingFailed = false;
+    /** @type {Error} */
+    hasLoadingFailedError;
+    /** @type {boolean|undefined} */
+    hasReadAccess;
     canPostOnReadonly;
-    /** @type {String} */
-    last_interest_dt;
-    /** @type {number} */
-    lastServerMessageId;
     /** @type {Boolean} */
     is_editable;
+    /** @type {integer|null} */
+    highlightMessage = fields.One("mail.message");
+    /** @type {String|undefined} */
+    access_token;
+    /** @type {String|undefined} */
+    hash;
+    /**
+     * Partner id for non channel threads
+     *  @type {integer|undefined}
+     */
+    pid;
+    composerDisabled = fields.Attr(false, {
+        compute() {
+            return this.computeComposerDisabled();
+        },
+        onUpdate() {
+            this.composerDisabledonUpdate();
+        },
+    });
+    pinnedMessages = fields.Many("mail.message", {
+        inverse: "threadAsPinned",
+        sort: (m1, m2) => {
+            if (m1.pinned_at === m2.pinned_at) {
+                return m2.id - m1.id;
+            }
+            return m1.pinned_at < m2.pinned_at ? 1 : -1;
+        },
+    });
 
-    constructor(store, data) {
-        Object.assign(this, {
-            id: data.id,
-            model: data.model,
-            type: data.type,
-            _store: store,
+    async fetchPinnedMessages() {
+        await this.store.fetchStoreData("mail.thread", {
+            thread_model: this.model,
+            thread_id: this.id,
+            request_list: ["pinned_messages"],
         });
-        store.threads[this.localId] = this;
-        return store.threads[this.localId];
     }
 
     get accessRestrictedToGroupText() {
-        if (!this.authorizedGroupFullName) {
+        if (this.channel?.channel_type === "chat") {
             return false;
         }
-        return sprintf(_t('Access restricted to group "%(groupFullName)s"'), {
-            groupFullName: this.authorizedGroupFullName,
+        if (!this.group_public_id?.full_name) {
+            return _t("Accessible to anyone with the link");
+        }
+        return _t('Access restricted to group "%(groupFullName)s"', {
+            groupFullName: this.group_public_id.full_name,
         });
     }
 
-    get activeRtcSession() {
-        return this._store.rtcSessions[this.activeRtcSessionId];
+    get busChannel() {
+        return `${this.model}_${this.id}`;
     }
 
-    set activeRtcSession(session) {
-        this.activeRtcSessionId = session?.id;
-    }
-
-    get areAllMembersLoaded() {
-        return this.memberCount === this.channelMembers.length;
+    get followersFullyLoaded() {
+        return (
+            this.followersCount ===
+            (this.selfFollower ? this.followers.length + 1 : this.followers.length)
+        );
     }
 
     get attachmentsInWebClientView() {
         const attachments = this.attachments.filter(
             (attachment) => (attachment.isPdf || attachment.isImage) && !attachment.uploading
         );
-        attachments.sort((a1, a2) => {
-            return a2.id - a1.id;
-        });
+        attachments.sort((a1, a2) => a2.id - a1.id);
         return attachments;
     }
 
+    get canPostMessage() {
+        return this.hasWriteAccess || (this.hasReadAccess && this.canPostOnReadonly);
+    }
+
     get isUnread() {
-        return this.message_unread_counter > 0 || this.hasNeedactionMessages;
-    }
-
-    get isChannel() {
-        return ["chat", "channel", "group"].includes(this.type);
-    }
-
-    get allowCalls() {
-        return (
-            ["chat", "channel", "group"].includes(this.type) &&
-            this.correspondent !== this._store.odoobot
-        );
-    }
-
-    get hasMemberList() {
-        return ["channel", "group"].includes(this.type);
-    }
-
-    get isChatChannel() {
-        return ["chat", "group"].includes(this.type);
-    }
-
-    get allowSetLastSeenMessage() {
-        return ["chat", "group", "channel"].includes(this.type);
-    }
-
-    get allowReactions() {
-        return true;
-    }
-
-    get allowReplies() {
-        return true;
-    }
-
-    get displayName() {
-        if (this.type === "chat" && this.chatPartnerId) {
-            return (
-                this.customName ||
-                this._store.personas[createLocalId("partner", this.chatPartnerId)].nameOrDisplayName
-            );
-        }
-        if (this.type === "group" && !this.name) {
-            const listFormatter = new Intl.ListFormat(
-                this._store.env.services["user"].lang?.replace("_", "-"),
-                { type: "conjunction", style: "long" }
-            );
-            return listFormatter.format(
-                this.channelMembers.map((channelMember) => channelMember.persona.name)
-            );
-        }
-        return this.name;
-    }
-
-    /** @type {import("@mail/core/common/persona_model").Persona[]} */
-    get correspondents() {
-        return this.channelMembers
-            .map((member) => member.persona)
-            .filter((persona) => !!persona)
-            .filter(
-                ({ id, type }) =>
-                    id !== (type === "partner" ? this._store.user?.id : this._store.guest?.id)
-            );
-    }
-
-    /** @type {import("@mail/core/common/persona_model").Persona|undefined} */
-    get correspondent() {
-        if (this.type === "channel") {
-            return undefined;
-        }
-        const correspondents = this.correspondents;
-        if (correspondents.length === 1) {
-            // 2 members chat.
-            return correspondents[0];
-        }
-        if (correspondents.length === 0 && this.channelMembers.length === 1) {
-            // Self-chat.
-            return this._store.user;
-        }
-        return undefined;
+        return this.needactionMessages.length > 0;
     }
 
     /**
-     * @returns {import("@mail/core/common/follower_model").Follower}
+     * Return the name of the given persona to display in the context of this
+     * thread.
+     *
+     * @param {import("models").Persona} persona
+     * @returns {string}
      */
-    get followerOfSelf() {
-        for (const follower of this.followers) {
-            if (follower.partner === this._store.self) {
-                return follower;
-            }
-        }
-        return undefined;
+    getPersonaName(persona) {
+        return persona?.displayName || persona?.name;
     }
 
-    get imgUrl() {
-        return this.module_icon ?? "/mail/static/src/img/smiley/avatar.jpg";
+    get displayName() {
+        return this.channel?.displayName ?? this.display_name;
     }
 
-    get allowDescription() {
-        return ["channel", "group"].includes(this.type);
+    get avatarUrl() {
+        return this.channel?.avatarUrl ?? this.module_icon ?? this.store.DEFAULT_AVATAR;
     }
 
     get isTransient() {
-        return !this.id;
+        return !this.id || this.id < 0;
     }
 
     get lastEditableMessageOfSelf() {
@@ -286,67 +346,47 @@ export class Thread {
         return null;
     }
 
-    get localId() {
-        return createLocalId(this.model, this.id);
-    }
-
     get needactionCounter() {
-        return this.isChatChannel ? this.message_unread_counter : this.message_needaction_counter;
+        return this.message_needaction_counter;
     }
 
-    /** @returns {import("@mail/core/common/message_model").Message | undefined} */
-    get newestMessage() {
-        return [...this.messages].reverse().find((msg) => !msg.isEmpty);
-    }
-
-    get newestNeedactionMessage() {
-        return this.needactionMessages[this.needactionMessages.length - 1];
-    }
-
-    get oldestNeedactionMessage() {
-        return this.needactionMessages[0];
-    }
+    newestMessage = fields.One("mail.message", {
+        inverse: "threadAsNewest",
+        compute() {
+            return this.messages.at(-1);
+        },
+    });
 
     get newestPersistentMessage() {
-        return [...this.messages].reverse().find((msg) => Number.isInteger(msg.id));
+        return this.messages.findLast((msg) => Number.isInteger(msg.id));
     }
+
+    newestPersistentAllMessages = fields.Many("mail.message", {
+        compute() {
+            const allPersistentMessages = this.allMessages.filter((message) =>
+                Number.isInteger(message.id)
+            );
+            allPersistentMessages.sort((m1, m2) => m2.id - m1.id);
+            return allPersistentMessages;
+        },
+    });
+
+    newestPersistentOfAllMessage = fields.One("mail.message", {
+        compute() {
+            return this.newestPersistentAllMessages[0];
+        },
+    });
 
     get oldestPersistentMessage() {
         return this.messages.find((msg) => Number.isInteger(msg.id));
     }
 
-    get hasSelfAsMember() {
-        return this.channelMembers.some(
-            (channelMember) => channelMember.persona === this._store.self
-        );
-    }
+    computeComposerDisabled() {}
 
-    /**
-     * @param {import("@mail/core/common/message_model").Message} message
-     */
-    hasMessage(message) {
-        return this.messages.some(({ id }) => id === message.id);
-    }
-
-    get invitationLink() {
-        if (!this.uuid || this.type === "chat") {
-            return undefined;
-        }
-        return `${window.location.origin}/chat/${this.id}/${this.uuid}`;
-    }
+    composerDisabledonUpdate() {}
 
     get isEmpty() {
-        return !this.messages.some((message) => !message.isEmpty);
-    }
-
-    get offlineMembers() {
-        const orderedOnlineMembers = [];
-        for (const member of this.channelMembers) {
-            if (member.persona.im_status !== "online") {
-                orderedOnlineMembers.push(member);
-            }
-        }
-        return orderedOnlineMembers.sort((m1, m2) => (m1.persona.name < m2.persona.name ? -1 : 1));
+        return this.messages.length === 0;
     }
 
     get nonEmptyMessages() {
@@ -354,100 +394,479 @@ export class Thread {
     }
 
     get persistentMessages() {
-        return this.messages.filter((message) => !message.isTransient);
+        return this.messages.filter((message) => !message.is_transient && !message.isPending);
     }
 
     get prefix() {
-        return this.isChatChannel ? "@" : "#";
+        return this.channel?.isChatChannel ? "@" : "#";
     }
 
-    get lastSelfMessageSeenByEveryone() {
-        const otherSeenInfos = [...this.seenInfos].filter(
-            (seenInfo) => seenInfo.partner.id !== this._store.self?.id
-        );
-        if (otherSeenInfos.length === 0) {
-            return false;
-        }
-        const otherLastSeenMessageIds = otherSeenInfos
-            .filter((seenInfo) => seenInfo.lastSeenMessage)
-            .map((seenInfo) => seenInfo.lastSeenMessage.id);
-        if (otherLastSeenMessageIds.length === 0) {
-            return false;
-        }
-        const lastMessageSeenByAllId = Math.min(...otherLastSeenMessageIds);
-        const orderedSelfSeenMessages = this.persistentMessages.filter((message) => {
-            return message.author === this._store.self && message.id <= lastMessageSeenByAllId;
-        });
-        if (!orderedSelfSeenMessages || orderedSelfSeenMessages.length === 0) {
-            return false;
-        }
-        return orderedSelfSeenMessages.slice().pop();
+    get rpcParams() {
+        return {};
     }
 
-    get onlineMembers() {
-        const orderedOnlineMembers = [];
-        for (const member of this.channelMembers) {
-            if (member.persona.im_status === "online") {
-                orderedOnlineMembers.push(member);
-            }
-        }
-        return orderedOnlineMembers.sort((m1, m2) => {
-            const m1HasRtc = Boolean(m1.rtcSession);
-            const m2HasRtc = Boolean(m2.rtcSession);
-            if (m1HasRtc === m2HasRtc) {
-                /**
-                 * If raisingHand is falsy, it gets an Infinity value so that when
-                 * we sort by [oldest/lowest-value]-first, falsy values end up last.
-                 */
-                const m1RaisingValue = m1.rtcSession?.raisingHand || Infinity;
-                const m2RaisingValue = m2.rtcSession?.raisingHand || Infinity;
-                if (m1HasRtc && m1RaisingValue !== m2RaisingValue) {
-                    return m1RaisingValue - m2RaisingValue;
-                } else {
-                    return m1.persona.name?.localeCompare(m2.persona.name) ?? 1;
-                }
-            } else {
-                return m2HasRtc - m1HasRtc;
-            }
-        });
-    }
-
-    get unknownMembersCount() {
-        return this.memberCount - this.channelMembers.length;
-    }
-
-    get rtcInvitingSession() {
-        return this._store.rtcSessions[this.invitingRtcSessionId];
-    }
-
-    get hasNeedactionMessages() {
-        return this.needactionMessages.length > 0;
-    }
-
-    get videoCount() {
-        return Object.values(this.rtcSessions).filter((session) => session.videoStream).length;
-    }
-
-    get lastInterestDateTime() {
-        if (!this.last_interest_dt) {
-            return undefined;
-        }
-        return luxon.DateTime.fromISO(new Date(this.last_interest_dt).toISOString());
+    async checkReadAccess() {
+        await this.store["mail.thread"].getOrFetch(this, ["hasReadAccess"]);
+        return this.hasReadAccess;
     }
 
     /**
-     *
-     * @param {import("@mail/core/common/persona_model").Persona} persona
+     * @param {Object} [options]
+     * @param {MessageFetchParams} [options.fetchParams]
+     * @param {MessageRouteParams} [options.routeParams]
      */
-    getMemberName(persona) {
-        return persona.name;
+    async fetchMessages({ fetchParams = {}, routeParams = {} } = {}) {
+        this.status = "loading";
+        if (!["mail.box", "discuss.channel"].includes(this.model) && !this.id) {
+            this.isLoaded = true;
+            return [];
+        }
+        try {
+            const { messages } = await this.fetchMessagesData({ fetchParams, routeParams });
+            this.hasLoadingFailedError = undefined;
+            this.hasLoadingFailed = false;
+            return messages.reverse();
+        } catch (e) {
+            this.hasLoadingFailed = true;
+            this.hasLoadingFailedError = e;
+            throw e;
+        } finally {
+            this.isLoaded = true;
+            this.status = "ready";
+        }
     }
 
-    getPreviousMessage(message) {
-        const previousMessages = this.nonEmptyMessages.filter(({ id }) => id < message.id);
-        if (previousMessages.length === 0) {
-            return false;
+    /**
+     * @param {Object} [options]
+     * @param {MessageFetchParams} [options.fetchParams]
+     * @param {MessageRouteParams} [options.routeParams]
+     * @returns {Promise<{messages: number[]}>}
+     */
+    async fetchMessagesData({
+        fetchParams: { after, around, before } = {},
+        routeParams = {},
+    } = {}) {
+        // ordered messages received: newest to oldest
+        return await this.store.fetchStoreData(
+            this.getFetchRoute(),
+            {
+                ...this.getFetchParams(),
+                ...routeParams,
+                fetch_params: {
+                    limit:
+                        !around && around !== 0
+                            ? this.store.FETCH_LIMIT
+                            : this.store.FETCH_LIMIT * 2,
+                    after,
+                    around,
+                    before,
+                },
+            },
+            { readonly: this.model === "mail.box", requestData: true }
+        );
+    }
+
+    /**
+     * @param {Object} [options]
+     * @param {"older"|"newer"} [options.epoch="older"]
+     * @param {MessageRouteParams} [options.routeParams]
+     */
+    async fetchMoreMessages({ epoch = "older", routeParams = {} } = {}) {
+        if (
+            this.status === "loading" ||
+            (epoch === "older" && !this.loadOlder) ||
+            (epoch === "newer" && !this.loadNewer)
+        ) {
+            return;
         }
-        return this._store.messages[Math.max(...previousMessages.map((m) => m.id))];
+        const before = epoch === "older" ? this.oldestPersistentMessage?.id : undefined;
+        const after = epoch === "newer" ? this.newestPersistentMessage?.id : undefined;
+        let fetched = [];
+        try {
+            fetched = await this.fetchMessages({ fetchParams: { after, before }, routeParams });
+        } catch {
+            return;
+        }
+        if (
+            (after !== undefined && !this.messages.some((message) => message.id === after)) ||
+            (before !== undefined && !this.messages.some((message) => message.id === before))
+        ) {
+            // there might have been a jump to message during RPC fetch.
+            // Abort feeding messages as to not put holes in message list.
+            return;
+        }
+        const alreadyKnownMessages = new Set(this.messages.map(({ id }) => id));
+        const messagesToAdd = fetched.filter((message) => !alreadyKnownMessages.has(message.id));
+        if (epoch === "older") {
+            this.messages.unshift(...messagesToAdd);
+        } else {
+            this.messages.push(...messagesToAdd);
+        }
+        if (fetched.length < this.store.FETCH_LIMIT) {
+            if (epoch === "older") {
+                this.loadOlder = false;
+            } else if (epoch === "newer") {
+                this.loadNewer = false;
+                const missingMessages = this.pendingNewMessages.filter(
+                    ({ id }) => !alreadyKnownMessages.has(id)
+                );
+                if (missingMessages.length > 0) {
+                    this.messages.push(...missingMessages);
+                    this.messages.sort((m1, m2) => m1.id - m2.id);
+                }
+            }
+        }
+        this._enrichMessagesWithTransient();
+        this.pendingNewMessages = [];
+    }
+
+    /**
+     * Get the effective persona performing actions on this thread.
+     * Priority order: logged-in user, portal partner (token-authenticated), guest.
+     *
+     * @returns {import("models").ResPartner | import("models").MailGuest}
+     */
+    get effectiveSelf() {
+        return this.store.self_user?.partner_id || this.store.self_guest;
+    }
+
+    /**
+     * @param {Object} [options]
+     * @param {MessageRouteParams} [options.routeParams]
+     */
+    async fetchNewMessages({ routeParams = {} } = {}) {
+        if (
+            this.status === "loading" ||
+            (this.isLoaded && ["discuss.channel", "mail.box"].includes(this.model))
+        ) {
+            return;
+        }
+        const after = this.isLoaded ? this.newestPersistentMessage?.id : undefined;
+        let fetched = [];
+        try {
+            fetched = await this.fetchMessages({ fetchParams: { after }, routeParams });
+        } catch {
+            return;
+        }
+        // feed messages
+        // could have received a new message as notification during fetch
+        // filter out already fetched (e.g. received as notification in the meantime)
+        let startIndex;
+        if (after === undefined) {
+            startIndex = 0;
+        } else {
+            const afterIndex = this.messages.findIndex((message) => message.id === after);
+            if (afterIndex === -1) {
+                // there might have been a jump to message during RPC fetch.
+                // Abort feeding messages as to not put holes in message list.
+                return;
+            } else {
+                startIndex = afterIndex + 1;
+            }
+        }
+        const alreadyKnownMessages = new Set(this.messages.map((m) => m.id));
+        const filtered = fetched.filter(
+            (message) =>
+                !alreadyKnownMessages.has(message.id) &&
+                (this.persistentMessages.length === 0 ||
+                    message.id < this.oldestPersistentMessage.id ||
+                    message.id > this.newestPersistentMessage.id)
+        );
+        this.messages.splice(startIndex, 0, ...filtered);
+        Object.assign(this, {
+            loadOlder:
+                after === undefined && fetched.length === this.store.FETCH_LIMIT
+                    ? true
+                    : after === undefined && fetched.length !== this.store.FETCH_LIMIT
+                    ? false
+                    : this.loadOlder,
+        });
+    }
+
+    getFetchParams() {
+        if (this.channel) {
+            return { channel_id: this.id };
+        }
+        if (this.model === "mail.box") {
+            return {};
+        }
+        return {
+            thread_id: this.id,
+            thread_model: this.model,
+            ...this.rpcParams,
+        };
+    }
+
+    getFetchRoute() {
+        if (this.channel) {
+            return "/discuss/channel/messages";
+        }
+        if (this.model === "mail.box" && this.id === "inbox") {
+            return `/mail/inbox/messages`;
+        }
+        if (this.model === "mail.box" && this.id === "bookmark") {
+            return `/mail/bookmark/messages`;
+        }
+        if (this.model === "mail.box" && this.id === "history") {
+            return `/mail/history/messages`;
+        }
+        return this.fetchRouteChatter;
+    }
+
+    get fetchRouteChatter() {
+        return "/mail/thread/messages";
+    }
+
+    /**
+     * Get ready to jump to a message in a thread. This method will fetch the
+     * messages around the message to jump to if required, and update the thread
+     * messages accordingly.
+     *
+     * @param {Object} options
+     * @param {number} [options.messageId]
+     * @param {MessageRouteParams} [options.routeParams]
+     */
+    async loadAround({ messageId, routeParams = {} } = {}) {
+        if (
+            this.status === "loading" ||
+            (this.isLoaded && this.messages.some(({ id }) => id === messageId))
+        ) {
+            return;
+        }
+        this.isLoaded = false;
+        this.scrollTop = undefined;
+        try {
+            this.phantomMessages = this.messages;
+            this.messages = await this.fetchMessages({
+                fetchParams: { around: messageId },
+                routeParams,
+            });
+            this.phantomMessages = [];
+        } catch {
+            this.isLoaded = true;
+            return;
+        }
+        this.isLoaded = true;
+        this.loadNewer = messageId !== undefined ? true : false;
+        this.loadOlder = true;
+        const limit =
+            !messageId && messageId !== 0 ? this.store.FETCH_LIMIT : this.store.FETCH_LIMIT * 2;
+        if (this.messages.length < limit) {
+            const olderMessagesCount = this.messages.filter(({ id }) => id < messageId).length;
+            const newerMessagesCount = this.messages.filter(({ id }) => id > messageId).length;
+            if (olderMessagesCount < limit / 2 - 1) {
+                this.loadOlder = false;
+            }
+            if (newerMessagesCount < limit / 2) {
+                this.loadNewer = false;
+            }
+        }
+        this._enrichMessagesWithTransient();
+    }
+
+    async markAllMessagesAsRead() {
+        await this.store.env.services.orm.silent.call("mail.message", "mark_all_as_read", [
+            [
+                ["model", "=", this.model],
+                ["res_id", "=", this.id],
+            ],
+        ]);
+        this.message_needaction_counter = 0;
+    }
+
+    /**
+     * @param {Object} [options] used in overrides
+     */
+    markAsRead(options) {
+        const newestPersistentMessage = this.newestPersistentOfAllMessage;
+        if (!newestPersistentMessage && !this.isLoaded) {
+            this.isLoadedDeferred
+                .then(() => new Promise(setTimeout))
+                .then(() => this.markAsRead(options));
+            return;
+        }
+        if (this.message_needaction_counter > 0) {
+            this.markAllMessagesAsRead();
+        }
+    }
+
+    messagePin(message) {
+        this.setMessagePin(message, true).then(() => {
+            const closeFn = this.store.env.services.notification.add(_t("Message pinned"), {
+                buttons: [
+                    {
+                        name: _t("Undo"),
+                        onClick: () => {
+                            this.messageUnpin(message);
+                            closeFn();
+                        },
+                    },
+                ],
+                type: "success",
+            });
+        });
+    }
+
+    messageUnpin(message) {
+        this.setMessagePin(message, false).then(() => {
+            const closeFn = this.store.env.services.notification.add(_t("Message unpinned"), {
+                buttons: [
+                    {
+                        name: _t("Undo"),
+                        onClick: () => {
+                            this.messagePin(message);
+                            closeFn();
+                        },
+                    },
+                ],
+                type: "success",
+            });
+        });
+    }
+
+    /** @param {import("models").Message} message */
+    onNewSelfMessage(message) {
+        this.channel?.onNewSelfMessage(message);
+    }
+
+    /**
+     * @param {Object} [options]
+     * @return {boolean} true if the thread was opened, false otherwise
+     */
+    open(options) {
+        return false;
+    }
+
+    async openChatWindow({
+        focus = false,
+        fromMessagingMenu,
+        bypassCompact,
+        swapOpened,
+        highlight,
+    } = {}) {
+        const thread = await this.store["mail.thread"].getOrFetch(this);
+        if (!thread) {
+            return;
+        }
+        await this.store.chatHub.initPromise;
+        this.channel.chatWindow = { fromMessagingMenu, bypassCompact };
+        this.channel.chatWindow.open({ focus, swapOpened, highlight });
+        return this.channel.chatWindow;
+    }
+
+    async closeChatWindow() {
+        await this.store.chatHub.initPromise;
+        this.channel?.chatWindow?.close();
+    }
+
+    addOrReplaceMessage(message, tmpMsg) {
+        // The message from other personas (not self) should not replace the tmpMsg
+        if (tmpMsg && tmpMsg.in(this.messages) && this.effectiveSelf.eq(message.author)) {
+            this.messages.splice(this.messages.indexOf(tmpMsg), 1, message);
+            return;
+        }
+        this.messages.add(message);
+    }
+
+    /**
+     *  @param {ReturnType<import("@odoo/owl").markup>} body
+     *  @param {Object} extraData
+     */
+    async post(body, postData = {}, extraData = {}) {
+        let tmpMsg;
+        postData.attachments = postData.attachments ? [...postData.attachments] : []; // to not lose them on composer clear
+        const { attachments, parentId } = postData;
+        const params = await this.store.getMessagePostParams({ body, postData, thread: this });
+        Object.assign(params, extraData);
+        const tmpId = this.store.getNextTemporaryId();
+        params.context = { ...user.context, ...params.context, temporary_id: tmpId };
+        if (parentId) {
+            params.post_data.parent_id = parentId;
+        }
+        if (this.model !== "discuss.channel") {
+            params.thread_id = this.id;
+            params.thread_model = this.model;
+        } else {
+            const tmpData = {
+                id: tmpId,
+                attachment_ids: attachments,
+                res_id: this.id,
+                model: "discuss.channel",
+            };
+            if (this.store.self_user) {
+                tmpData.author_id = this.store.self_user.partner_id;
+            } else {
+                tmpData.author_guest_id = this.store.self_guest;
+            }
+            if (parentId) {
+                tmpData.parent_id = this.store["mail.message"].get(parentId);
+            }
+            tmpMsg = this.store["mail.message"].insert({
+                ...tmpData,
+                body: await generateEmojisOnHtml(body),
+                isPending: true,
+                thread: this,
+            });
+            this.messages.push(tmpMsg);
+            this.onNewSelfMessage(tmpMsg);
+        }
+        const data = await this.store.doMessagePost(params, tmpMsg);
+        if (!data) {
+            return;
+        }
+        this.store.insert(data.store_data);
+        /** @type {import("models").Message} */
+        const message = this.store["mail.message"].get(data.message_id);
+        this.addOrReplaceMessage(message, tmpMsg);
+        this.onNewSelfMessage(message);
+        // Only delete the temporary message now that seen_message_id is updated
+        // to avoid flickering.
+        tmpMsg?.delete();
+        if (message.hasLink && this.store.hasLinkPreviewFeature) {
+            rpc("/mail/link_preview", { message_id: message.id }, { silent: true });
+        }
+        return message;
+    }
+
+    /** @param {number} index */
+    async setMainAttachmentFromIndex(index) {
+        this.message_main_attachment_id = this.attachmentsInWebClientView[index];
+        await this.store.env.services.orm.call("ir.attachment", "register_as_main_attachment", [
+            this.message_main_attachment_id.id,
+        ]);
+    }
+
+    async setMessagePin(message, pinned) {
+        await this.store.env.services.orm.call(this.model, "set_message_pin", [this.id], {
+            message_id: message.id,
+            pinned,
+        });
+    }
+
+    get shouldMarkAsReadOnFocus() {
+        return this.scrollTop === "bottom" && !this.scrollUnread && !this.channel?.markedAsUnread;
+    }
+
+    /**
+     * Following a load more or load around, listing of messages contains persistent messages.
+     * Transient messages are missing, so this function puts known transient messages at the
+     * right place in message list of thread.
+     */
+    _enrichMessagesWithTransient() {
+        for (const message of this.transientMessages) {
+            if (message.id < this.oldestPersistentMessage && !this.loadOlder) {
+                this.messages.unshift(message);
+            } else if (message.id > this.newestPersistentMessage && !this.loadNewer) {
+                this.messages.push(message);
+            } else {
+                let afterIndex = this.messages.findIndex((msg) => msg.id > message.id);
+                if (afterIndex === -1) {
+                    afterIndex = this.messages.length + 1;
+                }
+                this.messages.splice(afterIndex - 1, 0, message);
+            }
+        }
     }
 }
+
+Thread.register();

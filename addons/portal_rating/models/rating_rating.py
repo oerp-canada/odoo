@@ -1,29 +1,28 @@
-# -*- coding: utf-8 -*-
-
 from odoo import api, fields, models, exceptions, _
 
 
-class Rating(models.Model):
+class RatingRating(models.Model):
     _inherit = 'rating.rating'
 
     # Adding information for comment a rating message
     publisher_comment = fields.Text("Publisher comment")
     publisher_id = fields.Many2one('res.partner', 'Commented by',
-                                   ondelete='set null', readonly=True)
+                                   ondelete='set null', readonly=True,
+                                   index='btree_not_null')
     publisher_datetime = fields.Datetime("Commented on", readonly=True)
 
     @api.model_create_multi
-    def create(self, values_list):
-        for values in values_list:
+    def create(self, vals_list):
+        for values in vals_list:
             self._synchronize_publisher_values(values)
-        ratings = super().create(values_list)
+        ratings = super().create(vals_list)
         if any(rating.publisher_comment for rating in ratings):
             ratings._check_synchronize_publisher_values()
         return ratings
 
-    def write(self, values):
-        self._synchronize_publisher_values(values)
-        return super().write(values)
+    def write(self, vals):
+        self._synchronize_publisher_values(vals)
+        return super().write(vals)
 
     def _check_synchronize_publisher_values(self):
         """ Either current user is a member of website restricted editor group
@@ -36,8 +35,7 @@ class Rating(models.Model):
         for model, model_data in self._classify_by_model().items():
             records = self.env[model].browse(model_data['record_ids'])
             try:
-                records.check_access_rights('write')
-                records.check_access_rule('write')
+                records.check_access('write')
             except exceptions.AccessError as e:
                 raise exceptions.AccessError(
                     _("Updating rating comment require write access on related record")

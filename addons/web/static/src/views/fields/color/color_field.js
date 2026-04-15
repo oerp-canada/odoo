@@ -1,6 +1,4 @@
-/** @odoo-module **/
-
-import { Component, onWillUpdateProps, useState } from "@odoo/owl";
+import { Component } from "@odoo/owl";
 import { registry } from "@web/core/registry";
 import { standardFieldProps } from "../standard_field_props";
 
@@ -8,25 +6,34 @@ export class ColorField extends Component {
     static template = "web.ColorField";
     static props = {
         ...standardFieldProps,
+        autosave: { type: Boolean, optional: true },
     };
 
-    setup() {
-        this.state = useState({
-            color: this.props.record.data[this.props.name] || "",
-        });
+    get color() {
+        return this.props.record.data[this.props.name] || "";
+    }
 
-        onWillUpdateProps((nextProps) => {
-            this.state.color = nextProps.record.data[nextProps.name] || "";
-        });
+    onChange(ev) {
+        this.props.record.update(
+            { [this.props.name]: ev.target.value },
+            { save: this.props.autosave }
+        );
     }
 }
 
 export const colorField = {
     component: ColorField,
     supportedTypes: ["char"],
-    extractProps(fieldInfo, dynamicInfo) {
+    extractProps({ viewType, options }, dynamicInfo) {
+        let autosave = false;
+        if ("autosave" in options) {
+            autosave = Boolean(options.autosave);
+        } else if (["list", "kanban"].includes(viewType)) {
+            autosave = true;
+        }
         return {
             readonly: dynamicInfo.readonly,
+            autosave,
         };
     },
 };

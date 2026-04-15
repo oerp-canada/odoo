@@ -4,7 +4,7 @@
 from odoo import api, fields, models
 
 
-class Board(models.AbstractModel):
+class BoardBoard(models.AbstractModel):
     _name = 'board.board'
     _description = "Board"
     _auto = False
@@ -33,13 +33,6 @@ class Board(models.AbstractModel):
             res.update({'custom_view_id': custom_view.id,
                         'arch': custom_view.arch})
         res['arch'] = self._arch_preprocessing(res['arch'])
-        return res
-
-    @api.model
-    def get_views(self, views, options=None):
-        res = super().get_views(views, options)
-        for view in res['views'].values():
-            view['toolbar'] = {'print': [], 'action': [], 'relate': []}
         return res
 
     @api.model

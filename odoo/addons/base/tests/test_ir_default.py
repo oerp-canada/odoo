@@ -2,9 +2,10 @@
 # Part of Odoo. See LICENSE file for full copyright and licensing details.
 
 from odoo.exceptions import ValidationError
-from odoo.tests.common import TransactionCase
+from odoo.tests.common import tagged, TransactionCase
 
 
+@tagged('at_install', '-post_install')  # LEGACY at_install
 class TestIrDefault(TransactionCase):
 
     def test_defaults(self):
@@ -71,15 +72,15 @@ class TestIrDefault(TransactionCase):
                          {})
 
         # default with a condition
-        IrDefault.search([('field_id.model', '=', 'res.partner.title')]).unlink()
-        IrDefault.set('res.partner.title', 'shortcut', 'X')
-        IrDefault.set('res.partner.title', 'shortcut', 'Mr', condition='name=Mister')
-        self.assertEqual(IrDefault._get_model_defaults('res.partner.title'),
-                         {'shortcut': 'X'})
-        self.assertEqual(IrDefault._get_model_defaults('res.partner.title', condition='name=Miss'),
+        IrDefault.search([('field_id.model', '=', 'res.partner')]).unlink()
+        IrDefault.set('res.partner', 'street', 'X')
+        IrDefault.set('res.partner', 'street', 'Mr', condition='name=Mister')
+        self.assertEqual(IrDefault._get_model_defaults('res.partner'),
+                         {'street': 'X'})
+        self.assertEqual(IrDefault._get_model_defaults('res.partner', condition='name=Miss'),
                          {})
-        self.assertEqual(IrDefault._get_model_defaults('res.partner.title', condition='name=Mister'),
-                         {'shortcut': 'Mr'})
+        self.assertEqual(IrDefault._get_model_defaults('res.partner', condition='name=Mister'),
+                         {'street': 'Mr'})
 
     def test_invalid(self):
         """ check error cases with 'ir.default' """
@@ -89,9 +90,11 @@ class TestIrDefault(TransactionCase):
         with self.assertRaises(ValidationError):
             IrDefault.set('res.partner', 'unknown_field', 42)
         with self.assertRaises(ValidationError):
-            IrDefault.set('res.partner', 'lang', 'some_LANG')
+            IrDefault.set('res.partner', 'type', 'invalid_type')
         with self.assertRaises(ValidationError):
             IrDefault.set('res.partner', 'partner_latitude', 'foo')
+        with self.assertRaises(ValidationError):
+            IrDefault.set('res.partner', 'color', 2147483648)
 
     def test_removal(self):
         """ check defaults for many2one with their value being removed """
@@ -99,12 +102,12 @@ class TestIrDefault(TransactionCase):
         IrDefault.search([('field_id.model', '=', 'res.partner')]).unlink()
 
         # set a record as a default value
-        title = self.env['res.partner.title'].create({'name': 'President'})
-        IrDefault.set('res.partner', 'title', title.id)
-        self.assertEqual(IrDefault._get_model_defaults('res.partner'), {'title': title.id})
+        country_id = self.env['res.country'].create({'name': 'country', 'code': 'ZZ'})
+        IrDefault.set('res.partner', 'country_id', country_id.id)
+        self.assertEqual(IrDefault._get_model_defaults('res.partner'), {'country_id': country_id.id})
 
         # delete the record, and check the presence of the default value
-        title.unlink()
+        country_id.unlink()
         self.assertEqual(IrDefault._get_model_defaults('res.partner'), {})
 
     def test_multi_company_defaults(self):

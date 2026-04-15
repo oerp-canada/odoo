@@ -1,54 +1,47 @@
-/* @odoo-module */
-
-import { threadActionsRegistry } from "@mail/core/common/thread_actions";
+import { ACTION_TAGS } from "@mail/core/common/action";
+import { registerThreadAction } from "@mail/core/common/thread_actions";
 import { CallSettings } from "@mail/discuss/call/common/call_settings";
-import { useRtc } from "@mail/discuss/call/common/rtc_hook";
-
-import { useComponent } from "@odoo/owl";
 
 import { _t } from "@web/core/l10n/translation";
 
-threadActionsRegistry
-    .add("call", {
-        condition(component) {
-            return (
-                component.thread?.allowCalls &&
-                component.thread !== component.rtc.state.channel &&
-                !component.props.chatWindow?.hidden
-            );
-        },
-        icon: "fa fa-fw fa-phone",
-        iconLarge: "fa fa-fw fa-lg fa-phone",
-        name: _t("Start a Call"),
-        open(component) {
-            component.rtc.toggleCall(component.thread);
-        },
-        sequence: 10,
-        setup() {
-            const component = useComponent();
-            component.rtc = useRtc();
-        },
-    })
-    .add("settings", {
-        component: CallSettings,
-        condition(component) {
-            return (
-                component.thread?.allowCalls &&
-                (!component.props.chatWindow || component.props.chatWindow.isOpen)
-            );
-        },
-        icon: "fa fa-fw fa-gear",
-        iconLarge: "fa fa-fw fa-lg fa-gear",
-        name: _t("Show Call Settings"),
-        nameActive: _t("Hide Call Settings"),
-        sequence(component) {
-            return component.props.chatWindow && component.thread === component.rtc.state.channel
-                ? 6
-                : 60;
-        },
-        setup() {
-            const component = useComponent();
-            component.rtc = useRtc();
-        },
-        toggle: true,
-    });
+registerThreadAction("call", {
+    condition: ({ channel, store }) => channel?.allowCalls && !channel?.eq(store.rtc.channel),
+    icon: "fa fa-fw fa-phone",
+    name: ({ channel }) => (channel.hasRtcSessionActive ? _t("Join the Call") : _t("Start Call")),
+    onSelected: ({ channel, store }) => store.rtc.toggleCall(channel),
+    sequence: 10,
+    sequenceQuick: 30,
+    tags: [ACTION_TAGS.SUCCESS, ACTION_TAGS.JOIN_LEAVE_CALL],
+});
+registerThreadAction("camera-call", {
+    condition: ({ channel, store }) => channel?.allowCalls && !channel?.eq(store.rtc.channel),
+    icon: "fa fa-fw fa-video-camera",
+    name: ({ channel }) =>
+        channel.hasRtcSessionActive ? _t("Join the Call with Camera") : _t("Start Video Call"),
+    onSelected: ({ channel, store }) => store.rtc.toggleCall(channel, { camera: true }),
+    sequence: 5,
+    sequenceQuick: ({ owner }) => (owner.env.inDiscussApp ? 25 : 35),
+    tags: [ACTION_TAGS.SUCCESS, ACTION_TAGS.JOIN_LEAVE_CALL],
+});
+registerThreadAction("call-settings", {
+    actionPanelComponent: CallSettings,
+    actionPanelComponentProps: () => ({ isCompact: true }),
+    condition: ({ channel, owner, store }) =>
+        channel?.allowCalls &&
+        (owner.props.chatWindow?.isOpen || store.inPublicPage) &&
+        !owner.isDiscussSidebarChannelActions,
+    icon: "fa fa-fw fa-gear",
+    name: _t("Voice & Video Settings"),
+    sequence: 5,
+    sequenceGroup: 30,
+});
+registerThreadAction("disconnect", {
+    condition: ({ channel, owner, store }) =>
+        store.rtc.selfSession?.in(channel?.rtc_session_ids) && owner.isDiscussSidebarChannelActions,
+    onSelected: ({ channel, store }) => store.rtc.toggleCall(channel),
+    icon: "fa fa-fw fa-phone",
+    name: _t("Disconnect"),
+    sequence: 30,
+    sequenceGroup: 10,
+    tags: [ACTION_TAGS.DANGER, ACTION_TAGS.JOIN_LEAVE_CALL],
+});

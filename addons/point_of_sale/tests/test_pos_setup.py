@@ -4,6 +4,7 @@
 from odoo import tools
 import odoo
 from odoo.addons.point_of_sale.tests.common import TestPoSCommon
+from odoo.exceptions import ValidationError
 
 @odoo.tests.tagged('post_install', '-at_install')
 class TestPoSSetup(TestPoSCommon):
@@ -37,7 +38,7 @@ class TestPoSSetup(TestPoSCommon):
         # check basic product category
         # it is expected to have standard and manual_periodic valuation
         self.assertEqual(self.categ_basic.property_cost_method, 'standard')
-        self.assertEqual(self.categ_basic.property_valuation, 'manual_periodic')
+        self.assertEqual(self.categ_basic.property_valuation, 'periodic')
         # check anglo saxon product category
         # this product categ is expected to have fifo and real_time valuation
         self.assertEqual(self.categ_anglo.property_cost_method, 'fifo')
@@ -74,3 +75,54 @@ class TestPoSSetup(TestPoSCommon):
         self.assertEqual(tax_group_7_10.name, 'Tax 7+10%')
         self.assertEqual(tax_group_7_10.amount_type, 'group')
         self.assertEqual(sorted(tax_group_7_10.children_tax_ids.ids), sorted((tax7 | tax10).ids))
+
+    def test_archive_used_journal(self):
+        journal = self.env['account.journal'].create({
+            'name': 'BANKOS',
+            'company_id': self.company.id,
+            'code': 'BANKOS',
+            'type': 'bank',
+            'invoice_reference_type': 'invoice',
+            'invoice_reference_model': 'odoo'
+        })
+        payment_method = self.env['pos.payment.method'].create({'name': 'Lets Pay for Tests', 'journal_id': journal.id})
+        self.basic_config.write({'payment_method_ids': [payment_method.id]})
+        journal.write({'pos_payment_method_ids': [payment_method.id]})
+        session = self.env['pos.session'].create(
+            {
+                'name': 'lets sell some tests',
+                'config_id': self.basic_config.id,
+                'user_id': self.env.user.id,
+                'state': 'opened'
+            }
+        )
+        order = self.env['pos.order'].create(
+            {
+                'name': 'MIX',
+                'amount_tax': 0,
+                'amount_total': 0,
+                'amount_paid': 0,
+                'amount_return': 0,
+                'company_id': self.company.id,
+                'pricelist_id': self.currency_pricelist.id,
+                'session_id': session.id
+            }
+        )
+        self.env['pos.payment'].create(
+            {
+                'amount': 100,
+                'payment_date': '2025-01-01',
+                'payment_method_id': payment_method.id,
+                'pos_order_id': order.id
+            }
+        )
+        with self.assertRaises(ValidationError):
+            journal.action_archive()
+
+    def test_card_payment_method_initialization(self):
+        """Test that the 'Card' payment method created by default has an outstanding account."""
+        card_pm = self.env['pos.payment.method'].search([
+            ('name', '=', 'Card'), ('company_id', '=', self.env.company.id),
+        ], limit=1)
+        self.assertTrue(card_pm)
+        self.assertTrue(card_pm.outstanding_account_id)

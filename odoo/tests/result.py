@@ -1,13 +1,14 @@
 """Test result object"""
 
-import logging
 import collections
 import contextlib
 import inspect
+import logging
+import os
 import re
+import sys
 import time
 import traceback
-
 from typing import NamedTuple
 
 from . import case
@@ -15,9 +16,12 @@ from .. import sql_db
 
 __unittest = True
 
+real_time = time.time.__call__
+
 STDOUT_LINE = '\nStdout:\n%s'
 STDERR_LINE = '\nStderr:\n%s'
 
+ODOO_TEST_MAX_FAILED_TESTS = max(1, int(os.environ.get('ODOO_TEST_MAX_FAILED_TESTS', sys.maxsize)))
 
 stats_logger = logging.getLogger('odoo.tests.stats')
 
@@ -68,9 +72,9 @@ class OdooTestResult(object):
     _previousTestClass = None
     _moduleSetUpFailed = False
 
-    def __init__(self, stream=None, descriptions=None, verbosity=None):
-        self.failures_count = 0
-        self.errors_count = 0
+    def __init__(self, stream=None, descriptions=None, verbosity=None, global_report=None):
+        self.failures: set[tuple[str, str]] = set()
+        self.errors: set[tuple[str, str]] = set()
         self.testsRun = 0
         self.skipped = 0
         self.tb_locals = False
@@ -80,6 +84,32 @@ class OdooTestResult(object):
         self._soft_fail = False
         self.had_failure = False
         self.stats = collections.defaultdict(Stat)
+        self.global_report = global_report
+        self.shouldStop = self.global_report and self.global_report.shouldStop or False
+
+    @property
+    def failures_count(self):
+        return len(self.failures)
+
+    @property
+    def errors_count(self):
+        return len(self.errors)
+
+    def total_errors_count(self):
+        result = self.errors_count + self.failures_count
+        if self.global_report:
+            result += self.global_report.total_errors_count()
+        return result
+
+    def _checkShouldStop(self):
+        if self.total_errors_count() >= ODOO_TEST_MAX_FAILED_TESTS:
+            global_report = self.global_report or self
+            if not global_report.shouldStop:
+                _logger.error(
+                    "Test suite halted: max failed tests already reached (%s). "
+                    "Remaining tests will be skipped.", ODOO_TEST_MAX_FAILED_TESTS)
+                global_report.shouldStop = True
+            self.shouldStop = True
 
     def printErrors(self):
         "Called by TestRunner after test run"
@@ -88,14 +118,14 @@ class OdooTestResult(object):
         "Called when the given test is about to be run"
         self.testsRun += 1
         self.log(logging.INFO, 'Starting %s ...', self.getDescription(test), test=test)
-        self.time_start = time.time()
+        self.time_start = real_time()
         self.queries_start = sql_db.sql_counter
 
     def stopTest(self, test):
         """Called when the given test has been run"""
         if stats_logger.isEnabledFor(logging.INFO):
             self.stats[test.id()] = Stat(
-                time=time.time() - self.time_start,
+                time=real_time() - self.time_start,
                 queries=sql_db.sql_counter - self.queries_start,
             )
 
@@ -106,8 +136,9 @@ class OdooTestResult(object):
         if self._soft_fail:
             self.had_failure = True
         else:
-            self.errors_count += 1
+            self.errors.add((test.id(), str(err[1])))
         self.logError("ERROR", test, err)
+        self._checkShouldStop()
 
     def addFailure(self, test, err):
         """Called when an error has occurred. 'err' is a tuple of values as
@@ -115,8 +146,9 @@ class OdooTestResult(object):
         if self._soft_fail:
             self.had_failure = True
         else:
-            self.failures_count += 1
+            self.failures.add((test.id(), str(err[1])))
         self.logError("FAIL", test, err)
+        self._checkShouldStop()
 
     def addSubTest(self, test, subtest, err):
         if err is not None:
@@ -169,8 +201,7 @@ class OdooTestResult(object):
         return length
 
     def __repr__(self):
-        return ("<%s.%s run=%i errors=%i failures=%i>" %
-                (self.__class__.__module__, self.__class__.__qualname__, self.testsRun, len(self.errors_count), len(self.failures_count)))
+        return f"<{self.__class__.__module__}.{self.__class__.__qualname__} run={self.testsRun} errors={self.errors_count} failures={self.failures_count}>"
 
     def __str__(self):
         return f'{self.failures_count} failed, {self.errors_count} error(s) of {self.testsRun} tests'
@@ -186,13 +217,11 @@ class OdooTestResult(object):
             self._soft_fail = False
             self.had_failure = False
 
-    def update(self, other):
+    def update(self, other: 'OdooTestResult') -> None:
         """ Merges an other test result into this one, only updates contents
-
-        :type other: OdooTestResult
         """
-        self.failures_count += other.failures_count
-        self.errors_count += other.errors_count
+        self.failures.update(other.failures)
+        self.errors.update(other.errors)
         self.testsRun += other.testsRun
         self.skipped += other.skipped
         self.stats.update(other.stats)
@@ -262,12 +291,12 @@ class OdooTestResult(object):
     @contextlib.contextmanager
     def collectStats(self, test_id):
         queries_before = sql_db.sql_counter
-        time_start = time.time()
+        time_start = real_time()
 
         yield
 
         self.stats[test_id] += Stat(
-            time=time.time() - time_start,
+            time=real_time() - time_start,
             queries=sql_db.sql_counter - queries_before,
         )
 

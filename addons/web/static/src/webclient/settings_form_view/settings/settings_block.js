@@ -1,11 +1,20 @@
-/** @odoo-module **/
-
+import { onWillRender, useChildSubEnv, useLayoutEffect, useRef, useState } from "@web/owl2/utils";
 import { HighlightText } from "../highlight_text/highlight_text";
-import { escapeRegExp } from "@web/core/utils/strings";
 
-import { Component, useState, useRef, useEffect, onWillRender, useChildSubEnv } from "@odoo/owl";
+import { Component } from "@odoo/owl";
+import { normalize } from "@web/core/l10n/utils";
 
 export class SettingsBlock extends Component {
+    static template = "web.SettingsBlock";
+    static components = {
+        HighlightText,
+    };
+    static props = {
+        title: { type: String, optional: true },
+        tip: { type: String, optional: true },
+        slots: { type: Object, optional: true },
+        class: { type: String, optional: true },
+    };
     setup() {
         this.state = useState({
             search: this.env.searchState,
@@ -19,12 +28,13 @@ export class SettingsBlock extends Component {
         this.settingsContainerRef = useRef("settingsContainer");
         this.settingsContainerTitleRef = useRef("settingsContainerTitle");
         this.settingsContainerTipRef = useRef("settingsContainerTip");
-        useEffect(
+        useLayoutEffect(
             () => {
-                const regexp = new RegExp(escapeRegExp(this.state.search.value), "i");
                 const force =
                     this.state.search.value &&
-                    !regexp.test([this.props.title, this.props.tip].join()) &&
+                    !normalize([this.props.title, this.props.tip].join()).includes(
+                        this.state.search.value
+                    ) &&
                     !this.settingsContainerRef.el.querySelector(
                         ".o_setting_box.o_searchable_setting"
                     );
@@ -33,8 +43,11 @@ export class SettingsBlock extends Component {
             () => [this.state.search.value]
         );
         onWillRender(() => {
-            const regexp = new RegExp(escapeRegExp(this.state.search.value), "i");
-            if (regexp.test([this.props.title, this.props.tip].join())) {
+            if (
+                normalize([this.props.title, this.props.tip].join()).includes(
+                    this.state.search.value
+                )
+            ) {
                 this.showAllContainerState.showAllContainer = true;
             } else {
                 this.showAllContainerState.showAllContainer = false;
@@ -51,13 +64,3 @@ export class SettingsBlock extends Component {
         this.settingsContainerRef.el.classList.toggle("d-none", force);
     }
 }
-SettingsBlock.template = "web.SettingsBlock";
-SettingsBlock.components = {
-    HighlightText,
-};
-SettingsBlock.props = {
-    title: { type: String, optional: 1 },
-    tip: { type: String, optional: 1 },
-    slots: Object,
-    class: { type: String, optional: 1 },
-};

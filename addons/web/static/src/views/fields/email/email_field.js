@@ -1,10 +1,8 @@
-/** @odoo-module **/
-
 import { registry } from "@web/core/registry";
-import { _lt } from "@web/core/l10n/translation";
+import { _t } from "@web/core/l10n/translation";
 import { useInputField } from "../input_field_hook";
 import { standardFieldProps } from "../standard_field_props";
-
+import { useChildRef } from "@web/core/utils/hooks";
 import { Component } from "@odoo/owl";
 
 export class EmailField extends Component {
@@ -15,16 +13,25 @@ export class EmailField extends Component {
     };
 
     setup() {
+        this.input = useChildRef();
         useInputField({ getValue: () => this.props.record.data[this.props.name] || "" });
     }
 }
 
 export const emailField = {
     component: EmailField,
-    displayName: _lt("Email"),
+    displayName: _t("Email"),
+    supportedOptions: [
+        {
+            label: _t("Dynamic Placeholder"),
+            name: "placeholder_field",
+            type: "field",
+            availableTypes: ["char"],
+        },
+    ],
     supportedTypes: ["char"],
-    extractProps: ({ attrs }) => ({
-        placeholder: attrs.placeholder,
+    extractProps: ({ placeholder }) => ({
+        placeholder,
     }),
 };
 

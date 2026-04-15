@@ -1,225 +1,225 @@
-# -*- coding: utf-8 -*-
-
-from datetime import timedelta
-import uuid
-from odoo import http, fields, Command
+from odoo import http
+from odoo.fields import Domain
 from odoo.http import request
-from werkzeug.exceptions import NotFound, BadRequest, Unauthorized
+from odoo.service.model import call_kw
+from werkzeug.exceptions import Forbidden, NotFound, BadRequest, Unauthorized
+from odoo.exceptions import MissingError
+from odoo.tools import consteq
+
 
 class PosSelfOrderController(http.Controller):
-    @http.route("/pos-self-order/process-new-order", auth="public", type="json", website=True)
-    def process_new_order(self, order, access_token, table_identifier):
-        lines = order.get('lines')
+    @http.route("/pos-self-order/process-order/<device_type>/", auth="public", type="jsonrpc", website=True)
+    def process_order(self, order, access_token, table_identifier, device_type):
+        pos_config, table = self._verify_authorization(access_token, table_identifier, order)
+        if not pos_config.self_ordering_mode == device_type:
+            raise Unauthorized("Invalid device type")
 
-        pos_config_sudo, table_sudo = self._verify_authorization(access_token, table_identifier)
-        pos_session_sudo = pos_config_sudo.current_session_id
-        sequence_number = self._get_sequence_number(table_sudo.id, pos_session_sudo.id)
-        unique_id = self._generate_unique_id(pos_session_sudo.id, table_sudo.id, sequence_number)
+        # Create a safe copy of the order with only the necessary fields for order creation to
+        # avoid potential security issues and to reduce the payload size
+        safe_data = pos_config.env['pos.order']._check_pos_order(pos_config, order, device_type, table)
+        results = pos_config.env['pos.order'].sudo().with_company(pos_config.company_id.id).sync_from_ui([safe_data])
+        order_ids = pos_config.env['pos.order'].browse([order['id'] for order in results['pos.order']])
 
-        # Create the order without lines and prices computed
-        # We need to remap the order because some required fields are not used in the frontend.
-        order = {
-            'id': unique_id,
-            'data': {
-                'uuid': order.get('uuid'),
-                'name': unique_id,
-                'user_id': request.session.uid,
-                'sequence_number': sequence_number,
-                'access_token': uuid.uuid4().hex,
-                'pos_session_id': pos_session_sudo.id,
-                'table_id': table_sudo.id if table_sudo else False,
-                'partner_id': False,
-                'creation_date': str(fields.Datetime.now()),
-                'fiscal_position_id': pos_config_sudo.default_fiscal_position_id,
-                'statement_ids': [],
-                'lines': [],
-                'amount_tax': 0,
-                'amount_total': 0,
-                'amount_paid': 0,
-                'amount_return': 0,
-            },
-            'to_invoice': False,
-            'session_id': pos_session_sudo.id,
-        }
+        # Recompute all prices from newly created lines to ensure price correctness and
+        # avoid potential manipulation from the frontend
+        order_ids.recompute_prices()
+        amount_total = order_ids.amount_total
 
-        # Save the order in the database to get the id
-        posted_order_id = request.env['pos.order'].sudo().create_from_ui([order], draft=True)[0].get('id')
+        if amount_total == 0:
+            order_ids.state = 'paid'
+            order_ids._process_saved_order(False)
+            order_ids._send_self_order_receipt()
 
-        # Process the lines and get their prices computed
-        lines = self._process_lines(lines, pos_config_sudo, posted_order_id)
+        return self._generate_return_values(order_ids, pos_config)
 
-        # Compute the order prices
-        amount_total, amount_untaxed = self._get_order_prices(lines)
+    def _generate_return_values(self, order, config):
+        orders = self.env['pos.order']._load_pos_self_data_read(order, config)
 
-        # Update the order with the computed prices and lines
-        order_sudo = request.env["pos.order"].sudo().browse(posted_order_id)
-        order_sudo.write({
-            'lines': [Command.create(line) for line in lines],
-            'amount_tax': amount_total - amount_untaxed,
-            'amount_total': amount_total,
-        })
-
-        return order_sudo._export_for_self_order()
-
-    @http.route('/pos-self-order/get-orders-taxes', auth='public', type='json', website=True)
-    def get_order_taxes(self, order, access_token):
-        pos_config_sudo = request.env['pos.config'].sudo().search([('access_token', '=', access_token)], limit=1)
-
-        if not pos_config_sudo or not pos_config_sudo.self_order_table_mode or not pos_config_sudo.has_active_session:
-            raise Unauthorized("Invalid access token")
-
-        lines = self._process_lines(order.get('lines'), pos_config_sudo, 0)
-        amount_total, amount_untaxed = self._get_order_prices(lines)
+        for o in orders:
+            del o['email']
+            del o['mobile']
 
         return {
-            'lines': [{
-                'uuid': line.get('uuid'),
-                'price_subtotal': line.get('price_subtotal'),
-                'price_subtotal_incl': line.get('price_subtotal_incl'),
-            } for line in lines],
-            'amount_total': amount_total,
-            'amount_tax': amount_total - amount_untaxed,
+            'pos.order': self.env['pos.order']._load_pos_self_data_read(order, config),
+            'pos.order.line': self.env['pos.order.line']._load_pos_self_data_read(order.lines, config),
+            'pos.payment': self.env['pos.payment']._load_pos_self_data_read(order.payment_ids, config),
+            'product.attribute.custom.value': self.env['product.attribute.custom.value']._load_pos_self_data_read(order.lines.custom_attribute_value_ids, config),
         }
 
-    @http.route('/pos-self-order/update-existing-order', auth="public", type="json", website=True)
-    def update_existing_order(self, order, access_token, table_identifier):
-        order_id = order.get('id')
-        order_access_token = order.get('access_token')
-        pos_config_sudo, table_sudo = self._verify_authorization(access_token, table_identifier)
+    def _verify_line_price(self, lines, pos_config, preset_id):
+        lines.order_id.recompute_prices()
 
-        order_sudo = request.env['pos.order'].sudo().search([
-            ('id', '=', order_id),
-            ('access_token', '=', order_access_token),
-            ('table_id', '=', table_sudo.id)
-        ])
+    @http.route('/pos-self-order/validate-partner', auth='public', type='jsonrpc', website=True)
+    def validate_partner(self, access_token, name, phone, street, zip, city, country_id, state_id=None, partner_id=None, email=None):
+        pos_config = self._verify_pos_config(access_token)
+        existing_partner = pos_config.env['res.partner'].sudo().browse(int(partner_id)) if partner_id else False
 
-        if not order_sudo:
-            raise Unauthorized("Order not found in the server !")
-        elif order_sudo.state != 'draft':
-            raise Unauthorized("Order is not in draft state")
+        if existing_partner and existing_partner.exists():
+            return {
+                'res.partner': existing_partner.read(['id'], load=False),
+            }
 
-        lines = self._process_lines(order.get('lines'), pos_config_sudo, order_sudo.id)
-        for line in lines:
-            if line.get('id'):
-                line_sudo = order_sudo.lines.filtered(lambda l: l.id == line.get('id'))
-
-                if line.get('qty') < line_sudo.qty:
-                    line.set('qty', line_sudo.qty)
-
-                line_sudo.write({
-                    **line,
-                })
-            else:
-                order_sudo.lines.create(line)
-
-        amount_total, amount_untaxed = self._get_order_prices(lines)
-        order_sudo.write({
-            'amount_tax': amount_total - amount_untaxed,
-            'amount_total': amount_total,
+        state_id = pos_config.env['res.country.state'].browse(int(state_id)) if state_id else False
+        country_id = pos_config.env['res.country'].browse(int(country_id))
+        partner_sudo = request.env['res.partner'].sudo().create({
+            'name': name,
+            'email': email,
+            'phone': phone,
+            'street': street,
+            'zip': zip,
+            'city': city,
+            'country_id': country_id.id,
+            'state_id': state_id.id if state_id else False,
+            'company_id': pos_config.company_id.id,
         })
 
-        return order_sudo._export_for_self_order()
+        return {
+            'res.partner': partner_sudo.read(['id'], load=False),
+        }
 
-    @http.route('/pos-self-order/get-orders', auth='public', type='json', website=True)
-    def get_orders_by_access_token(self, order_access_tokens):
-        orders_sudo = request.env["pos.order"].sudo().search([
-            ("access_token", "in", order_access_tokens),
-            ("date_order", ">=", fields.Datetime.now() - timedelta(days=7)),
-        ])
+    @http.route('/pos-self-order/remove-order', auth='public', type='jsonrpc', website=True)
+    def remove_order(self, access_token, order_id, order_access_token):
+        pos_config = self._verify_pos_config(access_token)
+        pos_order = pos_config.env['pos.order'].browse(order_id)
 
-        if not orders_sudo:
-            raise NotFound("Orders not found")
+        if not pos_order.exists() or not consteq(pos_order.access_token, order_access_token):
+            raise MissingError(self.env._("Your order does not exist or has been removed"))
 
-        orders = []
-        for order in orders_sudo:
-            orders.append(order._export_for_self_order())
+        if pos_order.state != 'draft':
+            raise Unauthorized(self.env._("You are not authorized to remove this order"))
 
-        return orders
+        pos_order.remove_from_ui([pos_order.id])
 
-    @http.route('/pos-self-order/get-tables', auth='public', type='json', website=True)
-    def get_tables(self, access_token):
-        pos_config_sudo = request.env['pos.config'].sudo().search([('access_token', '=', access_token)], limit=1)
+    @http.route('/pos-self-order/get-user-data', auth='public', type='jsonrpc', website=True)
+    def get_orders_by_access_token(self, access_token, order_access_tokens, table_identifier=None):
+        pos_config = self._verify_pos_config(access_token)
+        table = pos_config.env["restaurant.table"].search([('identifier', '=', table_identifier)], limit=1)
+        domain = False
 
-        if not pos_config_sudo or not pos_config_sudo.self_order_table_mode or not pos_config_sudo.has_active_session:
-            raise Unauthorized("Invalid access token")
+        if not table_identifier or pos_config.self_ordering_pay_after == 'each':
+            domain = [(False, '=', True)]
+        else:
+            domain = ['&', '&',
+                ('table_id', '=', table.id),
+                ('state', '=', 'draft'),
+                ('access_token', 'not in', [data.get('access_token') for data in order_access_tokens])
+            ]
 
-        tables = pos_config_sudo.floor_ids.table_ids.filtered(lambda t: t.active).read(['id', 'name', 'identifier', 'floor_id'])
+        for data in order_access_tokens:
+            domain = Domain.OR([domain, ['&',
+                ('access_token', '=', data['access_token']),
+                '|',
+                ('write_date', '>', data.get('write_date')),
+                ('state', '!=', data.get('state')),
+            ]])
+        orders = pos_config.env['pos.order'].search(domain)
+        access_tokens = set({o.get('access_token') for o in order_access_tokens})
+        # Do not use session.order_ids, it may fail if there is shared sessions
+        existing_order_tokens = pos_config.env['pos.order'].search([('access_token', 'in', access_tokens)]).mapped('access_token')
+        if deleted_order_tokens := list(access_tokens - set(existing_order_tokens)):
+            # Remove orders that no longer exist on the server but are still shown in the self-order UI
+            pos_config._notify('REMOVE_ORDERS', {'deleted_order_tokens': deleted_order_tokens})
+        return self._generate_return_values(orders, pos_config) if orders else {}
 
-        for table in tables:
-            table['floor_name'] = table.get('floor_id')[1]
+    @http.route('/kiosk/payment/<int:pos_config_id>/<device_type>', auth='public', type='jsonrpc', website=True)
+    def pos_self_order_kiosk_payment(self, pos_config_id, order, payment_method_id, access_token, device_type):
+        pos_config = self._verify_pos_config(access_token)
+        results = self.process_order(order, access_token, None, device_type)
 
-        return tables
+        if not results['pos.order'][0].get('id'):
+            raise BadRequest("Something went wrong")
 
-    def _process_lines(self, lines, pos_config_sudo, pos_order_id):
-        newLines = []
-        pricelist = request.env['product.pricelist'].sudo().browse(pos_config_sudo.pricelist_id.id)
+        # access_token verified in process_new_order
+        order_sudo = pos_config.env['pos.order'].browse(results['pos.order'][0]['id'])
+        payment_method_sudo = pos_config.env["pos.payment.method"].browse(payment_method_id)
+        if not order_sudo or not payment_method_sudo or payment_method_sudo not in order_sudo.config_id.payment_method_ids:
+            raise NotFound("Order or payment method not found")
 
-        for line in lines:
-            product_sudo = request.env["product.product"].sudo().browse(int(line.get("product_id")))
-            # todo take into account the price extra
-            price_unit = pricelist._get_product_price(product_sudo, quantity=1) if pricelist else product_sudo.lst_price
+        status = payment_method_sudo._payment_request_from_kiosk(order_sudo)
 
-            config_fiscal_pos = pos_config_sudo.default_fiscal_position_id
-            selected_account_tax = config_fiscal_pos.map_tax(product_sudo.taxes_id) if config_fiscal_pos else product_sudo.taxes_id
+        if not status:
+            raise BadRequest("Something went wrong")
 
-            tax_results = selected_account_tax.compute_all(
-                price_unit,
-                pos_config_sudo.currency_id,
-                line.get('qty'),
-                product_sudo,
-            )
+        return {'order': self.env['pos.order']._load_pos_self_data_read(order_sudo, pos_config), 'payment_status': status}
 
-            newLines.append({
-                'price_unit': price_unit,
-                'price_subtotal': tax_results.get('total_excluded'),
-                'price_subtotal_incl': tax_results.get('total_included'),
-                'price_extra': 0,
-                'id': line.get('id'),
-                'order_id': pos_order_id,
-                'tax_ids': product_sudo.taxes_id,
-                'uuid': line.get('uuid'),
-                'product_id': line.get('product_id'),
-                'qty': line.get('qty'),
-                'customer_note': line.get('customer_note'),
-                'selected_attributes': line.get('selected_attributes'),
-                'full_product_name': line.get('full_product_name'),
-            })
+    @http.route("/kiosk/payment_method_action/<action>", auth="public", type="jsonrpc", website=True)
+    def pos_self_order_kiosk_payment_method_action(self, access_token, action, args, kwargs):
+        pos_config = self._verify_pos_config(access_token)
+        payment_method_env = pos_config.env["pos.payment.method"]
+        if pos_config.self_ordering_mode != "kiosk":
+            raise Forbidden("Method only allowed in kiosk mode")
+        if args and isinstance(args[0], list):
+            if len(args[0]) != 1:
+                raise BadRequest("Only one payment method ID should be provided")
+            if not payment_method_env.search_count([("id", "=", args[0]), ("config_ids", "in", pos_config.id)]):
+                raise NotFound("Payment method not found in config")
+        if action not in payment_method_env._allowed_actions_in_self_order():
+            raise Forbidden(f"Method '{action}' is forbidden in the self order kiosk")
 
-        return newLines
+        return call_kw(payment_method_env, action, args, kwargs)
+
+    @http.route('/pos_self_order/kiosk/increment_nb_print/', auth='public', type='jsonrpc', website=True)
+    def pos_kiosk_increment_nb_print(self, access_token, order_id, order_access_token):
+        pos_config = self._verify_pos_config(access_token)
+        pos_order = pos_config.env['pos.order'].browse(order_id)
+
+        if not pos_order.exists() or not consteq(pos_order.access_token, order_access_token):
+            raise MissingError(self.env._("Your order does not exist or has been removed"))
+
+        pos_order.write({
+            'nb_print': 1,
+        })
+
+    @http.route('/pos-self-order/change-printer-status', auth='public', type='jsonrpc', website=True)
+    def change_printer_status(self, access_token, has_paper):
+        pos_config = self._verify_pos_config(access_token)
+        if has_paper != pos_config.has_paper:
+            pos_config.write({'has_paper': has_paper})
+
+    @http.route('/pos-self-order/get-slots', auth='public', type='jsonrpc', website=True)
+    def get_slots(self, access_token, preset_id):
+        pos_config = self._verify_pos_config(access_token)
+        preset = pos_config.env['pos.preset'].browse(preset_id)
+        return preset.get_available_slots()
 
     def _get_order_prices(self, lines):
-        amount_untaxed = sum([line.get('price_subtotal') for line in lines])
-        amount_total = sum([line.get('price_subtotal_incl') for line in lines])
+        amount_untaxed = sum(lines.mapped('price_subtotal'))
+        amount_total = sum(lines.mapped('price_subtotal_incl'))
         return amount_total, amount_untaxed
 
-    # The first part will be the session_id of the order.
-    # The second part will be the table_id of the order.
-    # Last part the sequence number of the order.
-    # INFO: This is allow a maximum of 999 tables and 9999 orders per table, so about ~1M orders per session.
-    # Example: 'Self-Order 00001-001-0001'
-    def _generate_unique_id(self, pos_session_id: int, table_id: int, sequence_number: int) -> str:
-        first_part = "{:05d}".format(int(pos_session_id))
-        second_part = "{:03d}".format(int(table_id))
-        third_part = "{:04d}".format(int(sequence_number))
-
-        return f"Self-Order {first_part}-{second_part}-{third_part}"
-
-    def _get_sequence_number(self, table_id, session_id):
-        order_sudo = request.env["pos.order"].sudo().search([(
-            'pos_reference',
-            'like',
-            f"Self-Order {session_id:0>5}-{table_id:0>3}")], order='id desc', limit=1)
-
-        return (order_sudo.sequence_number + 1) or 1
-
-    def _verify_authorization(self, access_token, table_identifier):
-        table_sudo = request.env["restaurant.table"].sudo().search([('identifier', '=', table_identifier)], limit=1)
+    def _verify_pos_config(self, access_token, check_active_session=True):
+        """
+        Finds the pos.config with the given access_token and returns a record with reduced privileges.
+        The record is has no sudo access and is in the context of the record's company and current pos.session's user.
+        """
         pos_config_sudo = request.env['pos.config'].sudo().search([('access_token', '=', access_token)], limit=1)
-
-        if not pos_config_sudo or not pos_config_sudo.self_order_table_mode or not pos_config_sudo.has_active_session:
+        if self._verify_config_constraint(pos_config_sudo, check_active_session):
             raise Unauthorized("Invalid access token")
+        company = pos_config_sudo.company_id
+        user = pos_config_sudo.self_ordering_default_user_id
+        return pos_config_sudo.sudo(False).with_company(company).with_user(user).with_context(allowed_company_ids=company.ids)
 
-        if not table_sudo:
+    def _verify_config_constraint(self, pos_config_sudo, check_active_session=True):
+        return not pos_config_sudo or (pos_config_sudo.self_ordering_mode != 'mobile' and pos_config_sudo.self_ordering_mode != 'kiosk') or (check_active_session and not pos_config_sudo.has_active_session)
+
+    def _verify_authorization(self, access_token, table_identifier, order):
+        """
+        Similar to _verify_pos_config but also looks for the restaurant.table of the given identifier.
+        The restaurant.table record is also returned with reduced privileges.
+        """
+        pos_config = self._verify_pos_config(access_token)
+        table_sudo = request.env["restaurant.table"].sudo().search([('identifier', '=', table_identifier)], limit=1)
+        preset = request.env['pos.preset'].sudo().browse(order.get('preset_id'))
+        is_takeaway = order and pos_config.use_presets and preset and preset.service_at != 'table'
+        if not table_sudo and not pos_config.self_ordering_mode == 'kiosk' and pos_config.self_ordering_service_mode == 'table' and not is_takeaway:
             raise Unauthorized("Table not found")
 
-        return pos_config_sudo, table_sudo
+        company = pos_config.company_id
+        user = pos_config.self_ordering_default_user_id
+        table = table_sudo.sudo(False).with_company(company).with_user(user).with_context(allowed_company_ids=company.ids)
+        return pos_config, table
+
+    @http.route(['/pos-self/ping'], type='jsonrpc', auth='public')
+    def pos_ping(self, access_token):
+        self._verify_pos_config(access_token, check_active_session=False)
+        return {'response': 'pong'}

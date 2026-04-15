@@ -1,28 +1,47 @@
 # Part of Odoo. See LICENSE file for full copyright and licensing details.
 
+import logging
 import requests
+import urllib3
 import werkzeug.urls
+from werkzeug.exceptions import BadRequest
+
 from odoo.http import request, route, Controller
+
+TENOR_CONTENT_FILTER = "medium"
+TENOR_GIF_LIMIT = 8
+
+_logger = logging.getLogger(__name__)
 
 
 class DiscussGifController(Controller):
     def _request_gifs(self, endpoint):
-        response = requests.get(
-            f"https://tenor.googleapis.com/v2/{endpoint}", timeout=3
-        )
-        response.raise_for_status()
+        response = None
+        try:
+            response = requests.get(
+                f"https://tenor.googleapis.com/v2/{endpoint}", timeout=3
+            )
+            response.raise_for_status()
+        except (urllib3.exceptions.MaxRetryError, requests.exceptions.HTTPError):
+            _logger.error("Exceeded the request's maximum size for a searching term.")
+
+        if not response:
+            raise BadRequest()
         return response
 
-    @route("/discuss/gif/search", type="json", auth="user")
-    def search(self, search_term, locale="en", country="US", position=None):
+    @route("/discuss/gif/search", type="jsonrpc", auth="user")
+    def search(self, search_term, locale="en", country="US", position=None, readonly=True):
+        # sudo: ir.config_parameter - read keys are hard-coded and values are only used for server requests
         ir_config = request.env["ir.config_parameter"].sudo()
+        if not ir_config.get_bool("discuss.use_tenor_api"):
+            return
         query_string = werkzeug.urls.url_encode(
             {
                 "q": search_term,
-                "key": ir_config.get_param("discuss.tenor_api_key"),
+                "key": ir_config.get_str("discuss.tenor_api_key"),
                 "client_key": request.env.cr.dbname,
-                "limit": ir_config.get_param("discuss.tenor_gif_limit"),
-                "contentfilter": ir_config.get_param("discuss.tenor_content_filter"),
+                "limit": TENOR_GIF_LIMIT,
+                "contentfilter": TENOR_CONTENT_FILTER,
                 "locale": locale,
                 "country": country,
                 "media_filter": "tinygif",
@@ -33,15 +52,18 @@ class DiscussGifController(Controller):
         if response:
             return response.json()
 
-    @route("/discuss/gif/categories", type="json", auth="user")
+    @route("/discuss/gif/categories", type="jsonrpc", auth="user", readonly=True)
     def categories(self, locale="en", country="US"):
+        # sudo: ir.config_parameter - read keys are hard-coded and values are only used for server requests
         ir_config = request.env["ir.config_parameter"].sudo()
+        if not ir_config.get_bool("discuss.use_tenor_api"):
+            return
         query_string = werkzeug.urls.url_encode(
             {
-                "key": ir_config.get_param("discuss.tenor_api_key"),
+                "key": ir_config.get_str("discuss.tenor_api_key"),
                 "client_key": request.env.cr.dbname,
-                "limit": ir_config.get_param("discuss.tenor_gif_limit"),
-                "contentfilter": ir_config.get_param("discuss.tenor_content_filter"),
+                "limit": TENOR_GIF_LIMIT,
+                "contentfilter": TENOR_CONTENT_FILTER,
                 "locale": locale,
                 "country": country,
             }
@@ -50,16 +72,21 @@ class DiscussGifController(Controller):
         if response:
             return response.json()
 
-    @route("/discuss/gif/add_favorite", type="json", auth="user")
+    @route("/discuss/gif/add_favorite", type="jsonrpc", auth="user")
     def add_favorite(self, tenor_gif_id):
+        # sudo: ir.config_parameter - read keys are hard-coded and values are only used for server requests
+        ir_config = request.env["ir.config_parameter"].sudo()
+        if not ir_config.get_bool("discuss.use_tenor_api"):
+            return
         request.env["discuss.gif.favorite"].create({"tenor_gif_id": tenor_gif_id})
 
     def _gif_posts(self, ids):
+        # sudo: ir.config_parameter - read keys are hard-coded and values are only used for server requests
         ir_config = request.env["ir.config_parameter"].sudo()
         query_string = werkzeug.urls.url_encode(
             {
                 "ids": ",".join(ids),
-                "key": ir_config.get_param("discuss.tenor_api_key"),
+                "key": ir_config.get_str("discuss.tenor_api_key"),
                 "client_key": request.env.cr.dbname,
                 "media_filter": "tinygif",
             }
@@ -68,15 +95,23 @@ class DiscussGifController(Controller):
         if response:
             return response.json()["results"]
 
-    @route("/discuss/gif/favorites", type="json", auth="user")
+    @route("/discuss/gif/favorites", type="jsonrpc", auth="user", readonly=True)
     def get_favorites(self, offset=0):
+        # sudo: ir.config_parameter - read keys are hard-coded and values are only used for server requests
+        ir_config = request.env["ir.config_parameter"].sudo()
+        if not ir_config.get_bool("discuss.use_tenor_api"):
+            return
         tenor_gif_ids = request.env["discuss.gif.favorite"].search(
             [("create_uid", "=", request.env.user.id)], limit=20, offset=offset
         )
         return (self._gif_posts(tenor_gif_ids.mapped("tenor_gif_id")) or [],)
 
-    @route("/discuss/gif/remove_favorite", type="json", auth="user")
+    @route("/discuss/gif/remove_favorite", type="jsonrpc", auth="user")
     def remove_favorite(self, tenor_gif_id):
+        # sudo: ir.config_parameter - read keys are hard-coded and values are only used for server requests
+        ir_config = request.env["ir.config_parameter"].sudo()
+        if not ir_config.get_bool("discuss.use_tenor_api"):
+            return
         request.env["discuss.gif.favorite"].search(
             [
                 ("create_uid", "=", request.env.user.id),

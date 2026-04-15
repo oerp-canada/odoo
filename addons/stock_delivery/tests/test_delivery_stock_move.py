@@ -1,15 +1,20 @@
 # Part of Odoo. See LICENSE file for full copyright and licensing details.
 
-from odoo.addons.account.tests.common import AccountTestInvoicingCommon
-from odoo.tests import Form, tagged
+import datetime
+
+from odoo import fields
+from odoo.fields import Command
+from odoo.tests import Form, freeze_time, tagged
+
+from odoo.addons.sale.tests.common import TestSaleCommon
 
 
 @tagged('post_install', '-at_install')
-class StockMoveInvoice(AccountTestInvoicingCommon):
+class TestStockMoveInvoice(TestSaleCommon):
 
     @classmethod
-    def setUpClass(cls, chart_template_ref=None):
-        super().setUpClass(chart_template_ref=chart_template_ref)
+    def setUpClass(cls):
+        super().setUpClass()
 
         cls.ProductProduct = cls.env['product.product']
         cls.SaleOrder = cls.env['sale.order']
@@ -47,7 +52,6 @@ class StockMoveInvoice(AccountTestInvoicingCommon):
                 'name': 'Cable Management Box',
                 'product_id': self.product_cable_management_box.id,
                 'product_uom_qty': 2,
-                'product_uom': self.product_uom_unit.id,
                 'price_unit': 750.00,
             })],
         })
@@ -91,7 +95,7 @@ class StockMoveInvoice(AccountTestInvoicingCommon):
         self.assertEqual(moves[0].weight, 2.0, 'wrong move weight')
 
         # Ship
-        moves.move_line_ids.write({'qty_done': 2})
+        moves.move_line_ids.write({'quantity': 2})
         self.picking = self.sale_prepaid.picking_ids._action_done()
         self.assertEqual(moves[0].move_line_ids.sale_price, 1725.0, 'wrong shipping value')
 
@@ -104,8 +108,17 @@ class StockMoveInvoice(AccountTestInvoicingCommon):
         serial_numbers = self.env['stock.lot'].create([{
             'name': str(x),
             'product_id': self.product_cable_management_box.id,
-            'company_id': self.env.company.id,
-        } for x in range(5)])
+        } for x in range(2)])
+
+        # Add stock for the serial numbers
+        warehouse = self.env['stock.warehouse'].search([('company_id', '=', self.env.company.id)], limit=1)
+        for lot in serial_numbers:
+            self.env['stock.quant']._update_available_quantity(
+                self.product_cable_management_box,
+                warehouse.lot_stock_id,
+                1,
+                lot_id=lot
+            )
 
         self.sale_prepaid = self.SaleOrder.create({
             'partner_id': self.partner_18.id,
@@ -115,7 +128,6 @@ class StockMoveInvoice(AccountTestInvoicingCommon):
                 'name': 'Cable Management Box',
                 'product_id': self.product_cable_management_box.id,
                 'product_uom_qty': 2,
-                'product_uom': self.product_uom_unit.id,
                 'price_unit': 750.00,
             })],
         })
@@ -133,7 +145,7 @@ class StockMoveInvoice(AccountTestInvoicingCommon):
         moves = self.sale_prepaid.picking_ids.move_ids
         # Ship
         for ml, lot in zip(moves.move_line_ids, serial_numbers):
-            ml.write({'qty_done': 1, 'lot_id': lot.id})
+            ml.write({'quantity': 1, 'lot_id': lot.id})
         self.picking = self.sale_prepaid.picking_ids._action_done()
         self.assertEqual(moves[0].move_line_ids[0].sale_price, 862.5, 'wrong shipping value')
 
@@ -160,12 +172,12 @@ class StockMoveInvoice(AccountTestInvoicingCommon):
         so.action_confirm()
 
         # Deliver one product and create a backorder
-        self.assertEqual(sum([line.quantity_done for line in so.picking_ids.move_ids]), 0)
-        so.picking_ids.move_ids[0].quantity_done = 1
-        backorder_wizard_dict = so.picking_ids.button_validate()
-        backorder_wizard = Form(self.env[backorder_wizard_dict['res_model']].with_context(backorder_wizard_dict['context'])).save()
-        backorder_wizard.process()
-        self.assertEqual(sum([line.quantity_done for line in so.picking_ids.move_ids]), 1)
+        self.assertEqual(sum([line.quantity for line in so.picking_ids.move_ids]), 2)
+        so.picking_ids.move_ids[0].quantity = 1
+        so.picking_ids.move_ids[0].picked = True
+        Form.from_action(self.env, so.picking_ids.button_validate()).save().process()
+        self.assertEqual(len(so.picking_ids), 2)
+        self.assertEqual(sum([line.quantity for line in so.picking_ids.move_ids]), 2)
 
         # Invoice the delivered product
         invoice = so._create_invoices()
@@ -183,7 +195,7 @@ class StockMoveInvoice(AccountTestInvoicingCommon):
         self.assertEqual(so.invoice_status, 'no', 'The status should still be "Nothing To Invoice"')
 
     def test_delivery_carrier_from_confirmed_so(self):
-        """Test if adding shipping method in sale order after confirmation
+        """Test if adding delivery method in sale order after confirmation
            will add it in pickings too"""
 
         sale_order = self.SaleOrder.create({
@@ -194,20 +206,18 @@ class StockMoveInvoice(AccountTestInvoicingCommon):
                 "name": "Cable Management Box",
                 "product_id": self.product_cable_management_box.id,
                 "product_uom_qty": 2,
-                "product_uom": self.product_uom_unit.id,
                 "price_unit": 750.00,
             })],
         })
 
         sale_order.action_confirm()
-        sale_order.picking_ids.move_ids.quantity_done = 2
+        sale_order.picking_ids.move_ids.quantity = 2
         sale_order.picking_ids.button_validate()
 
         # Return picking
-        return_form = Form(self.env["stock.return.picking"].with_context(active_id=sale_order.picking_ids.id, active_model="stock.picking"))
-        return_wizard = return_form.save()
-        action = return_wizard.create_returns()
-        return_picking = self.env["stock.picking"].browse(action["res_id"])
+        return_picking = sale_order.picking_ids._create_return()
+        return_picking.move_ids.product_uom_qty = 2
+        return_picking.action_assign()
 
         # add new product so new picking is created
         sale_order.write({
@@ -215,7 +225,6 @@ class StockMoveInvoice(AccountTestInvoicingCommon):
                 "name": "Another product to deliver",
                 "product_id": self.product_11.id,
                 "product_uom_qty": 2,
-                "product_uom": self.product_uom_unit.id,
                 "price_unit": 750.00,
             })],
         })
@@ -230,8 +239,107 @@ class StockMoveInvoice(AccountTestInvoicingCommon):
 
         # Check the carrier in picking after confirm sale order
         delivery_for_product_11 = sale_order.picking_ids.filtered(lambda p: self.product_11 in p.move_ids.product_id)
-        self.assertEqual(delivery_for_product_11.carrier_id, self.normal_delivery, "The shipping method should be set in pending deliveries.")
+        self.assertEqual(delivery_for_product_11.carrier_id, self.normal_delivery, "The delivery method should be set in pending deliveries.")
 
         done_delivery = sale_order.picking_ids.filtered(lambda p: p.state == "done")
-        self.assertFalse(done_delivery.carrier_id.id, "The shipping method should not be set in done deliveries.")
-        self.assertFalse(return_picking.carrier_id.id, "The shipping method should not set in return pickings")
+        self.assertFalse(done_delivery.carrier_id.id, "The delivery method should not be set in done deliveries.")
+        self.assertFalse(return_picking.carrier_id.id, "The delivery method should not set in return pickings")
+
+    def test_picking_weight(self):
+        """Test if the picking weight is correctly computed when the product of the move changes."""
+        self.product_cable_management_box.weight = 1.0
+        self.product_a.weight = 2.0
+        so = self.SaleOrder.create({
+            "partner_id": self.partner_18.id,
+            "order_line": [(0, 0, {
+                "name": "Cable Management Box",
+                "product_id": self.product_cable_management_box.id,
+                "product_uom_qty": 1,
+                "price_unit": 750.00,
+            })],
+        })
+        so.action_confirm()
+        picking = so.picking_ids
+        self.assertEqual(picking.weight, 1.0, "The weight of the picking should be 1.0")
+        self.product_cable_management_box.weight = 2.0
+        self.assertEqual(picking.weight, 1.0, "The weight of the picking should not change")
+        picking.move_ids.product_id = self.product_a
+        self.assertEqual(picking.weight, 2.0, "The weight of the picking should be 2.0")
+
+    @freeze_time("2024-06-06 11:00")
+    def test_picking_change_scheduled_date(self):
+        """
+        Check that changing the scheduled date of a move can affect the scheduled date
+        of the picking but not its sibling moves.
+        """
+        wh = self.env['stock.warehouse'].search([('company_id', '=', self.env.company.id)], limit=1)
+        receipt = self.env['stock.picking'].create({
+            'picking_type_id': wh.in_type_id.id,
+            'location_id': self.ref('stock.stock_location_customers'),
+            'location_dest_id': wh.lot_stock_id.id,
+            'move_ids': [
+                Command.create({
+                    'product_id': self.product_a.id,
+                    'product_uom_qty': 1,
+                    'location_id': self.ref('stock.stock_location_customers'),
+                    'location_dest_id': wh.lot_stock_id.id,
+                }),
+                Command.create({
+                    'product_id': self.product_b.id,
+                    'product_uom_qty': 1,
+                    'location_id': self.ref('stock.stock_location_customers'),
+                    'location_dest_id': wh.lot_stock_id.id,
+                }),
+            ],
+        })
+        receipt.action_confirm()
+        today, yesterday = fields.Datetime.now(), fields.Datetime.now() - datetime.timedelta(days=1)
+        self.assertEqual(receipt.scheduled_date, today)
+        with Form(receipt) as picking_form:
+            with picking_form.move_ids.edit(0) as move:
+                move.date = yesterday
+        self.assertEqual(receipt.scheduled_date, yesterday)
+        self.assertRecordValues(receipt.move_ids, [
+            {'date': yesterday},
+            {'date': today},
+        ])
+
+    @freeze_time("2024-06-06 11:00")
+    def test_delivery_slip_product_value(self):
+        """Test that product value reported on the delivery slip is correct.
+        """
+        product = self.product_cable_management_box
+        tax = self.company_data['default_tax_sale']
+        other_currency = self.setup_other_currency('EUR', rates=[
+            ('2024-06-06', 0.1),
+        ])
+        pricelist_in_other_curr = self.env['product.pricelist'].create({
+            'name': 'Test Pricelist (EUR)',
+            'currency_id': other_currency.id,
+        })
+
+        sale_order = self.env['sale.order'].create({
+            'partner_id': self.partner_a.id,
+            'partner_invoice_id': self.partner_a.id,
+            'partner_shipping_id': self.partner_a.id,
+            'pricelist_id': pricelist_in_other_curr.id,
+            'order_line': [
+                Command.create({
+                    'name': product.name,
+                    'product_id': product.id,
+                    'product_uom_qty': 180,
+                    'product_uom_id': product.uom_id.id,
+                    'price_unit': 1.49,
+                    'tax_ids': [Command.set(tax.ids)],
+                })],
+        })
+
+        sale_order.action_confirm()
+
+        # Testing full quantity, should be equal to the price total on the sale order line
+        sale_order.picking_ids.move_ids.quantity = 180
+        self.assertEqual(sale_order.picking_ids.move_line_ids.sale_price, sale_order.order_line.price_total, "Price on delivery slip is not correct")
+
+        # Testing a partial quantity
+        sale_order.picking_ids.move_ids.quantity = 150
+        self.assertEqual(sale_order.picking_ids.move_line_ids.sale_price, 257.03, "Price on delivery slip is not correct")

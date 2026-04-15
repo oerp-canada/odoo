@@ -1,10 +1,10 @@
 <?xml version="1.0" ?>
 <odoo><data>
-    <!--Private profile-->
-    <template id="private_profile" inherit_id="website_profile.private_profile">
-        <xpath expr="//div[@id='private_profile_return_link_container']" position="inside">
+    <!--Access Denied - Profile Page-->
+    <template id="profile_access_denied" inherit_id="website_profile.profile_access_denied">
+        <xpath expr="//div[@id='profile_access_denied_return_link_container']" position="inside">
             <t t-if="request.params.get('channel_id')">
-                <p><a t-attf-href="/slides/course-#{request.params.get('channel_id')}">Return to the course.</a></p>
+                <p><a t-attf-href="/slides/course-#{request.params.get('channel_id')}" class="o_translate_inline">Return to the course.</a></p>
             </t>
         </xpath>
     </template>
@@ -14,19 +14,27 @@
             <t t-if="channel">
                 <div class="mb32">
                     <h5 class="border-bottom pb-1">Completed Courses</h5>
-                    <t t-if="courses_completed" t-call="website_slides.display_course">
-                        <t t-set="courses" t-value="courses_completed"></t>
-                    </t>
+                    <t t-if="courses_completed" t-call="website_slides.display_course" courses="courses_completed"/>
+                    <div t-elif="env.user == user" class="text-muted d-inline-block">
+                        Go through all its content to see a Course in this section. <br />
+                        <a href="/slides/" class="btn-link">
+                            <i class="fa fa-arrow-right"></i> Start Learning
+                        </a>
+                    </div>
                     <div t-else="" class="text-muted d-inline-block">No completed courses yet!</div>
-                    <div class="text-end d-inline-block pull-right">
-                        <a href="/slides/all" class="btn btn-link btn-sm"><i class="oi oi-arrow-right me-1"/>All Courses</a>
+                    <div t-if="env.user != user" class="text-end d-inline-block pull-right">
+                        <a href="/slides" class="btn btn-link btn-sm"><i class="oi oi-arrow-right me-1"/>All Courses</a>
                     </div>
                 </div>
                 <div class="mb32">
                     <h5 class="border-bottom pb-1">Ongoing Courses</h5>
-                    <t t-if="courses_ongoing" t-call="website_slides.display_course">
-                        <t t-set="courses" t-value="courses_ongoing"></t>
-                    </t>
+                    <t t-if="courses_ongoing" t-call="website_slides.display_course" courses="courses_ongoing"/>
+                     <p t-elif="env.user == user" class="text-muted">
+                        All the courses you attend will appear here. <br />
+                        <a href="/slides/" class="btn-link o_translate_inline">
+                            <i class="fa fa-arrow-right"></i> Start Learning
+                        </a>
+                    </p>
                     <p t-else="" class="text-muted">No ongoing courses yet!</p>
                 </div>
             </t>
@@ -43,9 +51,9 @@
                         <div class="p-2 w-100">
                             <h5 class="mt-0 mb-1" t-field="course.channel_id.name"/>
 
-                            <div class="overflow-hidden mb-1" style="height:24px">
+                            <div class="overflow-hidden mb-1" style="height:25px">
                                 <t t-foreach="course.channel_id.tag_ids.filtered(lambda tag: tag.color)" t-as="tag">
-                                    <a t-att-href="'/slides/all/tag/%s' % slug(tag)" t-attf-class="badge o_wslides_channel_tag post_link #{'o_tag_color_'+str(tag.color)}" t-esc="tag.name"/>
+                                    <a t-att-href="'/slides/tag/%s' % slug(tag)" onclick="event.stopPropagation()" t-attf-class="badge o_wslides_channel_tag post_link #{'o_color_'+str(tag.color)}" t-out="tag.name"/>
                                 </t>
                             </div>
 
@@ -53,7 +61,7 @@
                                 <div class="progress flex-grow-1" style="height:0.5em">
                                     <div class="progress-bar bg-primary" t-att-style="'width: '+ str(course.completion)+'%'"/>
                                 </div>
-                                <small class="fw-bold ps-2"><span t-esc="course.completion"/> %</small>
+                                <small class="fw-bold ps-2"><span t-out="course.completion"/> %</small>
                             </div>
                         </div>
                     </div>

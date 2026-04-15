@@ -1,25 +1,29 @@
-/** @odoo-module **/
-
+import { reactive, useLayoutEffect, useRef } from "@web/owl2/utils";
 import { useService } from "@web/core/utils/hooks";
 import { registry } from "@web/core/registry";
 import { throttleForAnimation } from "@web/core/utils/timing";
 import { BlockUI } from "./block_ui";
 import { browser } from "@web/core/browser/browser";
-import { getTabableElements } from "@web/core/utils/ui";
+import { getTabableElements, isFocusable } from "@web/core/utils/ui";
 import { getActiveHotkey } from "../hotkeys/hotkey_service";
 
-import { EventBus, reactive, useEffect, useRef } from "@odoo/owl";
+import { EventBus } from "@odoo/owl";
 
-export const SIZES = { XS: 0, VSM: 1, SM: 2, MD: 3, LG: 4, XL: 5, XXL: 6 };
+export const SIZES = { XS: 0, SM: 1, MD: 2, LG: 3, XL: 4, XXL: 5 };
+
+export function getFirstAndLastTabableElements(el) {
+    const tabableEls = getTabableElements(el);
+    return [tabableEls[0], tabableEls[tabableEls.length - 1]];
+}
 
 /**
  * This hook will set the UI active element
- * when the caller component will mount/unmount.
+ * when the caller component will mount/patch and
+ * only if the t-reffed element has some tabable elements
+ * or is itself focusable.
  *
  * The caller component could pass a `t-ref` value of its template
  * to delegate the UI active element to another element than itself.
- * In that case, it is mandatory that the referenced element is fixed and
- * not dynamically attached in/detached from the DOM (e.g. with t-if directive).
  *
  * @param {string} refName
  */
@@ -28,12 +32,21 @@ export function useActiveElement(refName) {
         throw new Error("refName not given to useActiveElement");
     }
     const uiService = useService("ui");
-    const owner = useRef(refName);
-
-    let lastTabableEl, firstTabableEl;
+    const ref = useRef(refName);
 
     function trapFocus(e) {
-        switch (getActiveHotkey(e)) {
+        const hotkey = getActiveHotkey(e);
+        if (!["tab", "shift+tab"].includes(hotkey)) {
+            return;
+        }
+        const el = e.currentTarget;
+        const [firstTabableEl, lastTabableEl] = getFirstAndLastTabableElements(el);
+        if (!firstTabableEl && !lastTabableEl) {
+            e.preventDefault();
+            e.stopPropagation();
+            return;
+        }
+        switch (hotkey) {
             case "tab":
                 if (document.activeElement === lastTabableEl) {
                     firstTabableEl.focus();
@@ -51,51 +64,65 @@ export function useActiveElement(refName) {
         }
     }
 
-    useEffect(
+    useLayoutEffect(
         (el) => {
             if (el) {
+                const [firstTabableEl] = getFirstAndLastTabableElements(el);
+                if (!firstTabableEl && !isFocusable(el)) {
+                    // no tabable elements: no need to trap focus nor become the UI active element
+                    return;
+                }
                 const oldActiveElement = document.activeElement;
                 uiService.activateElement(el);
-                const tabableEls = getTabableElements(el);
-                if (tabableEls.length === 0 && el.tabIndex < 0) {
-                    /**
-                     * It's possible that the active element is not a focusable element,
-                     * adding tabindex="-1" will allow the element to be focusable.
-                     * Note that, even if the default of tabIndex is -1, for the element to be
-                     * focusable it should be explicitly set.
-                     */
-                    el.tabIndex = -1;
-                }
-                firstTabableEl = tabableEls[0] || el;
-                lastTabableEl = tabableEls[tabableEls.length - 1] || el;
 
                 el.addEventListener("keydown", trapFocus);
 
-                if (!el.contains(document.activeElement)) {
-                    firstTabableEl.focus();
+                if (firstTabableEl) {
+                    if (!el.contains(document.activeElement)) {
+                        firstTabableEl.focus();
+                    }
+                } else if (el !== document.activeElement) {
+                    el.focus();
                 }
-                return () => {
+                return async () => {
+                    // Components are destroyed from top to bottom, meaning that this cleanup is
+                    // called before the ones of children. As a consequence, event handlers added on
+                    // the current active element in children aren't removed yet, and can thus be
+                    // executed if we deactivate that active element right away (e.g. the blur and
+                    // change events could be triggered). For that reason, we wait for a micro-tick.
+                    await Promise.resolve();
                     uiService.deactivateElement(el);
                     el.removeEventListener("keydown", trapFocus);
-                    if (el.contains(document.activeElement)) {
+
+                    /**
+                     * In some cases, the current active element is not
+                     * anymore in el (e.g. with ConfirmationDialog, the
+                     * confirm button is disabled when clicked, so the
+                     * focus is lost). In that case, we also want to restore
+                     * the focus to the previous active element so we
+                     * check if the current active element is the body
+                     */
+                    if (
+                        el.contains(document.activeElement) ||
+                        document.activeElement === document.body
+                    ) {
                         oldActiveElement.focus();
                     }
                 };
             }
         },
-        () => [owner.el]
+        () => [ref.el]
     );
 }
 
 // window size handling
 export const MEDIAS_BREAKPOINTS = [
-    { maxWidth: 474 },
-    { minWidth: 475, maxWidth: 575 },
+    { maxWidth: 575 },
     { minWidth: 576, maxWidth: 767 },
     { minWidth: 768, maxWidth: 991 },
     { minWidth: 992, maxWidth: 1199 },
-    { minWidth: 1200, maxWidth: 1533 },
-    { minWidth: 1534 },
+    { minWidth: 1200, maxWidth: 1399 },
+    { minWidth: 1400 },
 ];
 
 /**
@@ -128,17 +155,28 @@ export const utils = {
     },
 };
 
+const bus = new EventBus();
+
+export function listenSizeChange(callback) {
+    bus.addEventListener("resize", callback);
+    return () => bus.removeEventListener("resize", callback);
+}
+
 export const uiService = {
     start(env) {
         // block/unblock code
-        const bus = new EventBus();
         registry.category("main_components").add("BlockUI", { Component: BlockUI, props: { bus } });
 
         let blockCount = 0;
-        function block() {
+        function block(data) {
             blockCount++;
+            // TODO could probably be improved to handle multiple block demands
+            // but that have different messages and delays
             if (blockCount === 1) {
-                bus.trigger("BLOCK");
+                bus.trigger("BLOCK", {
+                    message: data?.message,
+                    delay: data?.delay,
+                });
             }
         }
         function unblock() {
@@ -172,6 +210,18 @@ export const uiService = {
                 }
             }
         }
+
+        const pointerQuery = window.matchMedia("(pointer: coarse)");
+
+        // Update the class on the body element when touch capability changes
+        const handlePointerChange = (event) => {
+            if (event.matches) {
+                document.body.classList.add("o_touch_device");
+            } else {
+                document.body.classList.remove("o_touch_device");
+            }
+        };
+        pointerQuery.addEventListener("change", handlePointerChange);
 
         const ui = reactive({
             bus,

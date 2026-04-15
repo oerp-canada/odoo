@@ -1,146 +1,83 @@
-/** @odoo-module **/
+// @ts-check
 
 import { _t } from "@web/core/l10n/translation";
-import { sprintf } from "@web/core/utils/strings";
 
 import * as spreadsheet from "@odoo/o-spreadsheet";
-const { arg, toString } = spreadsheet.helpers;
+
+const { arg, isMatrix, toJsDate, toString } = spreadsheet.helpers;
 const { functionRegistry } = spreadsheet.registries;
+
+/**
+ * @typedef {import("@spreadsheet").CustomFunctionDescription} CustomFunctionDescription
+ * @typedef {import("@odoo/o-spreadsheet").FPayload} FPayload
+ */
 
 //--------------------------------------------------------------------------
 // Spreadsheet functions
 //--------------------------------------------------------------------------
 
-function assertPivotsExists(pivotId, getters) {
-    if (!getters.isExistingPivot(pivotId)) {
-        throw new Error(sprintf(_t('There is no pivot with id "%s"'), pivotId));
-    }
-}
+// ODOO.FILTER.VALUE
 
-function assertMeasureExist(pivotId, measure, getters) {
-    const { measures } = getters.getPivotDefinition(pivotId);
-    if (!measures.includes(measure)) {
-        const validMeasures = `(${measures})`;
-        throw new Error(
-            sprintf(
-                _t("The argument %s is not a valid measure. Here are the measures: %s"),
-                measure,
-                validMeasures
-            )
-        );
-    }
-}
+const ODOO_FILTER_VALUE = /** @satisfies {CustomFunctionDescription} */ ({
+    description: _t("Return the current value of a spreadsheet filter."),
+    args: [arg("filter_name (string)", _t("The label of the filter whose value to return."))],
+    category: "Odoo",
+    /**
+     * @param {FPayload} filterName
+     */
+    compute: function (filterName) {
+        const unEscapedFilterName = toString(filterName).replaceAll('\\"', '"');
+        return this.getters.getFilterDisplayValue(unEscapedFilterName);
+    },
+});
 
-function assertDomainLength(domain) {
-    if (domain.length % 2 !== 0) {
-        throw new Error(_t("Function PIVOT takes an even number of arguments."));
-    }
-}
+// ODOO.FILTER.VALUE.V18
+
+const ODOO_FILTER_VALUE_V18 = /** @satisfies {CustomFunctionDescription} */ ({
+    description: _t("Compatibility version of ODOO.FILTER.VALUE for v18 spreadsheets. Required for date filters. Optional for others."),
+    args: [arg("filter_name (string)", _t("The label of the filter whose value to return."))],
+    category: "Odoo",
+    hidden: true,
+    compute: function (filterName) {
+        const filter = this.getters.getGlobalFilterByName(toString(filterName, this.locale));
+        const value = this["ODOO.FILTER.VALUE"](filterName);
+        if (filter?.type === "relation") {
+            const csvIds = toString(value[0][0])
+            if (!csvIds) {
+                return value;
+            }
+            const ids = csvIds.split(",").map((id) => parseInt(id, 10));
+            const result =  this.odooDataProvider.serverData.get(filter.modelName, "web_search_read", [
+                [["id", "in", ids]],
+                { display_name: {} },
+            ])
+            return result.records.map((record) => record.display_name).join(", ");
+        }
+        if (filter?.type !== "date" || !isMatrix(value)) {
+            return value;
+        }
+        const startValue = value[0][0];
+        const endValue = value[1][0];
+        if (!toString(startValue) && !toString(endValue)) {
+            return "";
+        }
+        const start = toJsDate(startValue, this.locale);
+        const end = toJsDate(endValue, this.locale);
+        const endOfMonth = toJsDate(this["MONTH.END"](endValue), this.locale);
+        if (start.getDate() !== 1 || end.getDate() !== endOfMonth.getDate()) {
+            return value;
+        } else if (start.getMonth() === end.getMonth()) {
+            return String(start.getMonth() + 1).padStart(2, "0") + "/" + start.getFullYear();
+        } else if (end.getMonth() - start.getMonth() === 2) {
+            const quarter = Math.floor(start.getMonth() / 3) + 1;
+            return "Q" + quarter + "/" + start.getFullYear();
+        } else if (start.getFullYear() === end.getFullYear()) {
+            return toString(start.getFullYear(), this.locale);
+        }
+        return value;
+    },
+});
 
 functionRegistry
-    .add("ODOO.FILTER.VALUE", {
-        description: _t("Return the current value of a spreadsheet filter."),
-        args: [arg("filter_name (string)", _t("The label of the filter whose value to return."))],
-        category: "Odoo",
-        compute: function (filterName) {
-            return this.getters.getFilterDisplayValue(filterName);
-        },
-        returns: ["STRING"],
-    })
-    .add("ODOO.PIVOT", {
-        description: _t("Get the value from a pivot."),
-        args: [
-            arg("pivot_id (string)", _t("ID of the pivot.")),
-            arg("measure_name (string)", _t("Name of the measure.")),
-            arg("domain_field_name (string,optional,repeating)", _t("Field name.")),
-            arg("domain_value (string,optional,repeating)", _t("Value.")),
-        ],
-        compute: function (pivotId, measureName, ...domain) {
-            pivotId = toString(pivotId);
-            const measure = toString(measureName);
-            const args = domain.map(toString);
-            assertPivotsExists(pivotId, this.getters);
-            assertMeasureExist(pivotId, measure, this.getters);
-            assertDomainLength(args);
-            return this.getters.getPivotCellValue(pivotId, measure, args);
-        },
-        category: "Odoo",
-        computeFormat: function (pivotId, measureName, ...domain) {
-            pivotId = toString(pivotId.value);
-            const measure = toString(measureName.value);
-            const field = this.getters.getPivotDataSource(pivotId).getReportMeasures()[measure];
-            if (!field) {
-                return undefined;
-            }
-            switch (field.type) {
-                case "integer":
-                    return "0";
-                case "float":
-                    return "#,##0.00";
-                case "monetary":
-                    return this.getters.getCompanyCurrencyFormat() || "#,##0.00";
-                default:
-                    return undefined;
-            }
-        },
-        returns: ["NUMBER", "STRING"],
-    })
-    .add("ODOO.PIVOT.HEADER", {
-        description: _t("Get the header of a pivot."),
-        args: [
-            arg("pivot_id (string)", _t("ID of the pivot.")),
-            arg("domain_field_name (string,optional,repeating)", _t("Field name.")),
-            arg("domain_value (string,optional,repeating)", _t("Value.")),
-        ],
-        category: "Odoo",
-        compute: function (pivotId, ...domain) {
-            pivotId = toString(pivotId);
-            const args = domain.map(toString);
-            assertPivotsExists(pivotId, this.getters);
-            assertDomainLength(args);
-            return this.getters.getDisplayedPivotHeaderValue(pivotId, args);
-        },
-        computeFormat: function (pivotId, ...domain) {
-            pivotId = toString(pivotId.value);
-            const pivot = this.getters.getPivotDataSource(pivotId);
-            const len = domain.length;
-            if (!len) {
-                return undefined;
-            }
-            const fieldName = toString(domain[len - 2].value);
-            const value = toString(domain[len - 1].value);
-            if (fieldName === "measure" || value === "false") {
-                return undefined;
-            }
-            const { aggregateOperator, field } = pivot.parseGroupField(fieldName);
-            switch (field.type) {
-                case "integer":
-                    return "0";
-                case "float":
-                case "monetary":
-                    return "#,##0.00";
-                case "date":
-                case "datetime":
-                    if (aggregateOperator === "day") {
-                        return this.locale.dateFormat;
-                    }
-                    return undefined;
-                default:
-                    return undefined;
-            }
-        },
-        returns: ["NUMBER", "STRING"],
-    })
-    .add("ODOO.PIVOT.POSITION", {
-        description: _t("Get the absolute ID of an element in the pivot"),
-        args: [
-            arg("pivot_id (string)", _t("ID of the pivot.")),
-            arg("field_name (string)", _t("Name of the field.")),
-            arg("position (number)", _t("Position in the pivot")),
-        ],
-        compute: function () {
-            throw new Error(_t(`[[FUNCTION_NAME]] cannot be called from the spreadsheet.`));
-        },
-        returns: ["STRING"],
-        hidden: true,
-    });
+    .add("ODOO.FILTER.VALUE", ODOO_FILTER_VALUE)
+    .add("ODOO.FILTER.VALUE.V18", ODOO_FILTER_VALUE_V18);

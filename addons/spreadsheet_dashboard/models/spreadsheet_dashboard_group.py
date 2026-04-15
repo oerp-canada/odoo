@@ -9,7 +9,16 @@ class SpreadsheetDashboardGroup(models.Model):
 
     name = fields.Char(required=True, translate=True)
     dashboard_ids = fields.One2many('spreadsheet.dashboard', 'dashboard_group_id')
+    published_dashboard_ids = fields.One2many('spreadsheet.dashboard', 'dashboard_group_id', domain=[('is_published', '=', True)])
     sequence = fields.Integer()
+
+    def copy_data(self, default=None):
+        default = dict(default or {})
+        vals_list = super().copy_data(default=default)
+        if 'name' not in default:
+            for group, vals in zip(self, vals_list):
+                vals['name'] = _("%s (copy)", group.name)
+        return vals_list
 
     @api.ondelete(at_uninstall=False)
     def _unlink_except_spreadsheet_data(self):

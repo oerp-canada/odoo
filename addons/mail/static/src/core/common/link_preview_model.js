@@ -1,10 +1,18 @@
-/* @odoo-module */
+import { fields, Record } from "@mail/model/export";
+import { convertToEmbedURL } from "@mail/utils/common/misc";
 
-export class LinkPreview {
+const VIDEO_EXTENSIONS = new Set(["mp4", "mov", "avi", "mkv", "webm", "mpeg", "mpg", "ogv", "3gp"]);
+
+export class LinkPreview extends Record {
+    static _name = "mail.link.preview";
+
     /** @type {number} */
     id;
-    /** @type {Object} */
-    message;
+    message_link_preview_ids = fields.Many("mail.message.link.preview", {
+        inverse: "link_preview_id",
+    });
+    /** @type {boolean} */
+    hasSquarishCardImage;
     /** @type {string} */
     image_mimetype;
     /** @type {string} */
@@ -18,14 +26,12 @@ export class LinkPreview {
     /** @type {string} */
     og_type;
     /** @type {string} */
+    og_site_name;
+    /** @type {string} */
     source_url;
 
-    /**
-     * @param {Object} data
-     * @returns {LinkPreview}
-     */
-    constructor(data) {
-        Object.assign(this, data);
+    get isGif() {
+        return [this.og_mimetype, this.image_mimetype].includes("image/gif");
     }
 
     get imageUrl() {
@@ -37,10 +43,29 @@ export class LinkPreview {
     }
 
     get isVideo() {
-        return Boolean(!this.isImage && this.og_type && this.og_type.startsWith("video"));
+        let fileExt;
+        if (this.og_title) {
+            fileExt = this.og_title.split(".").pop();
+        }
+        return (
+            VIDEO_EXTENSIONS.has(fileExt) ||
+            Boolean(!this.isImage && this.og_type && this.og_type.startsWith("video"))
+        );
     }
 
     get isCard() {
         return !this.isImage && !this.isVideo;
     }
+
+    get videoURL() {
+        const { url } = convertToEmbedURL(this.source_url);
+        return url;
+    }
+
+    get videoProvider() {
+        const { provider } = convertToEmbedURL(this.source_url);
+        return provider;
+    }
 }
+
+LinkPreview.register();

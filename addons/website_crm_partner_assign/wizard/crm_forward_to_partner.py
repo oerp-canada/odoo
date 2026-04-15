@@ -3,6 +3,9 @@
 
 from odoo import api, fields, models, _
 from odoo.exceptions import UserError
+from odoo.tools.translate import LazyTranslate
+
+_lt = LazyTranslate(__name__)
 
 
 class CrmLeadForwardToPartner(models.TransientModel):
@@ -67,7 +70,7 @@ class CrmLeadForwardToPartner(models.TransientModel):
                 if lead.partner_assigned_id and not lead.partner_assigned_id.email:
                     no_email.add(lead.partner_assigned_id.name)
             if no_email:
-                raise UserError(_('Set an email address for the partner(s): %s') % ", ".join(no_email))
+                raise UserError(_('Set an email address for the partner(s): %s', ", ".join(no_email)))
         if self.forward_type == 'single' and not self.partner_id.email:
             raise UserError(_('Set an email address for the partner %s', self.partner_id.name))
 
@@ -89,17 +92,23 @@ class CrmLeadForwardToPartner(models.TransientModel):
             in_portal = False
             if portal_group:
                 for contact in (partner.child_ids or partner).filtered(lambda contact: contact.user_ids):
-                    in_portal = portal_group.id in [g.id for g in contact.user_ids[0].groups_id]
+                    in_portal = portal_group.id in [g.id for g in contact.user_ids[0].all_group_ids]
 
             local_context['partner_id'] = partner_leads['partner']
             local_context['partner_leads'] = partner_leads['leads']
             local_context['partner_in_portal'] = in_portal
-            template.with_context(local_context).send_mail(self.id)
+            template.with_context(
+                local_context,
+                email_notification_force_header=True,
+                email_notification_force_footer=True,
+                email_notification_subtitles=[_lt("Your leads")],
+            ).send_mail_batch(self.ids, email_layout_xmlid='mail.mail_notification_layout')
             leads = self.env['crm.lead']
             for lead_data in partner_leads['leads']:
                 leads |= lead_data['lead_id']
             values = {'partner_assigned_id': partner_id, 'user_id': partner_leads['partner'].user_id.id}
             leads.with_context(mail_auto_subscribe_no_notify=1).write(values)
+            # TDE FIXME: check for assigned in suggested recipients (master-)
             self.env['crm.lead'].message_subscribe([partner_id])
         return True
 

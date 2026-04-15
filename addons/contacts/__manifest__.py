@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Part of Odoo. See LICENSE file for full copyright and licensing details.
 
 
@@ -19,6 +18,7 @@ You can track your vendors, customers and other contacts.
         'data/mail_demo.xml',
     ],
     'application': True,
+    'author': 'Odoo S.A.',
     'license': 'LGPL-3',
     'assets': {
         'web.assets_tests': [

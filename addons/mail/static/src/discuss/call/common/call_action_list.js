@@ -1,76 +1,83 @@
-/* @odoo-module */
-
-import { useRtc } from "@mail/discuss/call/common/rtc_hook";
-
-import { Component } from "@odoo/owl";
+import { onWillRender, useRef } from "@web/owl2/utils";
+import { Component, toRaw } from "@odoo/owl";
 
 import { isMobileOS } from "@web/core/browser/feature_detection";
+import { _t } from "@web/core/l10n/translation";
+import { useService } from "@web/core/utils/hooks";
+import { useCallActions } from "@mail/discuss/call/common/call_actions";
+import { usePopover } from "@web/core/popover/popover_hook";
+import { Tooltip } from "@web/core/tooltip/tooltip";
+import { ActionList } from "@mail/core/common/action_list";
+import { ACTION_TAGS } from "@mail/core/common/action";
 
 export class CallActionList extends Component {
-    static props = ["thread", "fullscreen", "compact?"];
+    static components = { ActionList };
+    static props = ["channel", "className?", "compact?", "pipExtraActions?"];
     static template = "discuss.CallActionList";
 
     setup() {
-        this.rtc = useRtc();
+        super.setup();
+        this.store = useService("mail.store");
+        this.rtc = useService("discuss.rtc");
+        this.pipService = useService("discuss.pip_service");
+        this.callActions = useCallActions(this.callActionsParams);
+        this.more = useRef("more");
+        this.root = useRef("root");
+        this.popover = usePopover(Tooltip, {
+            position: "top-middle",
+        });
+        onWillRender(() => {
+            const partition = toRaw(this.callActions).partition;
+            const other = partition.other.filter((a) => !a.tags.includes(ACTION_TAGS.CALL_LAYOUT));
+            const group2 = [];
+            for (const groupActions of partition.group) {
+                const filtered = groupActions.filter(
+                    (a) => !a.tags.includes(ACTION_TAGS.CALL_LAYOUT)
+                );
+                const sequenceGroup = filtered[0].sequenceGroup;
+                const hasPipActions = sequenceGroup === 200 && this.props.pipExtraActions;
+                const pipActions = hasPipActions ? toRaw(this.props.pipExtraActions) : [];
+                const maxQuickActions = pipActions.length > 0 ? 1 : 4;
+                const quickActions = filtered.slice(0, maxQuickActions);
+                const moreActions = [...pipActions, ...filtered.slice(maxQuickActions)];
+                const newGroup = moreActions?.length
+                    ? [
+                          ...quickActions,
+                          this.callActions.more(
+                              this.callActionsParams,
+                              {
+                                  actions: moreActions,
+                                  dropdownMenuClass: "m-0 mb-1 overflow-x-hidden",
+                                  dropdownPosition: "top-end",
+                                  name: this.MORE,
+                              },
+                              sequenceGroup
+                          ),
+                      ]
+                    : quickActions;
+                group2.push(newGroup);
+            }
+            this.actions = [...group2, other];
+        });
+    }
+
+    get callActionsParams() {
+        return { channel: () => this.props.channel };
+    }
+
+    get MORE() {
+        return _t("More");
     }
 
     get isOfActiveCall() {
-        return Boolean(this.props.thread.id === this.rtc.state?.channel?.id);
+        return Boolean(this.props.channel.eq(this.rtc.channel));
     }
 
     get isSmall() {
-        return Boolean(this.props.compact && !this.props.fullscreen.isActive);
+        return Boolean(this.props.compact && this.rtc.isFullscreen);
     }
 
     get isMobileOS() {
         return isMobileOS();
-    }
-
-    /**
-     * @param {MouseEvent} ev
-     */
-    async onClickDeafen(ev) {
-        if (this.rtc.state.selfSession.isDeaf) {
-            this.rtc.undeafen();
-        } else {
-            this.rtc.deafen();
-        }
-    }
-
-    async onClickRaiseHand(ev) {
-        this.rtc.raiseHand(!this.rtc.state.selfSession.raisingHand);
-    }
-
-    /**
-     * @param {MouseEvent} ev
-     */
-    onClickMicrophone(ev) {
-        if (this.rtc.state.selfSession.isMute) {
-            if (this.rtc.state.selfSession.isSelfMuted) {
-                this.rtc.unmute();
-            }
-            if (this.rtc.state.selfSession.isDeaf) {
-                this.rtc.undeafen();
-            }
-        } else {
-            this.rtc.mute();
-        }
-    }
-
-    /**
-     * @param {MouseEvent} ev
-     */
-    async onClickRejectCall(ev) {
-        if (this.rtc.state.hasPendingRequest) {
-            return;
-        }
-        await this.rtc.leaveCall(this.props.thread);
-    }
-
-    /**
-     * @param {MouseEvent} ev
-     */
-    async onClickToggleAudioCall(ev) {
-        await this.rtc.toggleCall(this.props.thread);
     }
 }

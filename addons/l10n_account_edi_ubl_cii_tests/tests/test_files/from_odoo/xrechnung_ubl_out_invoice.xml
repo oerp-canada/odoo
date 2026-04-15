@@ -1,6 +1,6 @@
 <?xml version='1.0' encoding='UTF-8'?>
 <Invoice xmlns:cac="urn:oasis:names:specification:ubl:schema:xsd:CommonAggregateComponents-2" xmlns:cbc="urn:oasis:names:specification:ubl:schema:xsd:CommonBasicComponents-2" xmlns="urn:oasis:names:specification:ubl:schema:xsd:Invoice-2">
-  <cbc:CustomizationID>urn:cen.eu:en16931:2017#compliant#urn:xoev-de:kosit:standard:xrechnung_2.2#conformant#urn:xoev-de:kosit:extension:xrechnung_2.2</cbc:CustomizationID>
+  <cbc:CustomizationID>urn:cen.eu:en16931:2017#compliant#urn:xeinkauf.de:kosit:xrechnung_3.0</cbc:CustomizationID>
   <cbc:ProfileID>urn:fdc:peppol.eu:2017:poacc:billing:01:1.0</cbc:ProfileID>
   <cbc:ID>INV/2017/01/0002</cbc:ID>
   <cbc:IssueDate>2017-01-01</cbc:IssueDate>
@@ -8,19 +8,22 @@
   <cbc:InvoiceTypeCode>380</cbc:InvoiceTypeCode>
   <cbc:Note>test narration</cbc:Note>
   <cbc:DocumentCurrencyCode>USD</cbc:DocumentCurrencyCode>
-  <cbc:BuyerReference>ref_partner_2</cbc:BuyerReference>
+  <cbc:BuyerReference>123456789</cbc:BuyerReference>
   <cac:OrderReference>
     <cbc:ID>ref_move</cbc:ID>
   </cac:OrderReference>
   <cac:AdditionalDocumentReference>
     <cbc:ID>___ignore___</cbc:ID>
-    <cbc:Attachment>
+    <cac:Attachment>
       <cbc:EmbeddedDocumentBinaryObject>___ignore___</cbc:EmbeddedDocumentBinaryObject>
-   </cbc:Attachment>
+   </cac:Attachment>
   </cac:AdditionalDocumentReference>
   <cac:AccountingSupplierParty>
     <cac:Party>
       <cbc:EndpointID schemeID="9930">DE257486969</cbc:EndpointID>
+      <cac:PartyIdentification>
+        <cbc:ID>ref_partner_1</cbc:ID>
+      </cac:PartyIdentification>
       <cac:PartyName>
         <cbc:Name>partner_1</cbc:Name>
       </cac:PartyName>
@@ -51,7 +54,10 @@
   </cac:AccountingSupplierParty>
   <cac:AccountingCustomerParty>
     <cac:Party>
-      <cbc:EndpointID schemeID="9930">DE186775212</cbc:EndpointID>
+      <cbc:EndpointID schemeID="0204">123456789</cbc:EndpointID>
+      <cac:PartyIdentification>
+        <cbc:ID>ref_partner_2</cbc:ID>
+      </cac:PartyIdentification>
       <cac:PartyName>
         <cbc:Name>partner_2</cbc:Name>
       </cac:PartyName>
@@ -79,6 +85,7 @@
     </cac:Party>
   </cac:AccountingCustomerParty>
   <cac:Delivery>
+    <cbc:ActualDeliveryDate>2017-01-01</cbc:ActualDeliveryDate>
     <cac:DeliveryLocation>
       <cac:Address>
         <cbc:StreetName>Europa-Park-Straße 2</cbc:StreetName>
@@ -89,6 +96,11 @@
         </cac:Country>
       </cac:Address>
     </cac:DeliveryLocation>
+    <cac:DeliveryParty>
+      <cac:PartyName>
+        <cbc:Name>partner_2</cbc:Name>
+      </cac:PartyName>
+    </cac:DeliveryParty>
   </cac:Delivery>
   <cac:PaymentMeans>
     <cbc:PaymentMeansCode name="credit transfer">30</cbc:PaymentMeansCode>
@@ -98,7 +110,7 @@
     </cac:PayeeFinancialAccount>
   </cac:PaymentMeans>
   <cac:PaymentTerms>
-    <cbc:Note>30% Advance End of Following Month</cbc:Note>
+    <cbc:Note>Payment terms: 30% Advance End of Following Month</cbc:Note>
   </cac:PaymentTerms>
   <cac:TaxTotal>
     <cbc:TaxAmount currencyID="USD">401.58</cbc:TaxAmount>
@@ -153,7 +165,7 @@
       </cac:ClassifiedTaxCategory>
     </cac:Item>
     <cac:Price>
-      <cbc:PriceAmount currencyID="USD">990.00</cbc:PriceAmount>
+      <cbc:PriceAmount currencyID="USD">990.0</cbc:PriceAmount>
     </cac:Price>
   </cac:InvoiceLine>
   <cac:InvoiceLine>
@@ -172,7 +184,7 @@
       </cac:ClassifiedTaxCategory>
     </cac:Item>
     <cac:Price>
-      <cbc:PriceAmount currencyID="USD">100.00</cbc:PriceAmount>
+      <cbc:PriceAmount currencyID="USD">100.0</cbc:PriceAmount>
     </cac:Price>
   </cac:InvoiceLine>
   <cac:InvoiceLine>
@@ -191,7 +203,7 @@
       </cac:ClassifiedTaxCategory>
     </cac:Item>
     <cac:Price>
-      <cbc:PriceAmount currencyID="USD">100.00</cbc:PriceAmount>
+      <cbc:PriceAmount currencyID="USD">100.0</cbc:PriceAmount>
     </cac:Price>
   </cac:InvoiceLine>
 </Invoice>

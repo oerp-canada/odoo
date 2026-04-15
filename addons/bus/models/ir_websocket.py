@@ -1,6 +1,9 @@
+# Part of Odoo. See LICENSE file for full copyright and licensing details.
+
 from odoo import models
-from odoo.http import request, SessionExpiredException
-from odoo.service import security
+from odoo.http import request
+from odoo.http.session import check
+from odoo.tools.misc import OrderedSet
 from ..models.bus import dispatch
 from ..websocket import wsrequest
 
@@ -8,15 +11,6 @@ from ..websocket import wsrequest
 class IrWebsocket(models.AbstractModel):
     _name = 'ir.websocket'
     _description = 'websocket message handling'
-
-    def _get_im_status(self, im_status_ids_by_model):
-        im_status = {}
-        if 'res.partner' in im_status_ids_by_model:
-            im_status['Partner'] = self.env['res.partner'].with_context(active_test=False).search_read(
-                [('id', 'in', im_status_ids_by_model['res.partner'])],
-                ['im_status']
-            )
-        return im_status
 
     def _build_bus_channel_list(self, channels):
         """
@@ -28,36 +22,61 @@ class IrWebsocket(models.AbstractModel):
         """
         req = request or wsrequest
         channels.append('broadcast')
+        channels.extend(self.env.user.all_group_ids)
         if req.session.uid:
             channels.append(self.env.user.partner_id)
+            channels.append(self.env.user)
         return channels
 
-    def _subscribe(self, data):
-        if not all(isinstance(c, str) for c in data['channels']):
-            raise ValueError("bus.Bus only string channels are allowed.")
-        last_known_notification_id = self.env['bus.bus'].sudo().search([], limit=1, order='id desc').id or 0
-        if data['last'] > last_known_notification_id:
-            data['last'] = 0
-        channels = set(self._build_bus_channel_list(data['channels']))
-        dispatch.subscribe(channels, data['last'], self.env.registry.db_name, wsrequest.ws)
+    def _serve_ir_websocket(self, event_name, data):
+        """Process websocket events.
+        Modules can override this method to handle their own events. But overriding this method is
+        not recommended and should be carefully considered, because at the time of writing this
+        message, Odoo.sh does not use this method. Each new event should have a corresponding http
+        route and Odoo.sh infrastructure should be updated to reflect it. On top of that, the
+        event processing is very time, ressource and error sensitive."""
 
-    def _update_bus_presence(self, inactivity_period, im_status_ids_by_model):
-        if self.env.user and not self.env.user._is_public():
-            self.env['bus.presence'].update_presence(
-                inactivity_period,
-                identity_field='user_id',
-                identity_value=self.env.uid
-            )
-            im_status_notification = self._get_im_status(im_status_ids_by_model)
-            if im_status_notification:
-                self.env['bus.bus']._sendone(self.env.user.partner_id, 'mail.record/insert', im_status_notification)
+    def _prepare_subscribe_data(self, channels, last):
+        """
+        Parse the data sent by the client and return the list of channels
+        and the last known notification id. This will be used both by the
+        websocket controller and the websocket request class when the
+        `subscribe` event is received.
+
+        :param typing.List[str] channels: List of channels to subscribe to sent
+            by the client.
+        :param int last: Last known notification sent by the client.
+
+        :return:
+            A dict containing the following keys:
+            - channels (set of str): The list of channels to subscribe to.
+            - last (int): The last known notification id.
+
+        :raise ValueError: If the list of channels is not a list of strings.
+        """
+        if not all(isinstance(c, str) for c in channels):
+            raise ValueError("bus.Bus only string channels are allowed.")
+        # sudo - bus.bus: reading non-sensitive last bus id.
+        last = 0 if last > self.env["bus.bus"].sudo()._bus_last_id() else last
+        return {"channels": OrderedSet(self._build_bus_channel_list(list(channels))), "last": last}
+
+    def _after_subscribe_data(self, data):
+        """Function invoked after subscribe data have been processed.
+        Modules can override this method to add custom behavior."""
+
+    def _subscribe(self, og_data):
+        data = self._prepare_subscribe_data(og_data["channels"], og_data["last"])
+        dispatch.subscribe(data["channels"], data["last"], self.env.registry.db_name, wsrequest.ws)
+        self._after_subscribe_data(data)
+
+    def _on_websocket_closed(self, cookies):
+        """Function invoked upon WebSocket termination.
+        Modules can override this method to add custom behavior."""
 
     @classmethod
     def _authenticate(cls):
         if wsrequest.session.uid is not None:
-            if not security.check_session(wsrequest.session, wsrequest.env):
-                wsrequest.session.logout(keep_db=True)
-                raise SessionExpiredException()
+            check(wsrequest.session, wsrequest)
         else:
             public_user = wsrequest.env.ref('base.public_user')
             wsrequest.update_env(user=public_user.id)

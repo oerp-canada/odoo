@@ -2,7 +2,6 @@
 # Part of Odoo. See LICENSE file for full copyright and licensing details.
 
 from odoo import models, _
-from odoo.addons.http_routing.models.ir_http import url_for
 
 
 class Website(models.Model):
@@ -10,7 +9,7 @@ class Website(models.Model):
 
     def get_suggested_controllers(self):
         suggested_controllers = super(Website, self).get_suggested_controllers()
-        suggested_controllers.append((_('Blog'), url_for('/blog'), 'website_blog'))
+        suggested_controllers.append((_('Blog'), self.env['ir.http']._url_for('/blog'), 'website_blog'))
         return suggested_controllers
 
     def configurator_set_menu_links(self, menu_company, module_data):
@@ -36,8 +35,6 @@ class Website(models.Model):
 
     def _search_get_details(self, search_type, order, options):
         result = super()._search_get_details(search_type, order, options)
-        if search_type in ['blogs', 'blogs_only', 'all']:
-            result.append(self.env['blog.blog']._search_get_detail(self, order, options))
-        if search_type in ['blogs', 'blog_posts_only', 'all']:
+        if search_type in ['blogs', 'blog_post', 'all']:
             result.append(self.env['blog.post']._search_get_detail(self, order, options))
         return result

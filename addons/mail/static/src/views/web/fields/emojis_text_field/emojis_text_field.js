@@ -1,27 +1,20 @@
-/* @odoo-module */
-
-import MailEmojisMixin from "@mail/js/emojis_mixin";
 import { EmojisFieldCommon } from "@mail/views/web/fields/emojis_field_common/emojis_field_common";
 
 import { registry } from "@web/core/registry";
-import { patch } from "@web/core/utils/patch";
 import { TextField, textField } from "@web/views/fields/text/text_field";
 
 /**
  * Extension of the FieldText that will add emojis support
  */
-export class EmojisTextField extends TextField {
+export class EmojisTextField extends EmojisFieldCommon(TextField) {
+    static template = "mail.EmojisTextField";
+    static components = { ...TextField.components };
     setup() {
         super.setup();
         this.targetEditElement = this.textareaRef;
         this._setupOverride();
     }
 }
-
-patch(EmojisTextField.prototype, "emojis_char_field_mail_mixin", MailEmojisMixin);
-patch(EmojisTextField.prototype, "emojis_text_field_field_mixin", EmojisFieldCommon);
-EmojisTextField.template = "mail.EmojisTextField";
-EmojisTextField.components = { ...TextField.components };
 
 export const emojisTextField = {
     ...textField,

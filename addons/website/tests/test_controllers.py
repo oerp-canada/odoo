@@ -1,12 +1,17 @@
-# -*- coding: utf-8 -*-
 # Part of Odoo. See LICENSE file for full copyright and licensing details.
 
 import json
+from urllib.parse import parse_qs
 
+from urllib3.util import parse_url
+from werkzeug.test import EnvironBuilder
 from werkzeug.urls import url_encode
 
 from odoo import tests
-from odoo.tools import mute_logger, submap
+from odoo.tests.common import MockHTTPClient
+from odoo.tools.misc import mute_logger, submap
+from odoo.addons.website.controllers.main import Website
+from odoo.addons.http_routing.tests.common import MockRequest
 
 
 @tests.tagged('post_install', '-at_install')
@@ -17,7 +22,7 @@ class TestControllers(tests.HttpCase):
         self.authenticate("admin", "admin")
         Page = self.env['website.page']
         last_5_url_edited = []
-        base_url = self.env['ir.config_parameter'].sudo().get_param('web.base.url')
+        base_url = self.env['ir.config_parameter'].sudo().get_str('web.base.url')
         suggested_links_url = base_url + '/website/get_suggested_links'
 
         old_pages = Page
@@ -37,11 +42,11 @@ class TestControllers(tests.HttpCase):
             else:
                 last_5_url_edited.append(new_page.url)
 
-        self.opener.post(url=suggested_links_url, json={'params': {'needle': '/'}})
+        self.url_open(url=suggested_links_url, json={'params': {'needle': '/', 'limit': 10}})
         # mark as old
         old_pages._write({'write_date': '2020-01-01'})
 
-        res = self.opener.post(url=suggested_links_url, json={'params': {'needle': '/'}})
+        res = self.url_open(url=suggested_links_url, json={'params': {'needle': '/', 'limit': 10}})
         resp = json.loads(res.content)
         assert 'result' in resp
         suggested_links = resp['result']
@@ -52,7 +57,6 @@ class TestControllers(tests.HttpCase):
         self.assertEqual(set(last_modified_values), set(last_5_url_edited) - matching_pages)
 
     def test_02_client_action_iframe_url(self):
-        base_url = self.base_url()
         urls = [
             '/',  # Homepage URL (special case)
             '/contactus',  # Regular website.page URL
@@ -61,19 +65,19 @@ class TestControllers(tests.HttpCase):
         ]
         for url in urls:
             resp = self.url_open(f'/@{url}')
-            self.assertEqual(resp.url, base_url + url, "Public user should have landed in the frontend")
+            self.assertURLEqual(resp.url, url, "Public user should have landed in the frontend")
         self.authenticate("admin", "admin")
         for url in urls:
             resp = self.url_open(f'/@{url}')
-            backend_params = url_encode(dict(action='website.website_preview', path=url))
-            self.assertEqual(
-                resp.url, f'{base_url}/web#{backend_params}',
+            backend_params = url_encode(dict(path=url))
+            self.assertURLEqual(
+                resp.url, f'/odoo/action-website.website_preview?{backend_params}',
                 "Internal user should have landed in the backend")
 
     def test_03_website_image(self):
         attachment = self.env['ir.attachment'].create({
             'name': 'one_pixel.png',
-            'datas': 'iVBORw0KGgoAAAANSUhEUgAAAAYAAAAGCAYAAADgzO9IAAAAJElEQVQI'
+            'raw': 'iVBORw0KGgoAAAANSUhEUgAAAAYAAAAGCAYAAADgzO9IAAAAJElEQVQI'
                      'mWP4/b/qPzbM8Pt/1X8GBgaEAJTNgFcHXqOQMV4dAMmObXXo1/BqAAAA'
                      'AElFTkSuQmCC',
             'public': True,
@@ -89,7 +93,7 @@ class TestControllers(tests.HttpCase):
             'Cache-Control': 'public, max-age=31536000, immutable',
         }
         self.assertEqual(submap(res.headers, headers.keys()), headers)
-        self.assertEqual(res.content, attachment.raw)
+        self.assertEqual(res.content, attachment.raw.content)
 
     def test_04_website_partner_avatar(self):
         partner = self.env['res.partner'].create({'name': "Jack O'Neill"})
@@ -103,3 +107,136 @@ class TestControllers(tests.HttpCase):
             partner.website_published = True
             res = self.url_open(f'/website/image/res.partner/{partner.id}/avatar_128?download=1')
             self.assertEqual(res.status_code, 200, "Public user should access avatar of published partners")
+
+        with self.subTest(published=True):
+            partner.website_published = True
+            self.patch(self.env.registry[partner._name].avatar_128, 'groups', 'base.group_system')
+            res = self.url_open(f'/website/image/res.partner/{partner.id}/avatar_128?download=1')
+            self.assertEqual(
+                res.status_code,
+                404,
+                "Public user shouldn't access record fields with a `groups` even if published"
+            )
+
+    def test_05_seo_suggest_language_regex(self):
+        """
+        Test the seo_suggest method to verify it properly handles different
+        language inputs, sends correct parameters ('hl' for host language and
+        'gl' for geolocation) to the Google API, and returns the expected
+        suggestions. The test checks a variety of cases including:
+        - Regional language codes (e.g., 'en_US', 'fr_FR')
+        - Basic language codes (e.g., 'es', 'sr')
+        - Language codes with script modifier (e.g., 'sr_RS@latin',
+          'zh_CN@pinyin')
+        - Empty string input to handle default case
+        """
+        mock_get = MockHTTPClient(
+            method='GET',
+            return_body='''<?xml version="1.0"?>
+                <toplevel>
+                    <CompleteSuggestion>
+                        <suggestion data="test suggestion"/>
+                    </CompleteSuggestion>
+                </toplevel>'''
+        )
+        # Test cases with different language inputs and expected hl and gl
+        # values.
+        test_cases = [
+            ('en_US', ['en', 'US']),         # US English
+            ('fr_FR', ['fr', 'FR']),         # French in France
+            ('es', ['es', '']),              # Spanish without country code
+            ('sr_RS@latin', ['sr', 'RS']),   # Serbian with script in Serbia
+            ('zh_CN@pinyin', ['zh', 'CN']),  # Chinese with pinyin script in China
+            ('sr@latin', ['sr', '']),        # Serbian with script but no country
+            ('', ['en', 'US'])               # Default case (empty lang. input)
+        ]
+
+        for lang_input, expected_output in test_cases:
+            # subTest creates an isolated context for each test case, allowing
+            # failures to be reported separately.
+            with self.subTest(lang=lang_input), mock_get:
+                result = Website.seo_suggest(self, keywords="test", lang=lang_input)
+
+                # Extract the parameters that were passed in the mock
+                qs = parse_qs(parse_url(mock_get.calls[0].url).query)
+
+                # Verify that the 'hl' parameter (host language) matches the
+                # expected output
+                self.assertEqual(qs['hl'], [expected_output[0]])
+
+                # Verify that the 'gl' parameter (geolocation) matches the
+                # expected output
+                self.assertEqual(qs.get('gl', ['']), [expected_output[1]])
+
+                # Verify that the returned result contains the expected
+                # suggestion "test suggestion"
+                self.assertIn('test suggestion', result)
+
+    def test_06_website_action(self):
+        """
+        Test the website action controller to ensure it correctly handles
+        different action types and returns the expected results.
+        """
+        self.authenticate("admin", "admin")
+        self.env['ir.actions.server'].create({
+            'name': 'Test Action',
+            'website_published': True,
+            'website_path': 'my_test_action',
+            'model_id': self.ref('base.model_res_partner'),
+            'code': """response = request.make_response("{'message': 'Succeeded'}")""",
+            'state': 'code',
+            'type': 'ir.actions.server',
+        })
+
+        # Test that the action response is correctly returned when accessed
+        res = self.url_open('/website/action/my_test_action')
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.text, "{'message': 'Succeeded'}")
+
+    def test_07_get_alt_images(self):
+        test_view = self.env["ir.ui.view"].create({
+            "name": "Image Template Test View",
+            "type": "qweb",
+            "arch_db": """
+                <template>
+                    <div>
+                        <img t-att-src="dynamic_source1" />
+                        <img t-att-src="dynamic_source2" alt="Dynamic img" />
+                        <img t-attf-src="/path/{{variable}}" />
+                        <img src="/static/image1.jpg" alt="Static 1" />
+                        <img src="/static/image2.jpg" alt="Static 2" role="presentation" />
+                        <img src="/static/image3.png" />
+                        <img src="/static/image4.png" role="presentation" />
+                    </div>
+                </template>
+            """,
+        })
+        models = [{"model": "ir.ui.view", "id": test_view.id, "field": "arch"}]
+
+        with MockRequest(self.env, website=self.env.ref('website.default_website')):
+            result = Website().get_alt_images(models)
+            parsed_result = json.loads(result)
+
+            expected_srcs = ["/static/image1.jpg", "/static/image3.png", "/static/image4.png"]
+            actual_srcs = [img["src"] for img in parsed_result]
+
+            self.assertEqual(
+                expected_srcs,
+                actual_srcs,
+                "XPath should filter out dynamic images, include only static",
+            )
+
+    def test_website_force_domain_redirect(self):
+        """
+        Test that /website/force/{website.id} redirects domain correctly
+        """
+        self.env.user.group_ids += self.env.ref('website.group_multi_website')
+        website = self.env['website'].search([], limit=1)
+        website.domain = self.base_url()
+        with MockRequest(self.env, website=website, url_root='http://example.com') as mock_request:
+            mock_request.httprequest.environ = EnvironBuilder(base_url='http://example.com').get_environ()
+            redirect = Website().website_force(website_id=website.id, path='/?a=b&c=d')
+            self.assertEqual(
+                redirect.headers['Location'],
+                f'{self.base_url()}/website/force/{website.id}?isredir=1&path=%2F%3Fa%3Db%26c%3Dd'
+            )

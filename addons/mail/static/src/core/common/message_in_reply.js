@@ -1,34 +1,32 @@
-/* @odoo-module */
-
-import { useMessaging, useStore } from "@mail/core/common/messaging_hook";
-
 import { Component } from "@odoo/owl";
 
 import { useService } from "@web/core/utils/hooks";
 import { url } from "@web/core/utils/urls";
 
 export class MessageInReply extends Component {
-    static props = ["message", "alignedRight", "onClick?"];
+    static props = ["class?", "message", "onClick?"];
+    static defaultProps = { class: "" };
     static template = "mail.MessageInReply";
 
     setup() {
-        this.messaging = useMessaging();
-        this.store = useStore();
-        this.user = useService("user");
-        /** @type {import("@mail/core/common/thread_service").ThreadService} */
-        this.threadService = useService("mail.thread");
+        super.setup();
+        this.store = useService("mail.store");
     }
 
     get authorAvatarUrl() {
         if (
-            this.message.type === "email" &&
-            !["partner", "guest"].includes(this.props.message.author.type)
+            this.props.message.message_type &&
+            this.props.message.message_type.includes("email") &&
+            !this.props.message.author_id &&
+            !this.props.message.author_guest_id
         ) {
             return url("/mail/static/src/img/email_icon.png");
         }
-        return this.threadService.avatarUrl(
-            this.message.parentMessage.author,
-            this.props.message.parentMessage.originThread
-        );
+
+        if (this.props.message.parent_id.author) {
+            return this.props.message.parent_id.author.avatarUrl;
+        }
+
+        return this.store.DEFAULT_AVATAR;
     }
 }

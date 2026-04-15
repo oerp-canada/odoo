@@ -1,32 +1,21 @@
-# -*- coding: utf-8 -*-
-# Part of Odoo. See LICENSE file for full copyright and licensing details.
+import markupsafe
 
-from collections import defaultdict
-
-from odoo import _, models
-from odoo.exceptions import UserError
+from odoo import models
 
 
-class ReportProductLabel(models.AbstractModel):
-    _name = 'report.stock.label_product_product_view'
-    _description = 'Product Label Report'
+class ReportStockLabel_Lot_Template_View(models.AbstractModel):
+    _name = 'report.stock.label_lot_template_view'
+    _description = 'Lot Label Report'
 
     def _get_report_values(self, docids, data):
-        if data.get('active_model') == 'product.template':
-            Product = self.env['product.template']
-        elif data.get('active_model') == 'product.product':
-            Product = self.env['product.product']
-        else:
-            raise UserError(_('Product model not defined, Please contact your administrator.'))
-
-        quantity_by_product = defaultdict(list)
-        for p, q in data.get('quantity_by_product').items():
-            product = Product.browse(int(p))
-            quantity_by_product[product].append((product.barcode, q))
-        if data.get('custom_barcodes'):
-            # we expect custom barcodes to be: {product: [(barcode, qty_of_barcode)]}
-            for product, barcodes_qtys in data.get('custom_barcodes').items():
-                quantity_by_product[Product.browse(int(product))] += (barcodes_qtys)
-        data['quantity'] = quantity_by_product
-
-        return data
+        lots = self.env['stock.lot'].browse(docids)
+        lot_list = []
+        for lot in lots:
+            lot_list.append({
+                'display_name_markup': markupsafe.Markup(lot.product_id.display_name),
+                'name': markupsafe.Markup(lot.name),
+                'lot_record': lot
+            })
+        return {
+            'docs': lot_list,
+        }

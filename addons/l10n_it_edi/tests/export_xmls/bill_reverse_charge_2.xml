@@ -9,7 +9,7 @@
                 <IdPaese>IT</IdPaese>
                 <IdCodice>01234560157</IdCodice>
             </IdTrasmittente>
-            <ProgressivoInvio>2022030001</ProgressivoInvio>
+            <ProgressivoInvio>2022040001</ProgressivoInvio>
             <FormatoTrasmissione>FPR12</FormatoTrasmissione>
             <CodiceDestinatario>0803HR0</CodiceDestinatario>
             <ContattiTrasmittente>
@@ -59,8 +59,8 @@
             <DatiGeneraliDocumento>
                 <TipoDocumento>TD19</TipoDocumento>
                 <Divisa>EUR</Divisa>
-                <Data>2022-03-24</Data>
-                <Numero>BILL/2022/03/0001</Numero>
+                <Data>2022-04-01</Data>
+                <Numero>BILL/2022/04/0001</Numero>
                 <ImportoTotaleDocumento>1808.91</ImportoTotaleDocumento>
             </DatiGeneraliDocumento>
         </DatiGenerali>
@@ -69,16 +69,16 @@
                 <NumeroLinea>1</NumeroLinea>
                 <Descrizione>Product A</Descrizione>
                 <Quantita>1.00</Quantita>
-                <PrezzoUnitario>800.400000</PrezzoUnitario>
-                <PrezzoTotale>800.40</PrezzoTotale>
+                <PrezzoUnitario>800.40000000</PrezzoUnitario>
+                <PrezzoTotale>800.40000000</PrezzoTotale>
                 <AliquotaIVA>22.00</AliquotaIVA>
             </DettaglioLinee>
             <DettaglioLinee>
                 <NumeroLinea>2</NumeroLinea>
                 <Descrizione>Product B, taxed 4% Already in Italy</Descrizione>
                 <Quantita>1.00</Quantita>
-                <PrezzoUnitario>800.400000</PrezzoUnitario>
-                <PrezzoTotale>800.40</PrezzoTotale>
+                <PrezzoUnitario>800.40000000</PrezzoUnitario>
+                <PrezzoTotale>800.40000000</PrezzoTotale>
                 <AliquotaIVA>4.00</AliquotaIVA>
             </DettaglioLinee>
             <DatiRiepilogo>
@@ -100,12 +100,9 @@
                 <ModalitaPagamento>MP05</ModalitaPagamento>
                 <DataScadenzaPagamento>2022-03-24</DataScadenzaPagamento>
                 <ImportoPagamento>1600.80</ImportoPagamento>
+                <IstitutoFinanziario>BIG BANK</IstitutoFinanziario>
+                <BIC>BIGGBANQ</BIC>
             </DettaglioPagamento>
         </DatiPagamento>
-        <Allegati>
-            <NomeAttachment>BILL2022030001.pdf</NomeAttachment>
-            <FormatoAttachment>PDF</FormatoAttachment>
-            <Attachment>___ignore___</Attachment>
-        </Allegati>
     </FatturaElettronicaBody>
 </p:FatturaElettronica>

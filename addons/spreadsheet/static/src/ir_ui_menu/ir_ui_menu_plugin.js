@@ -1,8 +1,7 @@
-/** @odoo-module */
-import * as spreadsheet from "@odoo/o-spreadsheet";
-const { CorePlugin } = spreadsheet;
+import { OdooCorePlugin } from "@spreadsheet/plugins";
 
-export default class IrMenuPlugin extends CorePlugin {
+export class IrMenuPlugin extends OdooCorePlugin {
+    static getters = /** @type {const} */ (["getIrMenu"]);
     constructor(config) {
         super(config);
         this.env = config.custom.env;
@@ -21,4 +20,3 @@ export default class IrMenuPlugin extends CorePlugin {
         return menu;
     }
 }
-IrMenuPlugin.getters = ["getIrMenu"];

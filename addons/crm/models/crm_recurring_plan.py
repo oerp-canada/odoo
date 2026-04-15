@@ -4,9 +4,10 @@
 from odoo import fields, models
 
 
-class RecurringPlan(models.Model):
-    _name = "crm.recurring.plan"
-    _description = "CRM Recurring revenue plans"
+class CrmRecurringPlan(models.Model):
+    _name = 'crm.recurring.plan'
+    _description = "CRM Recurring Revenue Plan"
+    _explanation = "Defines billing intervals for recurring revenues (e.g., Monthly, Yearly). Applied to leads/opportunities to estimate future subscription income."
     _order = "sequence"
 
     name = fields.Char('Plan Name', required=True, translate=True)
@@ -14,6 +15,7 @@ class RecurringPlan(models.Model):
     active = fields.Boolean('Active', default=True)
     sequence = fields.Integer('Sequence', default=10)
 
-    _sql_constraints = [
-        ('check_number_of_months', 'CHECK(number_of_months >= 0)', 'The number of month can\'t be negative.'),
-    ]
+    _check_number_of_months = models.Constraint(
+        'CHECK(number_of_months >= 0)',
+        "The number of month can't be negative.",
+    )

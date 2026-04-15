@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Part of Odoo. See LICENSE file for full copyright and licensing details.
 
 import datetime
@@ -7,7 +6,6 @@ import logging
 import re
 from dateutil.relativedelta import relativedelta
 
-import odoo
 from odoo import api, fields, models, tools, _
 from odoo.addons.iap.tools import iap_tools
 from odoo.addons.crm.models import crm_stage
@@ -19,10 +17,13 @@ DEFAULT_ENDPOINT = 'https://iap-services.odoo.com'
 DEFAULT_REVEAL_BATCH_LIMIT = 25
 DEFAULT_REVEAL_MONTH_VALID = 6
 
-class CRMRevealRule(models.Model):
+
+class CrmRevealRule(models.Model):
     _name = 'crm.reveal.rule'
-    _description = 'CRM Lead Generation Rules'
+    _description = 'CRM Lead Generation Rule'
     _order = 'sequence'
+    _clear_cache_name = 'default'
+    _clear_cache_on_fields = {'active', 'country_ids', 'regex_url'}  # in order to recompute _get_active_rules
 
     name = fields.Char(string='Rule Name', required=True)
     active = fields.Boolean(default=True)
@@ -62,9 +63,10 @@ class CRMRevealRule(models.Model):
 
     # This limits the number of extra contact.
     # Even if more than 5 extra contacts provided service will return only 5 contacts (see service module for more)
-    _sql_constraints = [
-        ('limit_extra_contacts', 'check(extra_contacts >= 1 and extra_contacts <= 5)', 'Maximum 5 contacts are allowed!'),
-    ]
+    _limit_extra_contacts = models.Constraint(
+        'check(extra_contacts >= 1 and extra_contacts <= 5)',
+        'Maximum 5 contacts are allowed!',
+    )
 
     def _compute_lead_count(self):
         leads = self.env['crm.lead']._read_group([
@@ -83,33 +85,16 @@ class CRMRevealRule(models.Model):
         except Exception:
             raise ValidationError(_('Enter Valid Regex.'))
 
-    @api.model_create_multi
-    def create(self, vals_list):
-        self.clear_caches() # Clear the cache in order to recompute _get_active_rules
-        return super().create(vals_list)
-
-    def write(self, vals):
-        fields_set = {
-            'country_ids', 'regex_url', 'active'
-        }
-        if set(vals.keys()) & fields_set:
-            self.clear_caches() # Clear the cache in order to recompute _get_active_rules
-        return super(CRMRevealRule, self).write(vals)
-
-    def unlink(self):
-        self.clear_caches() # Clear the cache in order to recompute _get_active_rules
-        return super(CRMRevealRule, self).unlink()
-
     def action_get_lead_tree_view(self):
         action = self.env["ir.actions.actions"]._for_xml_id("crm.crm_lead_all_leads")
         action['domain'] = [('id', 'in', self.lead_ids.ids), ('type', '=', 'lead')]
-        action['context'] = dict(self._context, create=False)
+        action['context'] = dict(self.env.context, create=False)
         return action
 
     def action_get_opportunity_tree_view(self):
         action = self.env["ir.actions.actions"]._for_xml_id("crm.crm_lead_opportunities")
         action['domain'] = [('id', 'in', self.lead_ids.ids), ('type', '=', 'opportunity')]
-        action['context'] = dict(self._context, create=False)
+        action['context'] = dict(self.env.context, create=False)
         return action
 
     @api.model
@@ -216,7 +201,7 @@ class CRMRevealRule(models.Model):
             enough_credit = self._perform_reveal_service(server_payload)
             if autocommit:
                 # auto-commit for batch processing
-                self._cr.commit()
+                self.env.cr.commit()
             if enough_credit:
                 reveal_views = self._get_reveal_views_to_process()
             else:
@@ -230,11 +215,7 @@ class CRMRevealRule(models.Model):
         created lead with given IP. So, we unlink crm.reveal.view with same IP
         as a already created lead.
         """
-        months_valid = self.env['ir.config_parameter'].sudo().get_param('reveal.lead_month_valid', DEFAULT_REVEAL_MONTH_VALID)
-        try:
-            months_valid = int(months_valid)
-        except ValueError:
-            months_valid = DEFAULT_REVEAL_MONTH_VALID
+        months_valid = self.env['ir.config_parameter'].sudo().get_int('reveal.lead_month_valid') or DEFAULT_REVEAL_MONTH_VALID
         domain = []
         domain.append(('reveal_ip', '!=', False))
         domain.append(('create_date', '>', fields.Datetime.to_string(datetime.date.today() - relativedelta(months=months_valid))))
@@ -315,9 +296,9 @@ class CRMRevealRule(models.Model):
 
     def _perform_reveal_service(self, server_payload):
         result = False
-        account_token = self.env['iap.account'].get('reveal')
+        account = self.env['iap.account'].get('reveal')
         params = {
-            'account_token': account_token.account_token,
+            'account_token': account.sudo().account_token,
             'data': server_payload
         }
         result = self._iap_contact_reveal(params, timeout=300)
@@ -334,7 +315,7 @@ class CRMRevealRule(models.Model):
                 views.flush_recordset()
 
         if result.get('credit_error'):
-            self.env['crm.iap.lead.helpers'].notify_no_more_credit('reveal', self._name, 'reveal.already_notified')
+            self.env['crm.iap.lead.helpers']._notify_no_more_credit('reveal', self._name, 'reveal.already_notified')
             return False
         else:
             # avoid loops if IAP return result is broken: otherwise some IP may create loops
@@ -344,11 +325,11 @@ class CRMRevealRule(models.Model):
             views.write({'reveal_state': 'not_found'})
             views.flush_recordset()
             # reset notified parameter to re-send credit notice if appears again
-            self.env['ir.config_parameter'].sudo().set_param('reveal.already_notified', False)
+            self.env['ir.config_parameter'].sudo().set_bool('reveal.already_notified', False)
         return True
 
     def _iap_contact_reveal(self, params, timeout=300):
-        endpoint = self.env['ir.config_parameter'].sudo().get_param('reveal.endpoint', DEFAULT_ENDPOINT) + '/iap/clearbit/1/reveal'
+        endpoint = (self.env['ir.config_parameter'].sudo().get_str('reveal.endpoint') or DEFAULT_ENDPOINT) + '/iap/clearbit/1/reveal'
         return iap_tools.iap_jsonrpc(endpoint, params=params, timeout=timeout)
 
     def _create_lead_from_response(self, result):
@@ -362,7 +343,7 @@ class CRMRevealRule(models.Model):
             return False
         if not result['clearbit_id']:
             return False
-        already_created_lead = self.env['crm.lead'].search([('reveal_id', '=', result['clearbit_id'])])
+        already_created_lead = self.env['crm.lead'].search_count([('reveal_id', '=', result['clearbit_id'])], limit=1)
         if already_created_lead:
             _logger.info('Existing lead for this clearbit_id [%s]', result['clearbit_id'])
             # Does not create a lead if the reveal_id is already known

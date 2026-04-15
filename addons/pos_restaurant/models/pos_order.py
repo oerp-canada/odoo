@@ -1,155 +1,27 @@
 # -*- coding: utf-8 -*-
 # Part of Odoo. See LICENSE file for full copyright and licensing details.
-from odoo.tools import groupby
-from re import search
-from functools import partial
-
-import pytz
-
 from odoo import api, fields, models
-
-
-class PosOrderLine(models.Model):
-    _inherit = 'pos.order.line'
-
-    note = fields.Char('Internal Note added by the waiter.')
-
 
 class PosOrder(models.Model):
     _inherit = 'pos.order'
 
     table_id = fields.Many2one('restaurant.table', string='Table', help='The table where this order was served', index='btree_not_null', readonly=True)
     customer_count = fields.Integer(string='Guests', help='The amount of customers that have been served by this order.', readonly=True)
+    course_ids = fields.One2many('restaurant.order.course', 'order_id', string="Courses")
 
-    def _get_fields_for_order_line(self):
-        fields = super(PosOrder, self)._get_fields_for_order_line()
-        fields.extend([
-            'note',
-            'full_product_name',
-            'customer_note',
-            'price_extra',
-            'refunded_orderline_id',
-        ])
-        return fields
+    def _get_open_order(self, order):
+        config_id = self.env['pos.session'].browse(order.get('session_id')).config_id
+        if not config_id.module_pos_restaurant:
+            return super()._get_open_order(order)
 
-    def _prepare_order_line(self, order_line):
-        order_line = super(PosOrder, self)._prepare_order_line(order_line)
-        order_line["refunded_orderline_id"] = order_line["refunded_orderline_id"] and \
-                                              order_line["refunded_orderline_id"][0]
-        return order_line
-
-    def _get_fields_for_draft_order(self):
-        fields = super()._get_fields_for_draft_order()
-        fields.extend([
-            'table_id',
-            'customer_count',
-        ])
-        return fields
-
-    def _get_domain_for_draft_orders(self, table_ids):
-        """ Get the domain to search for draft orders on a table.
-        :param table_ids: Ids of the selected tables.
-        :type table_ids: list of int.
-        "returns: list -- list of tuples that represents a domain.
-        """
-        return [('state', '=', 'draft'), ('table_id', 'in', table_ids)]
-
-    @api.model
-    def remove_from_ui(self, server_ids):
-        tables = self.env['pos.order'].search([('id', 'in', server_ids)]).table_id
-        order_ids = super().remove_from_ui(server_ids)
-        self.send_table_count_notification(tables)
-        return order_ids
-
-    @api.model
-    def create_from_ui(self, orders, draft=False):
-        orders = super().create_from_ui(orders, draft)
-        order_ids = self.env['pos.order'].browse([order['id'] for order in orders])
-        self.send_table_count_notification(order_ids.table_id)
-        return orders
-
-    def send_table_count_notification(self, table_ids):
-        messages = []
-        for config in self.env['pos.config'].search([('floor_ids', 'in', table_ids.floor_id.ids)]):
-            order_count = config.get_tables_order_count_and_printing_changes()
-            messages.append((f'pos_config-{config.id}', 'TABLE_ORDER_COUNT', order_count))
-        self.env['bus.bus']._sendmany(messages)
-
-    @api.model
-    def get_table_draft_orders(self, table_ids):
-        """Generate an object of all draft orders for the given table.
-
-        Generate and return an JSON object with all draft orders for the given table, to send to the
-        front end application.
-
-        :param table_ids: Ids of the selected tables.
-        :type table_ids: list of int.
-        :returns: list -- list of dict representing the table orders
-        """
-        table_orders = self.search_read(
-                domain=self._get_domain_for_draft_orders(table_ids),
-                fields=self._get_fields_for_draft_order())
-
-        self._get_order_lines(table_orders)
-        self._get_payment_lines(table_orders)
-
-        self._prepare_order(table_orders)
-
-        return table_orders
-
-    @api.model
-    def _prepare_order(self, orders):
-        super(PosOrder, self)._prepare_order(orders)
-        for order in orders:
-            if order['table_id']:
-                order['table_id'] = order['table_id'][0]
-
-    def set_tip(self, tip_line_vals):
-        """Set tip to `self` based on values in `tip_line_vals`."""
-
-        self.ensure_one()
-        PosOrderLine = self.env['pos.order.line']
-        process_line = partial(PosOrderLine._order_line_fields, session_id=self.session_id.id)
-
-        # 1. add/modify tip orderline
-        processed_tip_line_vals = process_line([0, 0, tip_line_vals])[2]
-        processed_tip_line_vals.update({ "order_id": self.id })
-        tip_line = self.lines.filtered(lambda line: line.product_id == self.session_id.config_id.tip_product_id)
-        if not tip_line:
-            tip_line = PosOrderLine.create(processed_tip_line_vals)
+        domain = []
+        if order.get('table_id', False) and order.get('state') == 'draft':
+            domain += ['|', ('uuid', '=', order.get('uuid')), '&', ('table_id', '=', order.get('table_id')), ('state', '=', 'draft')]
         else:
-            tip_line.write(processed_tip_line_vals)
+            domain += [('uuid', '=', order.get('uuid'))]
+        return self.env["pos.order"].search(domain, limit=1, order='id desc')
 
-        # 2. modify payment
-        payment_line = self.payment_ids.filtered(lambda line: not line.is_change)[0]
-        # TODO it would be better to throw error if there are multiple payment lines
-        # then ask the user to select which payment to update, no?
-        payment_line._update_payment_line_for_tip(tip_line.price_subtotal_incl)
-
-        # 3. flag order as tipped and update order fields
-        self.write({
-            "is_tipped": True,
-            "tip_amount": tip_line.price_subtotal_incl,
-            "amount_total": self.amount_total + tip_line.price_subtotal_incl,
-            "amount_paid": self.amount_paid + tip_line.price_subtotal_incl,
-        })
-
-    def set_no_tip(self):
-        """Override this method to introduce action when setting no tip."""
-        self.ensure_one()
-        self.write({
-            "is_tipped": True,
-            "tip_amount": 0,
-        })
-
-    @api.model
-    def _order_fields(self, ui_order):
-        order_fields = super(PosOrder, self)._order_fields(ui_order)
-        order_fields['table_id'] = ui_order.get('table_id', False)
-        order_fields['customer_count'] = ui_order.get('customer_count', 0)
-        return order_fields
-
-    def _export_for_ui(self, order):
-        result = super(PosOrder, self)._export_for_ui(order)
-        result['table_id'] = order.table_id.id
+    def read_pos_data(self, data, config):
+        result = super().read_pos_data(data, config)
+        result['restaurant.order.course'] = self.env['restaurant.order.course']._load_pos_data_read(self.course_ids, config)
         return result

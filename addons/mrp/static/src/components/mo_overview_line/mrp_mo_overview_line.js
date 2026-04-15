@@ -1,11 +1,61 @@
-/** @odoo-module **/
-
+import { _t } from "@web/core/l10n/translation";
 import { Component } from "@odoo/owl";
 import { useService } from "@web/core/utils/hooks";
 import { formatFloat, formatFloatTime, formatMonetary } from "@web/views/fields/formatters";
 import { getStateDecorator } from "./mo_overview_colors";
+import { SHOW_OPTIONS } from "../mo_overview_display_filter/mrp_mo_overview_display_filter";
 
 export class MoOverviewLine extends Component {
+    static props = {
+        data: {
+            type: Object,
+            shape: {
+                level: Number,
+                index: { type: String, optional: true },
+                id: { type: Number, optional: true },
+                model: { type: String, optional: true },
+                name: String,
+                product_model: { type: String, optional: true },
+                product: { type: String, optional: true },
+                product_id: { type: Number, optional: true },
+                state: { type: String, optional: true },
+                formatted_state: { type: String, optional: true },
+                has_bom: { type: Boolean, optional: true },
+                quantity: Number,
+                replenish_quantity: { type: Number, optional: true },
+                uom: { type: String, optional: true },
+                uom_name: { type: String, optional: true },
+                uom_precision: { type: Number, optional: true },
+                quantity_free: { type: [Number, Boolean], optional: true },
+                quantity_on_hand: { type: [Number, Boolean], optional: true },
+                quantity_reserved: { type: Number, optional: true },
+                receipt: {
+                    type: Object,
+                    shape: {
+                        display: String,
+                        type: String,
+                        decorator: [String, Boolean],
+                        date: [String, Boolean],
+                    },
+                    optional: true,
+                },
+                unit_cost: { type: Number, optional: true },
+                mo_cost: { type: [Number, Boolean], optional: true },
+                mo_cost_decorator: { type: [String, Boolean], optional: true },
+                bom_cost: { type: [Number, Boolean], optional: true },
+                real_cost: { type: [Number, Boolean], optional: true },
+                real_cost_decorator: { type: [String, Boolean], optional: true },
+                currency_id: Number,
+                currency: { type: String, optional: true },
+                production_id: { type: Number, optional: true },
+            },
+        },
+        showOptions: SHOW_OPTIONS,
+        hasFoldButton: { type: Boolean, optional: true },
+        isFolded: { type: Boolean, optional: true },
+        toggleFolded: { type: Function, optional: true },
+    };
+
     static template = "mrp.MoOverviewLine";
 
     setup() {
@@ -68,7 +118,7 @@ export class MoOverviewLine extends Component {
                 search_default_ready: true,
                 search_default_waiting: true,
                 search_default_progress: true,
-                search_default_pending: true,
+                search_default_blocked: true,
                 search_default_name: this.data.name,
                 search_default_production_id: this.data.production_id,
             },
@@ -86,7 +136,7 @@ export class MoOverviewLine extends Component {
     }
 
     //---- Getters ----
-    
+
     get data() {
         return this.props.data;
     }
@@ -96,8 +146,8 @@ export class MoOverviewLine extends Component {
     }
 
     get formattedQuantity() {
-        if (this.data.model === "mrp.workorder") {
-            return this.formatFloatTime(this.data.quantity);
+        if (this.data.model === "mrp.workorder" || !this.data.model) {
+            return this.formatFloatTime(this.data.quantity, { unit: this.data.state ? "minutes" : "hours", showSeconds: true });
         }
         return this.formatFloat(this.data.quantity);
     }
@@ -111,7 +161,7 @@ export class MoOverviewLine extends Component {
     }
 
     get foldButtonTitle() {
-        return this.props.isFolded ? this.env._t("Unfold") : this.env._t("Fold");
+        return this.props.isFolded ? _t("Unfold") : _t("Fold");
     }
 
     get forecastAction() {
@@ -123,58 +173,3 @@ export class MoOverviewLine extends Component {
         }
     }
 }
-
-MoOverviewLine.props = {
-    data: {
-        type: Object,
-        shape: {
-            level: Number,
-            index: { type: String, optional: true },
-            id: { type: Number, optional: true },
-            model: { type: String, optional: true },
-            name: String,
-            product_model: { type: String, optional: true },
-            product_id: { type: Number, optional: true },
-            state: { type: String, optional: true },
-            formatted_state: { type: String, optional: true },
-            quantity: Number,
-            replenish_quantity: { type: Number, optional: true },
-            quantity_decorator: { type: [String, Boolean], optional: true },
-            uom_name: { type: String, optional: true },
-            uom_precision: { type: Number, optional: true },
-            quantity_free: { type: [Number, Boolean], optional: true },
-            quantity_on_hand: { type: [Number, Boolean], optional: true },
-            quantity_reserved: { type: Number, optional: true },
-            receipt: {
-                type: Object,
-                shape: {
-                    display: String,
-                    type: String,
-                    decorator: [String, Boolean],
-                    date: [String, Boolean],
-                },
-                optional: true,
-            },
-            mo_cost: Number,
-            mo_cost_decorator: { type: [String, Boolean], optional: true },
-            product_cost: { type: Number, optional: true },
-            currency_id: Number,
-            currency: { type: String, optional: true },
-            production_id: { type: Number, optional: true },
-        },
-    },
-    showOptions: {
-        type: Object,
-        shape: {
-            uom: Boolean,
-            replenishments: Boolean,
-            availabilities: Boolean,
-            receipts: Boolean,
-            moCosts: Boolean,
-            productCosts: Boolean,
-        }
-    },
-    hasFoldButton: { type: Boolean, optional: true },
-    isFolded: { type: Boolean, optional: true },
-    toggleFolded: { type: Function, optional: true },
-};

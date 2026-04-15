@@ -1,11 +1,11 @@
-/** @odoo-module **/
-
+import { useState } from "@web/owl2/utils";
+import { _t } from "@web/core/l10n/translation";
 import { Dropdown } from "@web/core/dropdown/dropdown";
+import { rpc } from "@web/core/network/rpc";
 import { registry } from "@web/core/registry";
 import { useAutofocus, useService } from "@web/core/utils/hooks";
-import { sprintf } from "@web/core/utils/strings";
+import { Component } from "@odoo/owl";
 
-const { Component, useState } = owl;
 const cogMenuRegistry = registry.category("cogMenu");
 
 /**
@@ -22,9 +22,12 @@ const cogMenuRegistry = registry.category("cogMenu");
  * @extends Component
  */
 export class AddToBoard extends Component {
+    static template = "board.AddToBoard";
+    static components = { Dropdown };
+    static props = {};
+
     setup() {
         this.notification = useService("notification");
-        this.rpc = useService("rpc");
         this.state = useState({ name: this.env.config.getDisplayName() });
 
         useAutofocus();
@@ -36,22 +39,20 @@ export class AddToBoard extends Component {
 
     async addToBoard() {
         const { domain, globalContext } = this.env.searchModel;
-        const {
-            comparison,
-            context,
-            groupBys,
-            orderBy,
-        } = this.env.searchModel.getPreFavoriteValues();
+        const { context, groupBys, orderBy } = this.env.searchModel.getPreFavoriteValues();
         const contextToSave = {
-            ...globalContext,
+            ...Object.fromEntries(
+                Object.entries(globalContext).filter(
+                    (entry) => !entry[0].startsWith("search_default_")
+                )
+            ),
             ...context,
-            comparison,
             orderedBy: orderBy,
             group_by: groupBys,
             dashboard_merge_domains_contexts: false,
         };
 
-        const result = await this.rpc("/board/add_to_dashboard", {
+        const result = await rpc("/board/add_to_dashboard", {
             action_id: this.env.config.actionId || false,
             context_to_save: contextToSave,
             domain,
@@ -61,15 +62,15 @@ export class AddToBoard extends Component {
 
         if (result) {
             this.notification.add(
-                this.env._t("Please refresh your browser for the changes to take effect."),
+                _t("Please refresh your browser for the changes to take effect."),
                 {
-                    title: sprintf(this.env._t(`"%s" added to dashboard`), this.state.name),
+                    title: _t("“%s” added to dashboard", this.state.name),
                     type: "warning",
                 }
             );
             this.state.name = this.env.config.getDisplayName();
         } else {
-            this.notification.add(this.env._t("Could not add filter to dashboard"), {
+            this.notification.add(_t("Could not add filter to dashboard"), {
                 type: "danger",
             });
         }
@@ -90,13 +91,13 @@ export class AddToBoard extends Component {
     }
 }
 
-AddToBoard.template = "board.AddToBoard";
-AddToBoard.components = { Dropdown };
-
 export const addToBoardItem = {
     Component: AddToBoard,
     groupNumber: 20,
-    isDisplayed: ({ config }) => config.actionType === "ir.actions.act_window" && config.actionId,
+    isDisplayed: ({ config }) => {
+        const { actionType, actionId, viewType } = config;
+        return actionType === "ir.actions.act_window" && actionId && viewType !== "form";
+    },
 };
 
 cogMenuRegistry.add("add-to-board", addToBoardItem, { sequence: 10 });

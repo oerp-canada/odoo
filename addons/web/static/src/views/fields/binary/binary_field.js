@@ -1,14 +1,15 @@
-/** @odoo-module **/
-
 import { registry } from "@web/core/registry";
 import { useService } from "@web/core/utils/hooks";
-import { isBinarySize } from "@web/core/utils/binary";
+import { isBinarySize, toBase64Length } from "@web/core/utils/binary";
 import { download } from "@web/core/network/download";
 import { standardFieldProps } from "../standard_field_props";
 import { FileUploader } from "../file_handler";
-import { _lt } from "@web/core/l10n/translation";
+import { _t } from "@web/core/l10n/translation";
 
-import { Component, onWillUpdateProps, useState } from "@odoo/owl";
+import { Component } from "@odoo/owl";
+
+export const MAX_FILENAME_SIZE_BYTES = 0xff; // filenames do not exceed 255 bytes on Linux/Windows/MacOS
+
 export class BinaryField extends Component {
     static template = "web.BinaryField";
     static components = {
@@ -17,7 +18,11 @@ export class BinaryField extends Component {
     static props = {
         ...standardFieldProps,
         acceptedFileExtensions: { type: String, optional: true },
+        // See https://www.iana.org/assignments/media-types/media-types.xhtml
+        allowedMIMETypes: { type: String, optional: true },
         fileNameField: { type: String, optional: true },
+        // Show a button instead of file size when there is no file name
+        useReplaceButton: { type: Boolean, optional: true },
     };
     static defaultProps = {
         acceptedFileExtensions: "*",
@@ -25,61 +30,85 @@ export class BinaryField extends Component {
 
     setup() {
         this.notification = useService("notification");
-        this.state = useState({
-            fileName: this.props.record.data[this.props.fileNameField] || "",
-        });
-        onWillUpdateProps((nextProps) => {
-            this.state.fileName = nextProps.record.data[nextProps.fileNameField] || "";
-        });
     }
 
     get fileName() {
-        return this.state.fileName || this.props.record.data[this.props.name] || "";
+        let value = this.props.record.data[this.props.name];
+        value =
+            value && typeof value === "string"
+                ? this.props.useReplaceButton
+                    ? false
+                    : value
+                : false;
+        return (this.props.record.data[this.props.fileNameField] || value || "").slice(
+            0,
+            toBase64Length(MAX_FILENAME_SIZE_BYTES)
+        );
     }
 
     update({ data, name }) {
-        this.state.fileName = name || "";
         const { fileNameField, record } = this.props;
         const changes = { [this.props.name]: data || false };
         if (fileNameField in record.fields && record.data[fileNameField] !== name) {
-            changes[fileNameField] = name || false;
+            changes[fileNameField] = name || "";
         }
         return this.props.record.update(changes);
     }
 
+    getDownloadData() {
+        return {
+            model: this.props.record.resModel,
+            id: this.props.record.resId,
+            field: this.props.name,
+            filename_field: this.fileName,
+            filename: this.fileName || "",
+            download: true,
+            data: isBinarySize(this.props.record.data[this.props.name])
+                ? null
+                : this.props.record.data[this.props.name],
+        };
+    }
+
     async onFileDownload() {
         await download({
-            data: {
-                model: this.props.record.resModel,
-                id: this.props.record.resId,
-                field: this.props.name,
-                filename_field: this.fileName,
-                filename: this.fileName || "",
-                download: true,
-                data: isBinarySize(this.props.record.data[this.props.name])
-                    ? null
-                    : this.props.record.data[this.props.name],
-            },
+            data: this.getDownloadData(),
             url: "/web/content",
         });
     }
 }
 
+export class ListBinaryField extends BinaryField {
+    static template = "web.ListBinaryField";
+}
+
 export const binaryField = {
     component: BinaryField,
-    displayName: _lt("File"),
+    displayName: _t("File"),
     supportedOptions: [
         {
-            label: _lt("Accepted file extensions"),
+            label: _t("Accepted file extensions"),
             name: "accepted_file_extensions",
+            type: "string",
+        },
+        {
+            label: _t("Allowed file mimetype"),
+            name: "allowed_mime_type",
             type: "string",
         },
     ],
     supportedTypes: ["binary"],
     extractProps: ({ attrs, options }) => ({
         acceptedFileExtensions: options.accepted_file_extensions,
+        allowedMIMETypes: options.allowed_mime_type,
         fileNameField: attrs.filename,
+        useReplaceButton: options.use_replace_button,
     }),
 };
 
+export const listBinaryField = {
+    ...binaryField,
+    component: ListBinaryField,
+};
+
 registry.category("fields").add("binary", binaryField);
+registry.category("fields").add("list.binary", listBinaryField);

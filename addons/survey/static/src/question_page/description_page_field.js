@@ -1,15 +1,13 @@
-/** @odoo-module */
-
+import { useLayoutEffect, useRef } from "@web/owl2/utils";
 import { CharField, charField } from "@web/views/fields/char/char_field";
 import { registry } from "@web/core/registry";
 
-const { useEffect, useRef } = owl;
-
 class DescriptionPageField extends CharField {
+    static template = "survey.DescriptionPageField";
     setup() {
         super.setup();
         const inputRef = useRef("input");
-        useEffect(
+        useLayoutEffect(
             (input) => {
                 if (input) {
                     input.classList.add("col");
@@ -22,7 +20,6 @@ class DescriptionPageField extends CharField {
         this.env.openRecord(this.props.record);
     }
 }
-DescriptionPageField.template = "survey.DescriptionPageField";
 
 registry.category("fields").add("survey_description_page", {
     ...charField,

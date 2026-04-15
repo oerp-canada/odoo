@@ -1,5 +1,6 @@
 from freezegun import freeze_time
 
+from odoo import fields
 from odoo.tests.common import TransactionCase
 
 CURRENT_USD = 1.5
@@ -26,23 +27,26 @@ class TestCurrencyRates(TransactionCase):
         cls.env.user.company_ids |= new_company
         cls.env.user.company_id = new_company
 
+        eff_date = fields.Date.subtract(fields.Date.context_today(cls), days=1)
         cls.env["res.currency.rate"].create(
             [
                 {
+                    "name": eff_date,
                     "currency_id": usd.id,
                     "rate": CURRENT_USD,
                 },
                 {
+                    "name": eff_date,
                     "currency_id": cad.id,
                     "rate": CURRENT_CAD,
                 },
                 {
-                    "name": "2021-11-11",
+                    "name": "2021-11-10",
                     "currency_id": usd.id,
                     "rate": USD_11,
                 },
                 {
-                    "name": "2021-11-11",
+                    "name": "2021-11-10",
                     "currency_id": cad.id,
                     "rate": CAD_11,
                 },
@@ -50,33 +54,33 @@ class TestCurrencyRates(TransactionCase):
         )
 
     def test_currency_without_date(self):
-        self.assertEqual(
+        self.assertAlmostEqual(
             self.env["res.currency.rate"]._get_rate_for_spreadsheet("USD", "EUR"),
             CURRENT_EUR / CURRENT_USD,
         )
-        self.assertEqual(
+        self.assertAlmostEqual(
             self.env["res.currency.rate"]._get_rate_for_spreadsheet("EUR", "USD"),
             CURRENT_USD,
         )
-        self.assertEqual(
+        self.assertAlmostEqual(
             self.env["res.currency.rate"]._get_rate_for_spreadsheet("USD", "CAD"),
             CURRENT_CAD / CURRENT_USD,
         )
 
     def test_currency_with_date(self):
-        self.assertEqual(
+        self.assertAlmostEqual(
             self.env["res.currency.rate"]._get_rate_for_spreadsheet(
                 "USD", "EUR", "2021-11-11"
             ),
             CURRENT_EUR / USD_11,
         )
-        self.assertEqual(
+        self.assertAlmostEqual(
             self.env["res.currency.rate"]._get_rate_for_spreadsheet(
                 "EUR", "USD", "2021-11-11"
             ),
             USD_11,
         )
-        self.assertEqual(
+        self.assertAlmostEqual(
             self.env["res.currency.rate"]._get_rate_for_spreadsheet(
                 "USD", "CAD", "2021-11-11"
             ),
@@ -109,28 +113,76 @@ class TestCurrencyRates(TransactionCase):
 
     @freeze_time(fake_now_utc)
     def test_rate_by_tz(self):
+        # after setting a timezone, reset the transaction to recomput env.tz
         cad = self.env.ref("base.CAD")
         self.env.user.tz = "UTC"
+        self.env.flush_all()
+        self.env.transaction.reset()
         self.env["res.currency.rate"].create(
             {
+                "name": fields.Date.subtract(fields.Date.context_today(self), days=1),
                 "currency_id": cad.id,
                 "rate": CAD_UTC,
             }
         )
-        self.env.user.tz = "Australia/ACT"
+        self.env.user.tz = "Australia/Sydney"
+        self.env.flush_all()
+        self.env.transaction.reset()
         self.env["res.currency.rate"].create(
             {
+                "name": fields.Date.subtract(fields.Date.context_today(self), days=1),
                 "currency_id": cad.id,
                 "rate": CAD_AUS,
             }
         )
-        self.assertEqual(
+        self.assertAlmostEqual(
             self.env["res.currency.rate"]._get_rate_for_spreadsheet("CAD", "EUR"),
             CURRENT_EUR / CAD_AUS,
         )
-        self.assertEqual(
+        self.assertAlmostEqual(
             self.env["res.currency.rate"]
             .with_context(tz="UTC")
             ._get_rate_for_spreadsheet("CAD", "EUR"),
             CURRENT_EUR / CAD_UTC,
+        )
+
+    def test_currency_with_company_id(self):
+        usd = self.env.ref("base.USD")
+        cad = self.env.ref("base.CAD")
+        company_eur = self.env["res.company"].create({"currency_id": usd.id, "name": "EUR"})
+        company_cad = self.env["res.company"].create({"currency_id": cad.id, "name": "GBP"})
+        self.env["res.currency.rate"].create(
+            [
+                {
+                    "name": fields.Date.subtract(fields.Date.context_today(self), days=1),
+                    "currency_id": usd.id,
+                    "rate": 0.5,
+                    "company_id": company_eur.id,
+                },
+                {
+                    "name": fields.Date.subtract(fields.Date.context_today(self), days=1),
+                    "currency_id": usd.id,
+                    "rate": 0.8,
+                    "company_id": company_cad.id,
+                },
+            ]
+        )
+
+        self.assertAlmostEqual(
+            self.env["res.currency.rate"].with_company(company_eur)._get_rate_for_spreadsheet(
+                "USD", "EUR", None, None
+            ),
+            CURRENT_EUR / 0.5,
+        )
+        self.assertAlmostEqual(
+            self.env["res.currency.rate"]._get_rate_for_spreadsheet(
+                "USD", "EUR", None, company_eur.id
+            ),
+            CURRENT_EUR / 0.5,
+        )
+        self.assertAlmostEqual(
+            self.env["res.currency.rate"]._get_rate_for_spreadsheet(
+                "USD", "CAD", None, company_cad.id
+            ),
+            CURRENT_EUR / 0.8,
         )

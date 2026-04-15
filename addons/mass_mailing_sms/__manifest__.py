@@ -1,12 +1,12 @@
-# -*- coding: utf-8 -*-
 # Part of Odoo. See LICENSE file for full copyright and licensing details.
 
 {
     'name': 'SMS Marketing',
     'summary': 'Design, send and track SMS',
-    'version': '1.0',
+    'version': '1.1',
     'category': 'Marketing/Email Marketing',
     'sequence': 245,
+    'website': 'https://www.odoo.com/app/sms-marketing',
     'depends': [
         'portal',
         'mass_mailing',
@@ -27,10 +27,21 @@
         'wizard/mailing_sms_test_views.xml',
     ],
     'demo': [
-        'data/utm_demo.xml',
-        'data/mailing_list_demo.xml',
-        'data/mailing_demo.xml',
+        'demo/mailing_list_contact.xml',
+        'demo/mailing_subscription.xml',
+        'demo/mailing_mailing.xml',
+        'demo/mailing_trace.xml',
     ],
+    'assets': {
+        'web.assets_backend': [
+            'mass_mailing_sms/static/src/**',
+        ],
+        'web.assets_tests': [
+            'mass_mailing_sms/static/tests/tours/**/*',
+        ],
+    },
     'application': True,
+    'iap_paid_service': True,
+    'author': 'Odoo S.A.',
     'license': 'LGPL-3',
 }

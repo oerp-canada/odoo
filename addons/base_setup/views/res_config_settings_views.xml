@@ -7,6 +7,7 @@
             <field name="inherit_id" ref="base.res_config_settings_view_form"/>
             <field name="arch" type="xml">
                 <xpath expr="//form" position="inside">
+                    <field name="is_root_company" invisible="1"/>
                     <app data-string="General Settings" string="General Settings" name="general_settings" logo="/base/static/description/settings.png">
 
                         <div id="invite_users">
@@ -17,13 +18,13 @@
                                 <setting id="active_user_setting">
                                     <span class="fa fa-lg fa-users" aria-label="Number of active users"/>
                                     <field name='active_user_count' class="w-auto ps-3 fw-bold"/>
-                                    <span class='o_form_label' attrs="{'invisible':[('active_user_count', '&gt;', '1')]}">
+                                    <span class='o_form_label' invisible="active_user_count &gt; 1">
                                         Active User
                                     </span>
-                                    <span class='o_form_label' attrs="{'invisible':[('active_user_count', '&lt;=', '1')]}">
+                                    <span class='o_form_label' invisible="active_user_count &lt;= 1">
                                         Active Users
                                     </span>
-                                    <a href="https://www.odoo.com/documentation/master/applications/general/users.html" title="Documentation" class="o_doc_link" target="_blank"></a>
+                                    <widget name="documentation_link" path="/applications/general/users.html" icon="fa-question-circle"/>
                                     <br/>
                                     <button name="%(base.action_res_users)d" icon="oi-arrow-right" type="action" string="Manage Users" class="btn-link o_web_settings_access_rights"/>
                                 </setting>
@@ -36,10 +37,10 @@
                                     <!-- TODO This is not an ideal solution but it looks ok on the interface -->
                                     <div class="w-50">
                                         <field name="language_count" class="w-auto ps-1 fw-bold"/>
-                                        <span class='o_form_label' attrs="{'invisible':[('language_count', '&gt;', '1')]}">
+                                        <span class='o_form_label' invisible="language_count &gt; 1">
                                             Language
                                         </span>
-                                        <span class='o_form_label' attrs="{'invisible':[('language_count', '&lt;=', '1')]}">
+                                        <span class='o_form_label' invisible="language_count &lt;= 1">
                                             Languages
                                         </span>
                                     </div>
@@ -65,10 +66,10 @@
                                 </setting>
                                 <setting id="companies_setting">
                                     <field name='company_count' nolabel="1" class="w-auto ps-1 fw-bold"/>
-                                    <span class='o_form_label' attrs="{'invisible':[('company_count', '&gt;', '1')]}">
+                                    <span class='o_form_label' invisible="company_count &gt; 1">
                                         Company
                                     </span>
-                                    <span class='o_form_label' attrs="{'invisible':[('company_count', '&lt;=', '1')]}">
+                                    <span class='o_form_label' invisible="company_count &lt;= 1">
                                         Companies
                                     </span>
                                     <br/>
@@ -90,9 +91,9 @@
                                     </div>
                                 </setting>
                                 <field name="company_id" invisible="1"/>
-                                <setting id="inter_company" string="Inter-Company Transactions" company_dependent="1" help="Automatically generate counterpart documents for orders/invoices between companies" groups="base.group_multi_company" title="Configure company rules to automatically create SO/PO when one of your company sells/buys to another of your company.">
+                                <setting id="inter_company" string="Inter-Company Transactions" company_dependent="1" help="Create corresponding in/out orders and bills when you sell/buy between your companies" groups="base.group_multi_company" title="Configure company rules to automatically create SO/PO when one of your company sells/buys to another of your company.">
                                     <field name="module_account_inter_company_rules" widget="upgrade_boolean"/>
-                                    <div class="content-group" attrs="{'invisible': [('module_account_inter_company_rules','=',False)]}" id="inter_companies_rules">
+                                    <div class="content-group" invisible="not module_account_inter_company_rules" id="inter_companies_rules">
                                         <div class="mt16 text-warning"><strong>Save</strong> this page and come back here to set up the feature.</div>
                                     </div>
                                 </setting>
@@ -102,7 +103,10 @@
 
                         <div id="contacts_settings">
                             <block title="Contacts" name="contacts_setting_container">
-                                <setting id="sms" string="Send SMS" documentation="/applications/marketing/sms_marketing/pricing/pricing_and_faq.html" help="Send texts to your contacts" />
+                                <setting id="sms" string="Send SMS" documentation="/applications/marketing/sms_marketing/pricing/pricing_and_faq.html" help="Send texts to your contacts">
+                                    <!-- Invisible to avoid breaking any custom inheriting templates -->
+                                    <field name="module_sms" invisible="1"/>
+                                </setting>
                                 <setting help="Automatically enrich your contact base with company data" title="When populating your address book, Odoo provides a list of matching companies. When selecting one item, the company data and logo are auto-filled." id="partner_autocomplete">
                                     <field name="module_partner_autocomplete"/>
                                 </setting>
@@ -110,11 +114,10 @@
                     </div>
 
                     <block title="Permissions" id="user_default_rights">
-                        <setting string="Default Access Rights" help="Set custom access rights for new users" title="By default, new users get highest access rights for all installed apps." id="access_rights">
-                            <field name="user_default_rights"/>
-                            <div class="content-group" attrs="{'invisible': [('user_default_rights','=',False)]}">
+                        <setting string="Default Access Rights" help="Set custom access rights for new users" title="By default, new users get highest access rights for all installed apps. If unchecked, new users will only have basic employee access." id="access_rights">
+                            <div class="content-group">
                                 <div class="mt8">
-                                    <button type="object" name="open_default_user" string="Default Access Rights" icon="oi-arrow-right" class="btn-link"/>
+                                    <button type="object" name="open_new_user_default_groups" string="Default Access Rights" icon="oi-arrow-right" class="btn-link"/>
                                 </div>
                             </div>
                         </setting>
@@ -129,57 +132,56 @@
                         </setting>
                     </block>
 
+                    <block title="Progressive Web App" id="pwa_settings" groups="base.group_no_one">
+                        <setting help="This name will be used for the application when Odoo is installed through the browser.">
+                            <field name="web_app_name" placeholder="Odoo"/>
+                        </setting>
+                    </block>
+
                         <block title="Integrations" name="integration">
-                            <setting string="Mail Plugin" documentation="/applications/productivity/mail_plugins.html" help="Integrate with mail client plugins" id="mail_pluggin_setting">
-                                <field name="module_mail_plugin" />
-                            </setting>
-                            <setting string="Outlook Calendar" documentation="/applications/productivity/calendar/outlook.html" help="Synchronize your calendar with Outlook" id="sync_outlook_calendar_setting">
-                                <field name="module_microsoft_calendar" />
-                                <div class="content-group" attrs="{'invisible': [('module_microsoft_calendar', '=', False)]}" id="msg_module_microsoft_calendar">
-                                    <div class="text-warning mt16"><strong>Save</strong> this page and come back here to set up the feature.</div>
-                                </div>
-                            </setting>
-                            <setting string="Google Calendar" documentation="/applications/productivity/calendar/google.html" help="Synchronize your calendar with Google Calendar" id="sync_google_calendar_setting">
-                                <field name="module_google_calendar"/>
-                                <div class="content-group" attrs="{'invisible': [('module_google_calendar','=',False)]}" id="msg_module_google_calendar">
-                                    <div class="text-warning mt16"><strong>Save</strong> this page and come back here to set up the feature.</div>
-                                </div>
-                            </setting>
-                            <div id="product_get_pic_setting"/>
                             <setting string="OAuth Authentication" help="Use external accounts to log in (Google, Facebook, etc.)" id="module_auth_oauth">
                                 <field name="module_auth_oauth" />
-                                <div class="content-group mt16" attrs="{'invisible': [('module_auth_oauth','=',False)]}" id="msg_module_auth_oauth">
+                                <div class="content-group mt16" invisible="not module_auth_oauth" id="msg_module_auth_oauth">
                                     <div class="mt16 text-warning"><strong>Save</strong> this page and come back here to set up the feature.</div>
                                 </div>
                             </setting>
                             <setting string="LDAP Authentication" help="Use LDAP credentials to log in" documentation="/applications/general/auth/ldap.html" id="module_auth_ldap">
                                 <field name="module_auth_ldap"/>
-                                <div class="content-group" attrs="{'invisible': [('module_auth_ldap','=',False)]}" id="auth_ldap_warning">
+                                <div class="content-group" invisible="not module_auth_ldap" id="auth_ldap_warning">
                                     <div class="mt16 text-warning"><strong>Save</strong> this page and come back here to set up the feature.</div>
                                 </div>
                             </setting>
                             <setting documentation="/applications/websites/website/optimize/unsplash.html" help="Find free high-resolution images from Unsplash" id="unsplash">
                                 <field name="module_web_unsplash"/>
-                                <div class="content-group" attrs="{'invisible': [('module_web_unsplash', '=', False)]}" id="web_unsplash_warning">
+                                <div class="content-group" invisible="not module_web_unsplash" id="web_unsplash_warning">
                                     <div class="mt16 text-warning"><strong>Save</strong> this page and come back here to set up the feature.</div>
                                 </div>
                             </setting>
-                            <setting string="Geo Localization" help="GeoLocalize your partners" id="base_geolocalize">
+                            <setting string="Geolocation"
+                                     help="Geolocate your partners"
+                                     id="base_geolocalize"
+                                     documentation="/applications/general/integrations/geolocation.html">
                                 <field name="module_base_geolocalize"/>
-                                <div class="content-group" attrs="{'invisible': [('module_base_geolocalize','=', False)]}" name="base_geolocalize_warning">
+                                <div class="content-group" invisible="not module_base_geolocalize" name="base_geolocalize_warning">
                                     <div class="mt16 text-warning"><strong>Save</strong> this page and come back here to choose your Geo Provider.</div>
                                 </div>
                             </setting>
                             <setting help="Protect your forms from spam and abuse." id="recaptcha">
                                 <field name="module_google_recaptcha"/>
-                                <div class="content-group" attrs="{'invisible': [('module_google_recaptcha', '=', False)]}" id="recaptcha_warning">
+                                <div class="content-group" invisible="not module_google_recaptcha" id="recaptcha_warning">
                                     <div class="mt16 text-warning"><strong>Save</strong> this page and come back here to set up reCaptcha.</div>
                                 </div>
                             </setting>
                             <setting help="Protect your forms with CF Turnstile." id="cf-turnstile">
                                 <field name="module_website_cf_turnstile"/>
-                                <div class="content-group" attrs="{'invisible': [('module_website_cf_turnstile', '=', False)]}" id="turnstile_warning">
+                                <div class="content-group" invisible="not module_website_cf_turnstile" id="turnstile_warning">
                                     <div class="mt16 text-warning"><strong>Save</strong> this page and come back here to set up Cloudflare turnstile.</div>
+                                </div>
+                            </setting>
+                            <setting help="Autocomplete partner addresses with Google Places" id="google_address_autocomplete">
+                                <field name="module_google_address_autocomplete" />
+                                <div class="content-group" invisible="not module_google_address_autocomplete" id="google_address_autocomplete_warning">
+                                    <div class="mt16 text-warning"><strong>Save</strong> this page and come back here to set up Google Places API key</div>
                                 </div>
                             </setting>
 
@@ -194,22 +196,6 @@
                         <widget name='res_config_dev_tool'/>
                         <div id='about'>
                             <block title="About" name="about_setting_container">
-                                <setting id='appstore'>
-                                    <div class="d-flex">
-                                        <div>
-                                            <!-- FIXME Those links are defined directly in the template which means that we will have to
-                                            update the template code is the link ever changes -->
-                                            <a class="d-block mx-auto" href="https://play.google.com/store/apps/details?id=com.odoo.mobile" target="blank">
-                                                <img alt="On Google Play" class="d-block mx-auto img img-fluid" src="/base_setup/static/src/img/google_play.png"/>
-                                            </a>
-                                        </div>
-                                        <div>
-                                            <a class='d-block mx-auto' href="https://itunes.apple.com/us/app/odoo/id1272543640" target="blank">
-                                                <img alt="On Apple Store" class="d-block mx-auto img img-fluid" src="/base_setup/static/src/img/app_store.png"/>
-                                            </a>
-                                        </div>
-                                    </div>
-                                </setting>
                                 <widget name='res_config_edition'/>
                             </block>
                         </div>
@@ -220,9 +206,9 @@
 
         <record id="action_general_configuration" model="ir.actions.act_window">
             <field name="name">Settings</field>
+            <field name="path">settings</field>
             <field name="res_model">res.config.settings</field>
             <field name="view_mode">form</field>
-            <field name="target">inline</field>
             <field name="context">{'module' : 'general_settings', 'bin_size': False}</field>
         </record>
 

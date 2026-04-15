@@ -1,29 +1,28 @@
-/** @odoo-module */
-
 import { OdooViewsDataSource } from "@spreadsheet/data_sources/odoo_views_data_source";
-import { LoadingDataError } from "@spreadsheet/o_spreadsheet/errors";
+import { EvaluationError } from "@odoo/o-spreadsheet";
 import { _t } from "@web/core/l10n/translation";
-import { sprintf } from "@web/core/utils/strings";
-import { orderByToString } from "@web/views/utils";
 import {
     formatDateTime,
     deserializeDateTime,
     formatDate,
     deserializeDate,
 } from "@web/core/l10n/dates";
+import { orderByToString } from "@web/search/utils/order_by";
 
 import * as spreadsheet from "@odoo/o-spreadsheet";
+import { LOADING_ERROR } from "@spreadsheet/data_sources/data_source";
+import { getFullFieldStringFromPath } from "../data_sources/data_source";
 
-const { toNumber } = spreadsheet.helpers;
+const { toNumber, deepEquals } = spreadsheet.helpers;
 const { DEFAULT_LOCALE } = spreadsheet.constants;
 
 /**
- * @typedef {import("@spreadsheet/data_sources/metadata_repository").Field} Field
+ * @typedef {import("@spreadsheet").OdooFields} OdooFields
  *
  * @typedef {Object} ListMetaData
  * @property {Array<string>} columns
  * @property {string} resModel
- * @property {Record<string, Field>} fields
+ * @property {OdooFields} fields
  *
  * @typedef {Object} ListSearchParams
  * @property {Array<string>} orderBy
@@ -31,20 +30,29 @@ const { DEFAULT_LOCALE } = spreadsheet.constants;
  * @property {Object} context
  */
 
-export default class ListDataSource extends OdooViewsDataSource {
+export const SEARCH_COUNT_LIMIT = 10_000;
+
+export class ListDataSource extends OdooViewsDataSource {
     /**
      * @override
      * @param {Object} services Services (see DataSource)
      * @param {Object} params
      * @param {ListMetaData} params.metaData
      * @param {ListSearchParams} params.searchParams
-     * @param {number} params.limit
      */
     constructor(services, params) {
         super(services, params);
-        this.maxPosition = params.limit;
+        this.maxPosition = 0;
         this.maxPositionFetched = 0;
         this.data = [];
+        this.fieldPathsToFetch = new Set(["id"]);
+        this.fieldPathDefinitionsToFetch = new Set(params.columns.map((col) => col.name));
+        this.definitionColumns = params.columns.map((col) => col.name);
+        this.alreadyFetchedFieldPaths = new Set();
+        this.fieldService = services.env.services.field;
+        this.fieldPathsToFieldMap = {};
+        this._recordConcurrency = {};
+        this._recordsCount = {};
     }
 
     /**
@@ -55,38 +63,177 @@ export default class ListDataSource extends OdooViewsDataSource {
         this.maxPosition = Math.max(this.maxPosition, position);
     }
 
+    onDefinitionChange(nextDefinition) {
+        let shouldReload = false;
+        const searchParams = JSON.parse(JSON.stringify(nextDefinition.searchParams));
+        if (!deepEquals(this._initialSearchParams, searchParams)) {
+            this._initialSearchParams = searchParams;
+            this._customDomain = this._initialSearchParams.domain;
+            shouldReload = true;
+        }
+        const columns = nextDefinition.columns.map((col) => col.name);
+        if (!deepEquals([...this.definitionColumns].sort(), [...columns].sort())) {
+            this.definitionColumns = columns;
+            columns.forEach((col) => this.fieldPathDefinitionsToFetch.add(col));
+            shouldReload = true;
+        }
+
+        const resModel = JSON.parse(JSON.stringify(nextDefinition.metaData)).resModel;
+        if (!deepEquals(this._metaData.resModel, resModel)) {
+            this._metaData = { resModel };
+            shouldReload = true;
+        }
+
+        if (shouldReload) {
+            this._triggerFetching();
+        }
+    }
+
+    isModelValid() {
+        return this._isModelValid;
+    }
+
+    /**
+     * @param {string} fieldPath
+     */
+    addFieldPathToFetch(fieldPath) {
+        if (fieldPath && !this.alreadyFetchedFieldPaths.has(fieldPath)) {
+            this.fieldPathsToFetch.add(fieldPath);
+        }
+    }
+
+    async getRecordsCount({ fullCount } = { fullCount: false }) {
+        const key = fullCount ? "full" : "partial";
+        if (!this._recordsCount[key]) {
+            const { domain, context } = this._searchParams;
+            const limit = fullCount ? undefined : SEARCH_COUNT_LIMIT;
+            this._recordsCount[key] = this._orm.searchCount(this._metaData.resModel, domain, {
+                context,
+                limit,
+            });
+        }
+        return this._recordsCount[key];
+    }
+
+    async load(params) {
+        if (this._fetchingPromise) {
+            // if fetching is already scheduled for the next tick,
+            // wait the fetching promise to trigger the data source loading
+            // and then await the loading.
+            await this._fetchingPromise;
+            await this._loadPromise;
+            return;
+        }
+        return super.load(params);
+    }
+
     async _load() {
         await super._load();
+        // invalidate record count cache
+        this._recordsCount = {};
+        this.fieldPathsToFieldMap = {};
+        const { domain, orderBy, context } = this._searchParams;
+        const specification = await this._getReadSpec();
+        this.alreadyFetchedFieldPaths = new Set([...this.fieldPathsToFetch]);
         if (this.maxPosition === 0) {
             this.data = [];
             return;
         }
-        const { domain, orderBy, context } = this._searchParams;
-        this.data = await this._orm.searchRead(
-            this._metaData.resModel,
-            domain,
-            this._getFieldsToFetch(),
-            {
-                order: orderByToString(orderBy),
-                limit: this.maxPosition,
-                context,
-            }
-        );
+        const { records } = await this._orm.webSearchRead(this._metaData.resModel, domain, {
+            specification,
+            order: orderByToString(orderBy),
+            limit: this.maxPosition,
+            context,
+        });
+        this.data = records;
         this.maxPositionFetched = this.maxPosition;
     }
 
     /**
-     * Get the fields to fetch from the server.
      * Automatically add the currency field if the field is a monetary field.
      */
-    _getFieldsToFetch() {
-        const fields = this._metaData.columns.filter((f) => this.getField(f));
-        for (const field of fields) {
-            if (this.getField(field).type === "monetary") {
-                fields.push(this.getField(field).currency_field);
+    _addSpecForFieldPath(spec, pathInfo) {
+        const [first, ...rest] = pathInfo.names;
+        const [modelInfo, ...othersModelsInfo] = pathInfo.modelsInfo;
+        const field = modelInfo.fieldDefs[first];
+        switch (field.type) {
+            case "monetary":
+                spec[field.name] = {};
+                spec[field.currency_field] = {
+                    fields: {
+                        ...spec[field.currency_field]?.fields,
+                        name: {}, // currency code
+                        symbol: {},
+                        decimal_places: {},
+                        position: {},
+                    },
+                };
+                break;
+            case "many2one":
+            case "many2many":
+            case "one2many":
+                spec[field.name] = {
+                    fields: {
+                        display_name: {},
+                        ...spec[field.name]?.fields,
+                    },
+                };
+                if (rest.length) {
+                    const newPathInfo = { names: rest, modelsInfo: othersModelsInfo };
+                    this._addSpecForFieldPath(spec[field.name].fields, newPathInfo);
+                }
+                break;
+            case "properties": {
+                spec[field.name] = {};
+                const propertyFields = othersModelsInfo[0]?.fieldDefs;
+                for (const propertyName of rest) {
+                    if (propertyFields[propertyName]?.type === "monetary") {
+                        spec[propertyFields[propertyName].currency_field] = {
+                            fields: {
+                                ...spec[propertyFields[propertyName].currency_field]?.fields,
+                                name: {},
+                                symbol: {},
+                                decimal_places: {},
+                                position: {},
+                            },
+                        };
+                    }
+                }
+                break;
+            }
+            default:
+                spec[field.name] = {};
+                break;
+        }
+        return spec;
+    }
+
+    /**
+     * Get the fields to fetch from the server.
+     */
+    async _getReadSpec() {
+        // FIXME: this method both populates fieldPathsToFieldMap and returns the spec for the read.
+        // This is not ideal and should be split in two methods but would require to store additional info
+        const allFieldPaths = await Promise.all(
+            [...this.fieldPathsToFetch.union(this.fieldPathDefinitionsToFetch)].map((fieldPath) =>
+                this.fieldService.loadPath(this._metaData.resModel, fieldPath)
+            )
+        );
+        const validFieldPaths = allFieldPaths.filter((result) => !result.isInvalid);
+        const spec = {};
+        for (const pathInfo of validFieldPaths) {
+            const { names, modelsInfo } = pathInfo;
+            const fieldPath = names.join(".");
+            this.fieldPathsToFieldMap[fieldPath] = {
+                ...modelsInfo.at(-1).fieldDefs[names.at(-1)],
+                fullString: getFullFieldStringFromPath(pathInfo),
+            };
+
+            if (this.fieldPathsToFetch.has(fieldPath)) {
+                this._addSpecForFieldPath(spec, pathInfo);
             }
         }
-        return fields;
+        return spec;
     }
 
     /**
@@ -94,87 +241,203 @@ export default class ListDataSource extends OdooViewsDataSource {
      * @returns {number}
      */
     getIdFromPosition(position) {
-        this._assertDataIsLoaded();
+        this.assertIsValid();
         const record = this.data[position];
         return record ? record.id : undefined;
     }
 
     /**
-     * @param {string} fieldName
-     * @returns {string}
+     * @param {string} fieldPath
+     * @returns {string | EvaluationError}
      */
-    getListHeaderValue(fieldName) {
-        this._assertDataIsLoaded();
-        const field = this.getField(fieldName);
-        return field ? field.string : fieldName;
+    getListHeaderValue(fieldPath) {
+        if (this.isLoading()) {
+            return LOADING_ERROR;
+        }
+        if (!this._isValid || !this._isModelValid) {
+            return this._loadError;
+        }
+        if (!this.isMetaDataLoaded()) {
+            this._triggerFetching();
+            return LOADING_ERROR;
+        }
+        if (!this.alreadyFetchedFieldPaths.has(fieldPath)) {
+            this.addFieldPathToFetch(fieldPath);
+            this._triggerFetching();
+            return LOADING_ERROR;
+        }
+        this.assertIsValid();
+        const field = this.fieldPathsToFieldMap[fieldPath];
+        return field ? field.string : fieldPath;
+    }
+
+    /**
+     * @returns {object | object[]}
+     */
+    _getRecordFromRelation(mainRecord, fieldPath) {
+        const field = this.getFieldFromFieldPath(fieldPath);
+        const fields = fieldPath.split(".");
+        let record = mainRecord;
+        // The last item of fields is the name of the field. As we want to
+        // get the record on which the field is defined, we need to iterate until
+        // the penultimate item of fields.
+        // Property fields have an additional depth level (eg. root_property.property_name)
+        const end = field.is_property ? fields.length - 2 : fields.length - 1;
+        for (let i = 0; i < end; i++) {
+            if (Array.isArray(record)) {
+                record = record.map((r) => r[fields[i]]).flat();
+            } else {
+                record = record && record[fields[i]];
+            }
+        }
+        return record;
     }
 
     /**
      * @param {number} position
-     * @param {string} fieldName
-     * @returns {string|number|undefined}
+     * @param {string} fieldPath
+     * @returns {string|number|undefined|EvaluationError}
      */
-    getListCellValue(position, fieldName) {
-        this._assertDataIsLoaded();
+    getListCellValue(position, fieldPath) {
+        if (this.isLoading()) {
+            return LOADING_ERROR;
+        }
+        if (!this._isValid || !this._isModelValid) {
+            return this._loadError;
+        }
         if (position >= this.maxPositionFetched) {
             this.increaseMaxPosition(position + 1);
             // A reload is needed because the asked position is not already loaded.
             this._triggerFetching();
-            throw new LoadingDataError();
+            return LOADING_ERROR;
         }
-        const record = this.data[position];
+        if (!this.alreadyFetchedFieldPaths.has(fieldPath)) {
+            this.addFieldPathToFetch(fieldPath);
+            this._triggerFetching();
+            return LOADING_ERROR;
+        }
+        const field = this.getFieldFromFieldPath(fieldPath);
+        if (!field) {
+            return new EvaluationError(
+                _t("The field %s does not exist or you do not have access to that field", fieldPath)
+            );
+        }
+        const mainRecord = this.data[position];
+        if (!mainRecord) {
+            return "";
+        }
+        this.assertIsValid();
+        const record = this._getRecordFromRelation(mainRecord, fieldPath);
         if (!record) {
             return "";
         }
-        const field = this.getField(fieldName);
-        if (!field) {
-            throw new Error(
-                sprintf(
-                    _t("The field %s does not exist or you do not have access to that field"),
-                    fieldName
-                )
-            );
+        if (field.is_property) {
+            const fieldParts = fieldPath.split(".");
+            const propertyField = fieldParts.pop();
+            const rootPropertyField = fieldParts.pop();
+            const propertyValue = record[rootPropertyField].find((p) => p.name === propertyField);
+            return propertyValue ? this._parsePropertyFieldServerValue(field, propertyValue) : "";
         }
-        if (!(fieldName in record)) {
-            this._metaData.columns.push(fieldName);
-            this._metaData.columns = [...new Set(this._metaData.columns)]; //Remove duplicates
-            this._triggerFetching();
-            throw new LoadingDataError();
+        const lastField = fieldPath.split(".").at(-1);
+        if (Array.isArray(record)) {
+            // remove duplicates?
+            // needs to be formatted...
+            return record.map((r) => this._parseServerValue(field, r[lastField])).join(", ");
         }
+        return this._parseServerValue(field, record[lastField]);
+    }
+
+    _parseServerValue(field, value) {
         switch (field.type) {
             case "many2one":
-                return record[fieldName].length === 2 ? record[fieldName][1] : "";
+                return value.display_name ?? "";
             case "one2many":
             case "many2many": {
-                const labels = record[fieldName]
-                    .map((id) => this._metadataRepository.getRecordDisplayName(field.relation, id))
-                    .filter((value) => value !== undefined);
+                const labels = value
+                    .map(({ display_name }) => display_name)
+                    .filter((displayName) => displayName !== undefined);
                 return labels.join(", ");
             }
             case "selection": {
-                const key = record[fieldName];
-                const value = field.selection.find((array) => array[0] === key);
-                return value ? value[1] : "";
+                const key = value;
+                const selectedOption = field.selection.find((array) => array[0] === key);
+                return selectedOption ? selectedOption[1] : "";
             }
             case "boolean":
-                return record[fieldName] ? "TRUE" : "FALSE";
+                return value ? true : false;
             case "date":
-                return record[fieldName]
-                    ? toNumber(this._formatDate(record[fieldName]), DEFAULT_LOCALE)
-                    : "";
+                return value ? toNumber(this._formatDate(value), DEFAULT_LOCALE) : "";
             case "datetime":
-                return record[fieldName]
-                    ? toNumber(this._formatDateTime(record[fieldName]), DEFAULT_LOCALE)
-                    : "";
+                return value ? toNumber(this._formatDateTime(value), DEFAULT_LOCALE) : "";
             case "properties": {
-                const properties = record[fieldName] || [];
-                return properties.map((property) => property.string).join(", ");
+                return new EvaluationError(_t("Please specify the property field name"));
             }
             case "json":
-                throw new Error(sprintf(_t('Fields of type "%s" are not supported'), "json"));
+                return new EvaluationError(_t('Fields of type "%s" are not supported', "json"));
+            case "monetary":
+            case "float":
+            case "integer":
+                return value ?? "";
             default:
-                return record[fieldName] || "";
+                return value || "";
         }
+    }
+
+    _parsePropertyFieldServerValue(field, propertyValue) {
+        const { type, value } = propertyValue;
+        if (!value) {
+            return "";
+        }
+        switch (type) {
+            case "date":
+                return toNumber(this._formatDate(value), DEFAULT_LOCALE);
+            case "datetime":
+                return toNumber(this._formatDateTime(value), DEFAULT_LOCALE);
+            case "many2one":
+                return value[1];
+            case "many2many":
+                return value.map((v) => v[1]).join(", ");
+            case "tags":
+                return value
+                    .map((tagId) => {
+                        const tag = field.tags.find((tag) => tag[0] === tagId);
+                        return tag ? tag[1] : "";
+                    })
+                    .join(", ");
+            case "selection": {
+                const key = value;
+                const selectedOption = field.selection.find((array) => array[0] === key);
+                return selectedOption ? selectedOption[1] : "";
+            }
+            default:
+                return value;
+        }
+    }
+
+    /**
+     * @param {number} position
+     * @param {string} fieldPath
+     * @param {string} currencyFieldName
+     * @returns {import("@spreadsheet/currency/currency_data_source").Currency | undefined}
+     */
+    getListCurrency(position, fieldPath, currencyFieldName) {
+        this.assertIsValid();
+        const currency = this._getRecordFromRelation(this.data[position], fieldPath)?.[
+            currencyFieldName
+        ];
+        if (!currency) {
+            return undefined;
+        }
+        return {
+            code: currency.name,
+            symbol: currency.symbol,
+            decimalPlaces: currency.decimal_places,
+            position: currency.position,
+        };
+    }
+
+    getFieldFromFieldPath(fieldPath) {
+        return this.fieldPathsToFieldMap[fieldPath];
     }
 
     //--------------------------------------------------------------------------
@@ -183,17 +446,15 @@ export default class ListDataSource extends OdooViewsDataSource {
 
     _formatDateTime(dateValue) {
         const date = deserializeDateTime(dateValue);
-        return formatDateTime(date, {
+        return formatDateTime(date.reconfigure({ numberingSystem: "latn" }), {
             format: "yyyy-MM-dd HH:mm:ss",
-            numberingSystem: "latn",
         });
     }
 
     _formatDate(dateValue) {
         const date = deserializeDate(dateValue);
-        return formatDate(date, {
+        return formatDate(date.reconfigure({ numberingSystem: "latn" }), {
             format: "yyyy-MM-dd",
-            numberingSystem: "latn",
         });
     }
 
@@ -206,12 +467,25 @@ export default class ListDataSource extends OdooViewsDataSource {
         if (this._fetchingPromise) {
             return;
         }
-        this._fetchingPromise = Promise.resolve().then(() => {
-            new Promise((resolve) => {
-                this.load({ reload: true });
-                this._fetchingPromise = undefined;
-                resolve();
-            });
-        });
+        this._fetchingPromise = Promise.resolve().then(
+            () =>
+                new Promise((resolve) => {
+                    this._fetchingPromise = undefined;
+                    this.load({ reload: true });
+                    resolve();
+                })
+        );
+    }
+
+    get source() {
+        this._assertMetadataIsLoaded();
+        const data = this._metaData;
+        return {
+            resModel: data.resModel,
+            type: "list",
+            fields: data.columns,
+            groupby: undefined,
+            domain: this._searchParams.domain,
+        };
     }
 }

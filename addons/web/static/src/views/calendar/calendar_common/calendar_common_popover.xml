@@ -1,66 +1,66 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <templates xml:space="preserve">
 
-    <t t-name="web.CalendarCommonPopover" owl="1">
-        <t t-if="env.isSmall">
-            <Dialog title="props.record.title">
-                <t t-call="{{ constructor.subTemplates.body }}" />
+    <t t-name="web.CalendarCommonPopover">
+        <t t-if="this.env.isSmall">
+            <Dialog title="this.props.record.title" contentClass="'o_calendar_color_'+ this.props.record.colorIndex">
+                <t t-call="{{ this.constructor.subTemplates.body }}" />
                 <t t-set-slot="footer">
-                    <t t-call="{{ constructor.subTemplates.footer }}" />
+                    <t t-call="{{ this.constructor.subTemplates.footer }}" />
                 </t>
             </Dialog>
         </t>
         <t t-else="">
-            <t t-call="{{ constructor.subTemplates.popover }}" />
+            <t t-call="{{ this.constructor.subTemplates.popover }}" />
         </t>
     </t>
 
-    <t t-name="web.CalendarCommonPopover.popover" owl="1">
+    <t t-name="web.CalendarCommonPopover.popover">
         <div class="card-header d-flex justify-content-between py-2 pe-2">
-            <h4 class="p-0 pt-1">
-                <span class="popover-header border-0" t-esc="props.record.title" />
-            </h4>
-            <span class="o_cw_popover_close ms-4 mt-2 me-2" t-on-click.stop="() => props.close()">
-                <i class="fa fa-close" />
+            <span class="popover-header border-0 text-truncate">
+                <i t-if="this.props.record.titleIcon" t-attf-class="me-2 {{this.props.record.titleIcon}}"/>
+                <span t-out="this.props.record.title" t-att-data-tooltip="this.props.record.title"/>
+            </span>
+            <span class="o_cw_popover_close ms-4 mt-2 me-2" t-on-click.stop="() => this.props.close()">
+                <i class="fc-close fc-icon fc-icon-x" />
             </span>
         </div>
         <div class="o_cw_body">
-            <t t-call="{{ constructor.subTemplates.body }}" />
-            <div class="card-footer border-top" t-att-class="{ 'o_footer_shrink': !hasFooter }">
-                <t t-call="{{ constructor.subTemplates.footer }}" />
+            <t t-call="{{ this.constructor.subTemplates.body }}" />
+            <div t-if="this.hasFooter" class="card-footer d-flex gap-1 border-top">
+                <t t-call="{{ this.constructor.subTemplates.footer }}" />
             </div>
         </div>
     </t>
 
-    <t t-name="web.CalendarCommonPopover.body" owl="1">
+    <t t-name="web.CalendarCommonPopover.body">
         <ul class="list-group list-group-flush">
-            <li t-if="date" class="list-group-item">
-                <i class="fa fa-fw fa-calendar-o" />
-                <b class="text-capitalize" t-esc="date" /> <small t-if="dateDuration"><b t-esc="`(${dateDuration})`" /></small>
+            <li t-if="this.date" class="list-group-item">
+                <i class="fa fa-fw fa-calendar text-400" />
+                <span class="fw-bold ms-2" t-out="this.date" /> <small t-if="this.dateDuration != 'All day'"><b t-out="this.dateDuration" /></small>
             </li>
-            <li t-if="time" class="list-group-item">
-                <i class="fa fa-fw fa-clock-o" />
-                <b t-esc="time" /> <small t-if="timeDuration"><b t-esc="`(${timeDuration})`" /></small>
+            <li t-if="this.time" class="list-group-item">
+                <i class="fa fa-fw fa-clock-o text-400" />
+                <span class="fw-bold ms-2" t-out="this.time" /> <small t-if="this.timeDuration"><b t-out="`(${this.timeDuration})`" /></small>
             </li>
         </ul>
         <ul class="list-group list-group-flush o_cw_popover_fields_secondary">
-            <Record resModel="props.model.resModel" resId="props.record.id" fields="props.model.fields" activeFields="props.model.popoverFields" mode="'readonly'" values="props.record.rawRecord" t-slot-scope="slot">
-                <t t-foreach="slot.record.fieldNames" t-as="fieldName" t-key="fieldName">
-                    <t t-if="!isInvisible(fieldName, slot.record)">
-                        <t t-set="fieldInfo" t-value="props.model.popoverFields[fieldName]" />
-                        <li class="list-group-item flex-shrink-0 d-flex align-items-start" t-att-class="fieldInfo.attrs.class">
-                            <strong class="me-2">
+            <Record resModel="this.props.model.resModel" resId="this.props.record.id" fields="this.props.model.fields" activeFields="this.activeFields" mode="'readonly'" values="this.props.record.rawRecord" t-slot-scope="slot">
+                <t t-foreach="Object.keys(this.props.model.popoverFieldNodes)" t-as="fieldId" t-key="fieldId">
+                    <t t-set="fieldInfo" t-value="this.props.model.popoverFieldNodes[fieldId]"/>
+                    <t t-set="fieldType" t-value="this.props.model.fields[fieldId].type"/>
+                    <t t-if="!this.isInvisible(fieldInfo, slot.record)">
+                        <li class="list-group-item d-flex text-nowrap" t-att-class="fieldInfo.attrs.class"  t-att-data-tooltip="fieldType === 'html' ? '' : this.getFormattedValue(fieldId, slot.record)">
+                            <span class="fw-bold me-2" t-if="!fieldInfo.options.noLabel and fieldInfo.type !== 'properties'">
                                 <t t-if="fieldInfo.options.icon">
-                                    <b>
-                                        <i t-att-class="fieldInfo.options.icon" />
-                                    </b>
+                                    <i t-attf-class="fa-fw {{fieldInfo.options.icon}} text-400" />
                                 </t>
                                 <t t-else="">
-                                    <t t-esc="fieldInfo.string" />:
+                                    <t t-out="fieldInfo.string" />
                                 </t>
-                            </strong>
-                            <div class="flex-grow-1">
-                                <Field name="fieldName" record="slot.record" fieldInfo="fieldInfo" type="fieldInfo.widget" />
+                            </span>
+                            <div class="flex-grow-1 o_cw_popover_field overflow-hidden">
+                                <Field name="fieldInfo.name" record="slot.record" class="fieldInfo.attrs.class" fieldInfo="fieldInfo" type="fieldInfo.widget" />
                             </div>
                         </li>
                     </t>
@@ -69,12 +69,17 @@
         </ul>
     </t>
 
-    <t t-name="web.CalendarCommonPopover.footer" owl="1">
-        <t t-if="isEventEditable">
-            <a href="#" class="btn btn-primary o_cw_popover_edit" t-on-click="onEditEvent">Edit</a>
+    <t t-name="web.CalendarCommonPopover.footer">
+        <t t-if="this.isEventEditable or this.isEventViewable">
+            <a href="#" class="btn btn-primary o_cw_popover_edit" t-on-click="this.onEditEvent">
+                <t t-if="this.isEventEditable">Edit</t>
+                <t t-else="">View</t>
+            </a>
         </t>
-        <t t-if="isEventDeletable">
-            <a href="#" class="btn btn-secondary o_cw_popover_delete ms-2" t-on-click="onDeleteEvent">Delete</a>
+        <t t-if="this.isEventDeletable">
+            <a href="#" class="btn btn-danger o_cw_popover_delete" t-on-click="this.onDeleteEvent">
+                Delete
+            </a>
         </t>
     </t>
 

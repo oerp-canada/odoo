@@ -7,19 +7,6 @@ from typing import Dict, Callable, List, Optional
 from odoo import api, fields, models
 
 
-class RestaurantFloor(models.Model):
-    _inherit = "restaurant.floor"
-
-    def _get_data_for_qr_codes_page(self, url: Callable):
-        return [
-            {
-                "name": floor.name,
-                "tables": floor.table_ids.filtered("active")._get_data_for_qr_codes_page(url),
-            }
-            for floor in self
-        ]
-
-
 class RestaurantTable(models.Model):
     _inherit = "restaurant.table"
 
@@ -27,24 +14,8 @@ class RestaurantTable(models.Model):
         "Security Token",
         copy=False,
         required=True,
-        readonly=True,
         default=lambda self: self._get_identifier(),
     )
-
-    def _get_self_order_data(self) -> Dict:
-        self.ensure_one()
-        return self.read(["name", "identifier"])[0]
-
-    def _get_data_for_qr_codes_page(self, url: Callable[[Optional[int]], str]) -> List[Dict]:
-        return [
-            {
-                'identifier': table.identifier,
-                'id': table.id,
-                'name': table.name,
-                'url': url(table.id),
-            }
-            for table in self
-        ]
 
     @staticmethod
     def _get_identifier():
@@ -55,3 +26,23 @@ class RestaurantTable(models.Model):
         tables = self.env["restaurant.table"].search([])
         for table in tables:
             table.identifier = self._get_identifier()
+
+    @api.model
+    def _load_pos_self_data_fields(self, config):
+        return ['table_number', 'identifier', 'floor_id']
+
+    @api.model
+    def _load_pos_self_data_domain(self, data, config):
+        return [('floor_id', 'in', [floor['id'] for floor in data['restaurant.floor']])]
+
+
+class RestaurantFloor(models.Model):
+    _inherit = "restaurant.floor"
+
+    @api.model
+    def _load_pos_self_data_fields(self, config):
+        return ['name', 'table_ids']
+
+    @api.model
+    def _load_pos_self_data_domain(self, data, config):
+        return [('id', 'in', config.floor_ids.ids)]

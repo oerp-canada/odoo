@@ -1,31 +1,30 @@
-/** @odoo-module **/
-
-import { XMLParser } from "@web/core/utils/xml";
+import { exprToBoolean } from "@web/core/utils/strings";
+import { evaluateExpr } from "@web/core/py_js/py";
+import { visitXML } from "@web/core/utils/xml";
 import { GROUPABLE_TYPES } from "@web/search/utils/misc";
-import { archParseBoolean } from "@web/views/utils";
 
 const MODES = ["bar", "line", "pie"];
 const ORDERS = ["ASC", "DESC", "asc", "desc", null];
 
-export class GraphArchParser extends XMLParser {
+export class GraphArchParser {
     parse(arch, fields = {}) {
-        const archInfo = { fields, fieldAttrs: {}, groupBy: [] };
-        this.visitXML(arch, (node) => {
+        const archInfo = { fields, fieldAttrs: {}, groupBy: [], measures: [] };
+        visitXML(arch, (node) => {
             switch (node.tagName) {
                 case "graph": {
                     if (node.hasAttribute("disable_linking")) {
-                        archInfo.disableLinking = archParseBoolean(
+                        archInfo.disableLinking = exprToBoolean(
                             node.getAttribute("disable_linking")
                         );
                     }
                     if (node.hasAttribute("stacked")) {
-                        archInfo.stacked = archParseBoolean(node.getAttribute("stacked"));
+                        archInfo.stacked = exprToBoolean(node.getAttribute("stacked"));
                     }
                     if (node.hasAttribute("cumulated")) {
-                        archInfo.cumulated = archParseBoolean(node.getAttribute("cumulated"));
+                        archInfo.cumulated = exprToBoolean(node.getAttribute("cumulated"));
                     }
                     if (node.hasAttribute("cumulated_start")) {
-                        archInfo.cumulatedStart = archParseBoolean(
+                        archInfo.cumulatedStart = exprToBoolean(
                             node.getAttribute("cumulated_start")
                         );
                     }
@@ -48,23 +47,28 @@ export class GraphArchParser extends XMLParser {
                     if (fieldName === "id") {
                         break;
                     }
+                    if (!archInfo.fieldAttrs[fieldName]) {
+                        archInfo.fieldAttrs[fieldName] = {};
+                    }
+
+                    const options = node.getAttribute("options");
+                    archInfo.fieldAttrs[fieldName].options = options ? evaluateExpr(options): {};
+                    
                     const string = node.getAttribute("string");
                     if (string) {
-                        if (!archInfo.fieldAttrs[fieldName]) {
-                            archInfo.fieldAttrs[fieldName] = {};
-                        }
                         archInfo.fieldAttrs[fieldName].string = string;
                     }
-                    const modifiers = JSON.parse(node.getAttribute("modifiers") || "{}");
-                    if (modifiers.invisible === true) {
-                        if (!archInfo.fieldAttrs[fieldName]) {
-                            archInfo.fieldAttrs[fieldName] = {};
-                        }
+                    const widget = node.getAttribute("widget");
+                    if (widget) {
+                        archInfo.fieldAttrs[fieldName].widget = widget;
+                    }
+                    if (exprToBoolean(node.getAttribute("invisible"))) {
                         archInfo.fieldAttrs[fieldName].isInvisible = true;
                         break;
                     }
                     const isMeasure = node.getAttribute("type") === "measure";
                     if (isMeasure) {
+                        archInfo.measures.push(fieldName);
                         // the last field with type="measure" (if any) will be used as measure else __count
                         archInfo.measure = fieldName;
                     } else {

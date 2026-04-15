@@ -1,8 +1,6 @@
-# -*- coding: utf-8 -*-
 
 {
     'name': 'Mail Tests (Full)',
-    'version': '1.0',
     'category': 'Hidden',
     'sequence': 9876,
     'summary': 'Mail Tests: performances and tests specific to mail with all sub-modules',
@@ -28,16 +26,17 @@ real applications. """,
         'data/mail_message_subtype_data.xml',
         'security/ir.model.access.csv',
         'security/ir_rule_data.xml',
+        'views/test_portal_template.xml',
     ],
     'assets': {
-        'web.qunit_suite_tests': [
+        'web.assets_unit_tests': [
             'test_mail_full/static/tests/**/*',
-            ('remove', 'test_mail_full/static/tests/helpers/**/*'),
+            ('remove', 'test_mail_full/static/tests/tours/**/*'),
         ],
-        'web.tests_assets': [
-            'test_mail_full/static/tests/helpers/**/*',
+        'web.assets_tests': [
+            'test_mail_full/static/tests/tours/**/*',
         ],
     },
-    'installable': True,
+    'author': 'Odoo S.A.',
     'license': 'LGPL-3',
 }

@@ -1,12 +1,9 @@
-# -*- coding: utf-8 -*-
 # Part of Odoo. See LICENSE file for full copyright and licensing details.
-
-
-import base64
 
 from odoo import api, fields, models
 from odoo.exceptions import ValidationError
-from odoo.tools import ImageProcess
+from odoo.tools import BinaryBytes
+from odoo.tools.image import ImageProcess
 from odoo.tools.translate import _
 
 
@@ -42,15 +39,24 @@ class Website(models.Model):
     def _compute_app_icon(self):
         """ Computes a squared image based on the favicon to be used as mobile webapp icon.
             App Icon should be in PNG format and size of at least 512x512.
+
+            If the favicon is an SVG image, it will be skipped and the app_icon will be set to False.
+
         """
         for website in self:
-            if not website.favicon:
+            image = ImageProcess(website.favicon.content) if website.favicon else None
+            if not (image and image.image):
                 website.app_icon = False
                 continue
-            image = ImageProcess(base64.b64decode(website.favicon))
             w, h = image.image.size
             square_size = w if w > h else h
             image.crop_resize(square_size, square_size)
             image.image = image.image.resize((512, 512))
             image.operationsCount += 1
-            website.app_icon = base64.b64encode(image.image_quality(output_format='PNG'))
+            website.app_icon = BinaryBytes(image.image_quality(output_format='PNG'))
+
+    def _search_get_details(self, search_type, order, options):
+        result = super()._search_get_details(search_type, order, options)
+        if search_type == 'track':
+            result.append(self.env['event.track']._search_get_detail(self, order, options))
+        return result

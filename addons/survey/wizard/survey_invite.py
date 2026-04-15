@@ -6,7 +6,8 @@ import re
 import werkzeug
 
 from odoo import api, fields, models, tools, _
-from odoo.exceptions import UserError
+from odoo.exceptions import UserError, ValidationError
+from odoo.tools.mail import email_split_and_format, email_normalize
 
 _logger = logging.getLogger(__name__)
 
@@ -15,7 +16,7 @@ emails_split = re.compile(r"[;,\n\r]+")
 
 class SurveyInvite(models.TransientModel):
     _name = 'survey.invite'
-    _inherit = 'mail.composer.mixin'
+    _inherit = ['mail.composer.mixin']
     _description = 'Survey Invitation Wizard'
 
     @api.model
@@ -25,7 +26,7 @@ class SurveyInvite(models.TransientModel):
     # composer content
     attachment_ids = fields.Many2many(
         'ir.attachment', 'survey_mail_compose_message_ir_attachments_rel', 'wizard_id', 'attachment_id',
-        string='Attachments')
+        string='Attachments', compute='_compute_attachment_ids', store=True, readonly=False, bypass_search_access=True)
     # origin
     author_id = fields.Many2one(
         'res.partner', 'Author', index=True,
@@ -60,6 +61,17 @@ class SurveyInvite(models.TransientModel):
     deadline = fields.Datetime(string="Answer deadline")
     send_email = fields.Boolean(compute="_compute_send_email",
                                 inverse="_inverse_send_email")
+    scheduled_date = fields.Datetime('Scheduled Date',
+        help="send emails after that date. This date is considered as being in UTC timezone."
+    )
+
+    @api.constrains('scheduled_date', 'deadline')
+    def _check_deadline_after_schedule(self):
+        for invite in self:
+            if invite.scheduled_date and invite.deadline and invite.scheduled_date > invite.deadline:
+                raise ValidationError(
+                    self.env._("The answer deadline should be after the email schedule date.")
+                )
 
     @api.depends('survey_access_mode')
     def _compute_send_email(self):
@@ -102,7 +114,7 @@ class SurveyInvite(models.TransientModel):
     @api.depends('survey_id.access_token')
     def _compute_survey_start_url(self):
         for invite in self:
-            invite.survey_start_url = werkzeug.urls.url_join(invite.survey_id.get_base_url(), invite.survey_id.get_start_url()) if invite.survey_id else False
+            invite.survey_start_url = tools.urls.urljoin(invite.survey_id.get_base_url(), invite.survey_id.get_start_url()) if invite.survey_id else False
 
     # Overrides of mail.composer.mixin
     @api.depends('survey_id')  # fake trigger otherwise not computed in new mode
@@ -118,13 +130,13 @@ class SurveyInvite(models.TransientModel):
         valid, error = [], []
         emails = list(set(emails_split.split(self.emails or "")))
         for email in emails:
-            email_check = tools.email_split_and_format(email)
+            email_check = email_split_and_format(email)
             if not email_check:
                 error.append(email)
             else:
                 valid.extend(email_check)
         if error:
-            raise UserError(_("Some emails you just entered are incorrect: %s") % (', '.join(error)))
+            raise UserError(_("Some emails you just entered are incorrect: %s", ', '.join(error)))
         self.emails = '\n'.join(valid)
 
     @api.onchange('partner_ids')
@@ -155,8 +167,8 @@ class SurveyInvite(models.TransientModel):
     @api.depends('template_id', 'partner_ids')
     def _compute_subject(self):
         for invite in self:
-            if invite.subject:
-                continue
+            if invite.template_id and invite.template_id.subject:
+                invite.subject = invite.template_id.subject
             else:
                 invite.subject = _("Participate to %(survey_name)s", survey_name=invite.survey_id.display_name)
 
@@ -167,6 +179,18 @@ class SurveyInvite(models.TransientModel):
             if len(langs) == 1:
                 invite = invite.with_context(lang=langs.pop())
             super(SurveyInvite, invite)._compute_body()
+
+    @api.depends('template_id')
+    def _compute_attachment_ids(self):
+        """
+        'OnChange-like' behavior used for template selection: not intended to update records when
+            individual attachments get added
+        """
+        for invite in self:
+            if invite.template_id:
+                invite.attachment_ids = invite.template_id.attachment_ids
+            else:
+                invite.attachment_ids = False
 
     # ------------------------------------------------------
     # Wizard validation and send
@@ -217,6 +241,9 @@ class SurveyInvite(models.TransientModel):
 
     def _send_mail(self, answer):
         """ Create mail specific for recipient containing notably its access token """
+        email_from = self.template_id._render_field('email_from', answer.ids)[answer.id] if self.template_id.email_from else self.author_id.email_formatted
+        if not email_from:
+            raise UserError(_("Unable to post message, please configure the sender's email address."))
         subject = self._render_field('subject', answer.ids)[answer.id]
         body = self._render_field('body', answer.ids)[answer.id]
         # post the message
@@ -225,10 +252,11 @@ class SurveyInvite(models.TransientModel):
             'auto_delete': True,
             'author_id': self.author_id.id,
             'body_html': body,
-            'email_from': self.author_id.email_formatted,
+            'email_from': email_from,
             'model': None,
             'res_id': None,
             'subject': subject,
+            'scheduled_date': self.scheduled_date,
         }
         if answer.partner_id:
             mail_values['recipient_ids'] = [(4, answer.partner_id.id)]
@@ -238,17 +266,10 @@ class SurveyInvite(models.TransientModel):
         # optional support of default_email_layout_xmlid in context
         email_layout_xmlid = self.env.context.get('default_email_layout_xmlid', self.env.context.get('notif_layout'))
         if email_layout_xmlid:
-            template_ctx = {
-                'message': self.env['mail.message'].sudo().new(dict(body=mail_values['body_html'], record_name=self.survey_id.title)),
-                'model_description': self.env['ir.model']._get('survey.survey').display_name,
-                'company': self.env.company,
-            }
-            body = self.env['ir.qweb']._render(email_layout_xmlid, template_ctx, minimal_qcontext=True, raise_if_not_found=False)
-            if body:
-                mail_values['body_html'] = self.env['mail.render.mixin']._replace_local_links(body)
-            else:
-                _logger.warning('QWeb template %s not found or is empty when sending survey mails. Sending without layout', email_layout_xmlid)
-
+            mail_values['body_html'] = self._render_encapsulate(
+                email_layout_xmlid, mail_values['body_html'],
+                context_record=self.survey_id,
+            )
         return self.env['mail.mail'].sudo().create(mail_values)
 
     def action_invite(self):
@@ -265,14 +286,14 @@ class SurveyInvite(models.TransientModel):
         valid_emails = []
         for email in emails_split.split(self.emails or ''):
             partner = False
-            email_normalized = tools.email_normalize(email)
+            email_normalized = email_normalize(email)
             if email_normalized:
                 limit = None if self.survey_users_login_required else 1
                 partner = Partner.search([('email_normalized', '=', email_normalized)], limit=limit)
             if partner:
                 valid_partners |= partner
             else:
-                email_formatted = tools.email_split_and_format(email)
+                email_formatted = email_split_and_format(email)
                 if email_formatted:
                     valid_emails.extend(email_formatted)
 

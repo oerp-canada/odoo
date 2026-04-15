@@ -1,11 +1,11 @@
-/** @odoo-module **/
-
+import { useState } from "@web/owl2/utils";
 import { browser } from "@web/core/browser/browser";
+import { rpcBus } from "@web/core/network/rpc";
 import { registry } from "@web/core/registry";
-import { useService } from "@web/core/utils/hooks";
+import { useBus } from "@web/core/utils/hooks";
 import { Transition } from "@web/core/transition";
 
-import { Component, onWillDestroy, useState } from "@odoo/owl";
+import { Component } from "@odoo/owl";
 
 /**
  * Loading Indicator
@@ -18,22 +18,19 @@ import { Component, onWillDestroy, useState } from "@odoo/owl";
  * After a delay of 3s, if a rpc is still not completed, we also block the UI.
  */
 export class LoadingIndicator extends Component {
+    static template = "web.LoadingIndicator";
+    static components = { Transition };
+    static props = {};
+
     setup() {
-        this.uiService = useService("ui");
         this.state = useState({
             count: 0,
             show: false,
         });
         this.rpcIds = new Set();
-        this.shouldUnblock = false;
         this.startShowTimer = null;
-        this.blockUITimer = null;
-        this.env.bus.addEventListener("RPC:REQUEST", this.requestCall.bind(this));
-        this.env.bus.addEventListener("RPC:RESPONSE", this.responseCall.bind(this));
-        onWillDestroy(() => {
-            this.env.bus.removeEventListener("RPC:REQUEST", this.requestCall.bind(this));
-            this.env.bus.removeEventListener("RPC:RESPONSE", this.responseCall.bind(this));
-        });
+        useBus(rpcBus, "RPC:REQUEST", this.requestCall);
+        useBus(rpcBus, "RPC:RESPONSE", this.responseCall);
     }
 
     requestCall({ detail }) {
@@ -45,10 +42,6 @@ export class LoadingIndicator extends Component {
             this.startShowTimer = browser.setTimeout(() => {
                 if (this.state.count) {
                     this.state.show = true;
-                    this.blockUITimer = browser.setTimeout(() => {
-                        this.shouldUnblock = true;
-                        this.uiService.block();
-                    }, 3000);
                 }
             }, 250);
         }
@@ -64,19 +57,10 @@ export class LoadingIndicator extends Component {
         this.state.count = this.rpcIds.size;
         if (this.state.count === 0) {
             browser.clearTimeout(this.startShowTimer);
-            browser.clearTimeout(this.blockUITimer);
             this.state.show = false;
-            if (this.shouldUnblock) {
-                this.uiService.unblock();
-                this.shouldUnblock = false;
-            }
         }
     }
 }
-
-LoadingIndicator.template = "web.LoadingIndicator";
-LoadingIndicator.components = { Transition };
-LoadingIndicator.props = {};
 
 registry.category("main_components").add("LoadingIndicator", {
     Component: LoadingIndicator,

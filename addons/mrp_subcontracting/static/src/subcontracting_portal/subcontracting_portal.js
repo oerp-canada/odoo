@@ -1,21 +1,20 @@
-/** @odoo-module **/
-
+import { useExternalListener, useLayoutEffect } from "@web/owl2/utils";
 import { useService } from '@web/core/utils/hooks';
 import { ActionContainer } from '@web/webclient/actions/action_container';
 import { MainComponentsContainer } from "@web/core/main_components_container";
 import { useOwnDebugContext } from "@web/core/debug/debug_context";
 import { session } from '@web/session';
-
-const { Component, useEffect, useExternalListener } = owl;
+import { Component } from "@odoo/owl";
 
 export class SubcontractingPortalWebClient extends Component {
+    static components = { ActionContainer, MainComponentsContainer };
+    static template = "mrp_subcontracting.SubcontractingPortalWebClient";
+    static props = {};
     setup() {
         window.parent.document.body.style.margin = "0"; // remove the margin in the parent body
         this.actionService = useService('action');
-        this.user = useService("user");
-        useService("legacy_service_provider");
         useOwnDebugContext({ categories: ["default"] });
-        useEffect(
+        useLayoutEffect(
             () => {
                 this._showView();
             },
@@ -59,5 +58,3 @@ export class SubcontractingPortalWebClient extends Component {
     }
 }
 
-SubcontractingPortalWebClient.components = { ActionContainer, MainComponentsContainer };
-SubcontractingPortalWebClient.template = 'mrp_subcontracting.SubcontractingPortalWebClient';

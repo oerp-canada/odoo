@@ -1,7 +1,5 @@
-/** @odoo-module **/
-
 import { registry } from "@web/core/registry";
-import { _lt } from "@web/core/l10n/translation";
+import { _t } from "@web/core/l10n/translation";
 import { standardFieldProps } from "../standard_field_props";
 import { formatSelection } from "../formatters";
 
@@ -29,7 +27,14 @@ export class LabelSelectionField extends Component {
 
 export const labelSelectionField = {
     component: LabelSelectionField,
-    displayName: _lt("Label Selection"),
+    displayName: _t("Label Selection"),
+    supportedOptions: [
+        {
+            label: _t("Classes"),
+            name: "classes",
+            type: "string",
+        },
+    ],
     supportedTypes: ["selection"],
     extractProps: ({ options }) => ({
         classesObj: options.classes,

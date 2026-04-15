@@ -166,18 +166,6 @@ $utilities: map-merge(
             property: flex-basis,
             values: $utilities-sizes,
         ),
-        "z-index": (
-            property: z-index,
-            values: 0 1,
-        ),
-        "overflow-x": (
-            property: overflow-x,
-            values: auto hidden visible scroll,
-        ),
-        "overflow-y": (
-            property: overflow-y,
-            values: auto hidden visible scroll,
-        ),
         "transition": (
             property: transition,
             values: (
@@ -197,10 +185,13 @@ $utilities: map-merge(
 
 // Define opacity:hover classes while defining the triggerer behavior.
 // Use'.opacity-trigger-hover' class to allow hovered parents to
-// trigger their children ':hover' opacity state.
+// trigger their children ':hover' and ':focus-visible' opacity states.
 @each $-opacity-key, $-opacity-level in $utilities-opacity {
     .opacity-#{$-opacity-key}-hover {
-        &:hover, .opacity-trigger-hover:hover & {
+        &:hover,
+        &:focus-visible,
+        .opacity-trigger-hover:hover &,
+        .opacity-trigger-hover:focus-visible & {
             opacity: $-opacity-level!important;
         }
     }
@@ -214,4 +205,12 @@ $utilities: map-merge(
 // Define a smaller font-size
 .smaller {
     font-size: $o-font-size-base-smaller;
+}
+
+// Multiline text truncation utility : limits visible text to N lines (2 by default)
+.o_line_clamp {
+    display: -webkit-box;
+    -webkit-line-clamp: var(--lines-clamp, 2);
+    -webkit-box-orient: vertical;
+    overflow: hidden;
 }

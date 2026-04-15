@@ -1,12 +1,8 @@
 # Part of Odoo. See LICENSE file for full copyright and licensing details.
 
 from . import common
-from . import db
 from . import model
 from . import server
-
-# deprecated since 15.3
-from . import wsgi_server
 
 #.apidoc title: RPC Services
 

@@ -1,9 +1,6 @@
-/** @odoo-module **/
-
 import { localization } from "@web/core/l10n/localization";
 import { _t } from "@web/core/l10n/translation";
 import { memoize } from "@web/core/utils/functions";
-import { sprintf } from "@web/core/utils/strings";
 import { ensureArray } from "../utils/arrays";
 
 const { DateTime, Settings } = luxon;
@@ -24,6 +21,20 @@ const { DateTime, Settings } = luxon;
  * @typedef {[NullableDateTime, NullableDateTime]} NullableDateRange
  *
  * @typedef {DateTime | false | null | undefined} NullableDateTime
+ */
+
+/**
+ * @typedef ConversionLocalOptions
+ *
+ * @property {boolean} [showSeconds]
+ *  Show the seconds in the final result.
+ *  > Default: false.
+ * @property {boolean} [showTime]
+ *  Show the time in the final result.
+ *  > Default: true.
+ * @property {boolean} [showDate]
+ *  Show the date in the final result.
+ *  > Default: true.
  */
 
 /**
@@ -66,23 +77,31 @@ const normalizeFormatTable = {
     X: "HH:mm:ss",
 };
 
-const smartDateUnits = {
+export const smartDateUnits = {
     d: "days",
     m: "months",
     w: "weeks",
     y: "years",
+    H: "hours",
+    M: "minutes",
+    S: "seconds",
 };
-const smartDateRegex = new RegExp(
-    ["^", "([+-])", "(\\d+)", `([${Object.keys(smartDateUnits).join("")}]?)`, "$"].join("\\s*"),
-    "i"
-);
+const smartWeekdays = {
+    monday: 1,
+    tuesday: 2,
+    wednesday: 3,
+    thursday: 4,
+    friday: 5,
+    saturday: 6,
+    sunday: 7,
+};
 
 /** @type {WeakMap<DateTime, string>} */
 const dateCache = new WeakMap();
 /** @type {WeakMap<DateTime, string>} */
 const dateTimeCache = new WeakMap();
 
-class ConversionError extends Error {
+export class ConversionError extends Error {
     name = "ConversionError";
 }
 
@@ -130,13 +149,70 @@ export function clampDate(desired, minDate, maxDate) {
 }
 
 /**
- * Returns whether the given format is a 24-hour format.
- * Falls back to localization time format if none is given.
+ * Get the week year and week number of a given date as well as the starting
+ * date of the week, in the user's locale settings.
  *
- * @param {string} format
+ * @param {Date | luxon.DateTime} date
+ * @returns {{ year: number, week: number, startDate: luxon.DateTime }}
+ *  the year the week is part of, and
+ *  the ISO week number (1-53) of the Monday nearest to the locale's first day of the week
  */
-export function is24HourFormat(format) {
-    return /H/.test(format || localization.timeFormat);
+export function getLocalYearAndWeek(date) {
+    if (!date.isLuxonDateTime) {
+        date = DateTime.fromJSDate(date);
+    }
+    const { weekStart } = localization;
+    // go to start of week
+    const startDate = date.minus({ days: (date.weekday + 7 - weekStart) % 7 });
+    // go to nearest Monday, up to 3 days back- or forwards
+    date =
+        weekStart > 1 && weekStart < 5 // if firstDay after Mon & before Fri
+            ? startDate.minus({ days: (startDate.weekday + 6) % 7 }) // then go back 1-3 days
+            : startDate.plus({ days: (8 - startDate.weekday) % 7 }); // else go forwards 0-3 days
+    date = date.plus({ days: 6 }); // go to last weekday of ISO week
+    const jan4 = DateTime.local(date.year, 1, 4);
+    // count from previous year if week falls before Jan 4
+    const diffDays =
+        date < jan4 ? date.diff(jan4.minus({ years: 1 }), "day").days : date.diff(jan4, "day").days;
+    return {
+        year: date.year,
+        week: Math.trunc(diffDays / 7) + 1,
+        startDate,
+    };
+}
+
+/**
+ * Get the start of the week for the given date, in the user's locale settings.
+ * The start of the week is determined by the `weekStart` setting.
+ *
+ * Luxon's `.startOf("week")` method uses the ISO week definition, which starts on Monday.
+ * Luxon has a `.startOf("week", { useLocaleWeeks: true })` method, but it relies on the
+ * Intl API and the `getWeekInfo` method, which is not supported in all browsers.
+ * See: https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Intl/Locale/getWeekInfo#browser_compatibility
+ *
+ * @param {luxon.DateTime} date
+ * @returns {luxon.DateTime}
+ */
+export function getStartOfLocalWeek(date) {
+    const { weekStart } = localization;
+    const weekday = date.weekday < weekStart ? weekStart - 7 : weekStart;
+    return date.set({ weekday }).startOf("day");
+}
+
+/**
+ * Get the end of the week for the given date, in the user's locale settings.
+ * The end of the week is determined by the `weekStart` setting.
+ *
+ * Luxon's `.endOf("week")` method uses the ISO week definition, which starts on Monday.
+ * Luxon has a `.endOf("week", { useLocaleWeeks: true })` method, but it relies on the
+ * Intl API and the `getWeekInfo` method, which is not supported in all browsers.
+ * See: https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Intl/Locale/getWeekInfo#browser_compatibility
+ *
+ * @param {luxon.DateTime} date
+ * @returns {luxon.DateTime}
+ */
+export function getEndOfLocalWeek(date) {
+    return getStartOfLocalWeek(date).plus({ days: 6 }).endOf("day");
 }
 
 /**
@@ -149,27 +225,17 @@ export function isInRange(value, range) {
         return false;
     }
     if (Array.isArray(value)) {
-        const actualValues = value.filter(Boolean);
+        const actualValues = value.filter(Boolean).sort();
         if (actualValues.length < 2) {
             return isInRange(actualValues[0], range);
         }
         return (
-            (value[0] <= range[0] && range[0] <= value[1]) ||
-            (range[0] <= value[0] && value[0] <= range[1])
+            (actualValues[0] <= range[0] && range[0] <= actualValues[1]) ||
+            (range[0] <= actualValues[0] && actualValues[0] <= range[1])
         );
     } else {
         return range[0] <= value && value <= range[1];
     }
-}
-
-/**
- * Returns whether the given format uses a meridiem suffix (AM/PM).
- * Falls back to localization time format if none is given.
- *
- * @param {string} format
- */
-export function isMeridiemFormat(format) {
-    return /a/.test(format || localization.timeFormat);
 }
 
 /**
@@ -189,31 +255,98 @@ function isValidDate(date) {
 
 /**
  * Smart date inputs are shortcuts to write dates quicker.
- * These shortcuts should respect the format ^[+-]\d+[dmwy]?$
+ * These shortcuts are based on python version: `odoo.tools.date_utils.parse_date`.
+ * Starting from now (or "today"), add relative delta to the date.
  *
  * e.g.
  *   "+1d" or "+1" will return now + 1 day
  *   "-2w" will return now - 2 weeks
  *   "+3m" will return now + 3 months
  *   "-4y" will return now + 4 years
+ *   "=monday" will return the previous Monday at midnight
+ *   "=1d" will return the first day of month at midnight
+ *   "+3H" will return now + 3 hours
+ *   "+3M" will return now + 3 minutes
+ *   "+3S" will return now + 3 seconds
+ *   "today -1d" will return yesterday at midnight
+ *   "=week_start" will return the first day of the current week at midnight, according to the locale
+ *
+ * Difference with python version: a simple "+1" means "+1d" for the first term,
+ * the unit is optional and defaults to "d".
  *
  * @param {string} value
  * @returns {NullableDateTime} Luxon datetime object (in the user's local timezone)
  */
 function parseSmartDateInput(value) {
-    const match = value.match(smartDateRegex);
-    if (match) {
-        let date = DateTime.local();
-        const offset = parseInt(match[2], 10);
-        const unit = smartDateUnits[(match[3] || "d").toLowerCase()];
-        if (match[1] === "+") {
-            date = date.plus({ [unit]: offset });
-        } else {
-            date = date.minus({ [unit]: offset });
-        }
-        return date;
+    const terms = value.split(/\s+/);
+    if (!terms.length) {
+        return false;
     }
-    return false;
+    var now = DateTime.local().startOf("second");
+    if (terms[0] == "today") {
+        terms.shift();
+        now = now.startOf("day");
+    } else if (terms[0] == "now") {
+        terms.shift();
+    } else if (terms.length == 1 && /^[=+-]\d+$/.test(terms[0])) {
+        // handle optional unit for simple input
+        terms[0] += "d";
+    }
+
+    for (let i = 0; i < terms.length; i++) {
+        const term = terms[i];
+        const operator = term[0];
+        if (term.length < 3 || !["+", "-", "="].includes(operator)) {
+            return false;
+        }
+
+        // Weekday
+        const dayname = term.slice(1);
+        if (Object.hasOwn(smartWeekdays, dayname) || dayname === "week_start") {
+            const { weekStart } = localization;
+            const weekdayNumber = dayname === "week_start" ? weekStart : smartWeekdays[dayname];
+            let weekdayOffset =
+                ((weekdayNumber - weekStart + 7) % 7) - ((now.weekday - weekStart + 7) % 7);
+            if (operator == "+" || operator == "-") {
+                if (weekdayOffset > 0 && operator == "-") {
+                    weekdayOffset -= 7;
+                } else if (weekdayOffset < 0 && operator == "+") {
+                    weekdayOffset += 7;
+                }
+            } else {
+                now = now.startOf("day");
+            }
+            now = now.plus({ days: weekdayOffset });
+            continue;
+        }
+
+        // Operations on dates
+        try {
+            const field_name = smartDateUnits[term[term.length - 1]];
+            const number = parseInt(term.slice(1, -1), 10);
+            if (!field_name || isNaN(number)) {
+                return false;
+            }
+            if (operator == "+") {
+                now = now.plus({ [field_name]: number });
+            } else if (operator == "-") {
+                now = now.minus({ [field_name]: number });
+            } else if (operator == "=") {
+                if (field_name == "seconds" || field_name == "minutes" || field_name == "hours") {
+                    now = now.startOf(field_name);
+                } else if (field_name == "weeks") {
+                    return false; // unsupported
+                } else {
+                    now = now.startOf("day");
+                }
+                now = now.set({ [field_name]: number });
+            }
+        } catch {
+            return false;
+        }
+    }
+
+    return now;
 }
 
 /**
@@ -291,12 +424,112 @@ export function formatDateTime(value, options = {}) {
         return "";
     }
     const format = options.format || localization.dateTimeFormat;
-    return value.setZone("default").toFormat(format);
+    return value.setZone(options.tz || "default").toFormat(format);
+}
+
+/**
+ * Format a DateTime object to a locale date string.
+ * e.g.: Jan 31, 2024
+ * If the year is the current one, then it's omitted
+ * from the result.
+ *
+ * @param {NullableDateTime} value
+ */
+export function toLocaleDateString(value) {
+    if (!value) {
+        return "";
+    }
+    const format = { ...DateTime.DATE_MED };
+    if (today().year === value.year) {
+        delete format.year;
+    }
+    return value.toLocaleString(format);
+}
+
+/**
+ * Format a DateTime object to a locale datetime string
+ * e.g.: Jan 31, 2024, 12:00 AM
+ * If the year is the current one, then it's omitted
+ * from the result.
+ *
+ * @param {NullableDateTime} value
+ * @param {ConversionLocalOptions} [options={}]
+ */
+export function toLocaleDateTimeString(
+    value,
+    options = { showDate: true, showTime: true, showSeconds: false }
+) {
+    if (!value) {
+        return "";
+    }
+    const format = { ...DateTime.DATETIME_MED_WITH_SECONDS };
+    if (!options.showSeconds) {
+        delete format.second;
+    }
+    if (options.showDate === false) {
+        delete format.day;
+        delete format.month;
+        delete format.year;
+    }
+    if (options.showTime === false) {
+        delete format.hour;
+        delete format.minute;
+    }
+    if (today().year === value.year) {
+        delete format.year;
+    }
+    return value.setZone(options.tz || "default").toLocaleString(format);
+}
+
+/**
+ * Converts a given duration in seconds into a human-readable format.
+ *
+ * The function takes a duration in seconds and converts it into a human-readable form,
+ * such as "1h" or "1 hour, 30 minutes", depending on the value of the `showFullDuration` parameter.
+ * If the `showFullDuration` is set to true, the function will display up to two non-zero duration
+ * components in long form (e.g: hours, minutes).
+ * Otherwise, it will show just the largest non-zero duration component in narrow form (e.g: y or h).
+ * Luxon takes care of translations given the current locale.
+ *
+ * @param {number} seconds - The duration in seconds to be converted.
+ * @param {boolean} showFullDuration - If true, the output will have two components in long form.
+ * Otherwise, just one component will be displayed in narrow form.
+ *
+ * @returns {string} A human-readable string representation of the duration.
+ *
+ * @example
+ * // Sample usage
+ * const durationInSeconds = 7320; // 2 hours and 2 minutes (2 * 3600 + 2 * 60)
+ * const fullDuration = humanizeDuration(durationInSeconds, true);
+ * console.log(fullDuration); // Output: "2 hours, 2 minutes"
+ *
+ * const shortDuration = humanizeDuration(durationInSeconds, false);
+ * console.log(shortDuration); // Output: "2h"
+ */
+export function formatDuration(seconds, showFullDuration) {
+    const displayStyle = showFullDuration ? "long" : "narrow";
+    const numberOfValuesToDisplay = showFullDuration ? 2 : 1;
+    const durationKeys = ["years", "months", "days", "hours", "minutes"];
+
+    if (seconds < 60) {
+        seconds = 60;
+    }
+    seconds -= seconds % 60;
+
+    let duration = luxon.Duration.fromObject({ seconds: seconds }).shiftTo(...durationKeys);
+    duration = duration.shiftTo(...durationKeys.filter((key) => duration.get(key)));
+    const durationSplit = duration.toHuman({ unitDisplay: displayStyle }).split(",");
+
+    if (!showFullDuration && duration.loc.locale.includes("en") && duration.months > 0) {
+        durationSplit[0] = durationSplit[0].replace("m", "M");
+    }
+    return durationSplit.slice(0, numberOfValuesToDisplay).join(",");
 }
 
 /**
  * Formats the given DateTime to the server date format.
  * @param {DateTime} value
+ * @returns {string}
  */
 export function serializeDate(value) {
     if (!dateCache.has(value)) {
@@ -308,6 +541,7 @@ export function serializeDate(value) {
 /**
  * Formats the given DateTime to the server datetime format.
  * @param {DateTime} value
+ * @returns {string}
  */
 export function serializeDateTime(value) {
     if (!dateTimeCache.has(value)) {
@@ -333,7 +567,10 @@ export function serializeDateTime(value) {
  *  returned value will always be set at the start of the day)
  */
 export function parseDate(value, options = {}) {
-    const parsed = parseDateTime(value, { format: localization.dateFormat, ...options });
+    const parsed = parseDateTime(value, {
+        ...options,
+        format: options.format || localization.dateFormat,
+    });
     return parsed && parsed.startOf("day");
 }
 
@@ -364,7 +601,7 @@ export function parseDateTime(value, options = {}) {
     const fmt = options.format || localization.dateTimeFormat;
     const parseOpts = {
         setZone: true,
-        zone: "default",
+        zone: options.tz || "default",
     };
     const switchToLatin = Settings.defaultNumberingSystem !== "latn" && /[0-9]/.test(value);
 
@@ -434,7 +671,7 @@ export function parseDateTime(value, options = {}) {
 
     // No working parsing methods: throw an error
     if (!isValidDate(result)) {
-        throw new ConversionError(sprintf(_t("'%s' is not a correct date or datetime"), value));
+        throw new ConversionError(_t("'%s' is not a correct date or datetime", value));
     }
 
     // Revert to original numbering system
@@ -444,15 +681,16 @@ export function parseDateTime(value, options = {}) {
         });
     }
 
-    return result.setZone("default");
+    return result.setZone(options.tz || "default");
 }
 
 /**
  * Returns a date object parsed from the given serialized string.
  * @param {string} value serialized date string, e.g. "2018-01-01"
  */
-export function deserializeDate(value) {
-    return DateTime.fromSQL(value, { numberingSystem: "latn", zone: "default" }).reconfigure({
+export function deserializeDate(value, options = {}) {
+    options = { numberingSystem: "latn", zone: "default", ...options };
+    return DateTime.fromSQL(value, options).reconfigure({
         numberingSystem: Settings.defaultNumberingSystem,
     });
 }
@@ -461,9 +699,9 @@ export function deserializeDate(value) {
  * Returns a datetime object parsed from the given serialized string.
  * @param {string} value serialized datetime string, e.g. "2018-01-01 00:00:00", expressed in UTC
  */
-export function deserializeDateTime(value) {
+export function deserializeDateTime(value, options = {}) {
     return DateTime.fromSQL(value, { numberingSystem: "latn", zone: "utc" })
-        .setZone("default")
+        .setZone(options?.tz || "default")
         .reconfigure({
             numberingSystem: Settings.defaultNumberingSystem,
         });

@@ -1,22 +1,16 @@
 # -*- coding: utf-8 -*-
 # Part of Odoo. See LICENSE file for full copyright and licensing details.
 
-from odoo import _, fields, models, api
-from odoo.exceptions import UserError
-from odoo.tools import float_compare, float_round
+from odoo import fields, models, api
 
 
 class MrpConsumptionWarning(models.TransientModel):
     _name = 'mrp.consumption.warning'
-    _description = "Wizard in case of consumption in warning/strict and more component has been used for a MO (related to the bom)"
+    _description = "Wizard for warning about mismatching expected vs actual component consumption quantities for MOs"
 
     mrp_production_ids = fields.Many2many('mrp.production')
     mrp_production_count = fields.Integer(compute="_compute_mrp_production_count")
 
-    consumption = fields.Selection([
-        ('flexible', 'Allowed'),
-        ('warning', 'Allowed with warning'),
-        ('strict', 'Blocked')], compute="_compute_consumption")
     mrp_consumption_warning_line_ids = fields.One2many('mrp.consumption.warning.line', 'mrp_consumption_warning_id')
 
     @api.depends("mrp_production_ids")
@@ -24,30 +18,28 @@ class MrpConsumptionWarning(models.TransientModel):
         for wizard in self:
             wizard.mrp_production_count = len(wizard.mrp_production_ids)
 
-    @api.depends("mrp_consumption_warning_line_ids.consumption")
-    def _compute_consumption(self):
-        for wizard in self:
-            consumption_map = set(wizard.mrp_consumption_warning_line_ids.mapped("consumption"))
-            wizard.consumption = "strict" in consumption_map and "strict" or "warning" in consumption_map and "warning" or "flexible"
-
     def action_confirm(self):
         ctx = dict(self.env.context)
         ctx.pop('default_mrp_production_ids', None)
         return self.mrp_production_ids.with_context(ctx, skip_consumption=True).button_mark_done()
 
     def action_set_qty(self):
-        self.mrp_production_ids.action_assign()
+        existing_moves_lines = self.mrp_consumption_warning_line_ids.filtered('move_id')
         for production in self.mrp_production_ids:
-            for move in production.move_raw_ids:
-                rounding = move.product_uom.rounding
-                if float_compare(move.quantity_done, move.should_consume_qty, precision_rounding=rounding) == 0:
+            for line in existing_moves_lines:
+                if line.mrp_production_id != production:
                     continue
-                new_qty = float_round((production.qty_producing - production.qty_produced) * move.unit_factor, precision_rounding=move.product_uom.rounding)
-                if move.has_tracking in ('lot', 'serial'):
-                    if not (production.use_auto_consume_components_lots and
-                            float_compare(move.reserved_availability, new_qty, precision_rounding=move.product_uom.rounding) >= 0):
-                        raise UserError(_('You need to supply Lot/Serial Number'))
-                move.quantity_done = new_qty
+                line.move_id.quantity = line.product_expected_qty_uom
+                line.move_id.picked = True
+        self.env['stock.move'].create([{
+            'product_id': line.product_id.id,
+            'uom_id': (line.uom_id or line.product_id.uom_id).id,
+            'product_uom_qty': line.product_expected_qty_uom,
+            'quantity': line.product_expected_qty_uom,
+            'raw_material_production_id': line.mrp_production_id.id,
+            'additional': True,
+            'picked': True,
+        } for line in self.mrp_consumption_warning_line_ids - existing_moves_lines])
         return self.action_confirm()
 
     def action_cancel(self):
@@ -60,15 +52,16 @@ class MrpConsumptionWarning(models.TransientModel):
                 'target': 'main',
             }
 
+
 class MrpConsumptionWarningLine(models.TransientModel):
     _name = 'mrp.consumption.warning.line'
     _description = "Line of issue consumption"
 
     mrp_consumption_warning_id = fields.Many2one('mrp.consumption.warning', "Parent Wizard", readonly=True, required=True, ondelete="cascade")
     mrp_production_id = fields.Many2one('mrp.production', "Manufacturing Order", readonly=True, required=True, ondelete="cascade")
-    consumption = fields.Selection(related="mrp_production_id.consumption")
 
     product_id = fields.Many2one('product.product', "Product", readonly=True, required=True)
-    product_uom_id = fields.Many2one('uom.uom', "Unit of Measure", related="product_id.uom_id", readonly=True)
+    uom_id = fields.Many2one('uom.uom', "Unit", readonly=True)
     product_consumed_qty_uom = fields.Float("Consumed", readonly=True)
     product_expected_qty_uom = fields.Float("To Consume", readonly=True)
+    move_id = fields.Many2one('stock.move', readonly=True)

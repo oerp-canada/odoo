@@ -1,6 +1,24 @@
-/* @odoo-module */
+import { DiscussSearch } from "@mail/core/public_web/discuss_search";
+import { MessagingMenu } from "@mail/core/public_web/messaging_menu";
+import { patch } from "@web/core/utils/patch";
+import { useService } from "@web/core/utils/hooks";
 
-import { MessagingMenu } from "@mail/core/web/messaging_menu";
-import { ChannelSelector } from "@mail/discuss/core/web/channel_selector";
+Object.assign(MessagingMenu.components, { DiscussSearch });
 
-Object.assign(MessagingMenu.components, { ChannelSelector });
+patch(MessagingMenu.prototype, {
+    setup() {
+        super.setup();
+        this.command = useService("command");
+    },
+    beforeOpen() {
+        const res = super.beforeOpen(...arguments);
+        this.store.channels.fetch();
+        return res;
+    },
+    onClickNewMessage() {
+        this.command.openMainPalette({ searchValue: "@" });
+        if (!this.ui.isSmall && !this.env.inDiscussApp) {
+            this.dropdown.close();
+        }
+    },
+});

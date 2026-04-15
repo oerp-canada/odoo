@@ -10,7 +10,7 @@ class ResUsers(models.Model):
     def get_password_policy(self):
         params = self.env['ir.config_parameter'].sudo()
         return {
-            'minlength': int(params.get_param('auth_password_policy.minlength', default=0)),
+            'minlength': params.get_int('auth_password_policy.minlength'),
         }
 
     def _set_password(self):
@@ -22,12 +22,12 @@ class ResUsers(models.Model):
         failures = []
         params = self.env['ir.config_parameter'].sudo()
 
-        minlength = int(params.get_param('auth_password_policy.minlength', default=0))
+        minlength = params.get_int('auth_password_policy.minlength')
         for password in passwords:
             if not password:
                 continue
             if len(password) < minlength:
-                failures.append(_(u"Passwords must have at least %d characters, got %d.") % (minlength, len(password)))
+                failures.append(_("Your password must contain at least %(minimal_length)d characters and only has %(current_count)d.", minimal_length=minlength, current_count=len(password)))
 
         if failures:
             raise UserError(u'\n\n '.join(failures))

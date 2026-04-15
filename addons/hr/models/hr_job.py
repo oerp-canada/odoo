@@ -1,39 +1,58 @@
 # -*- coding: utf-8 -*-
 # Part of Odoo. See LICENSE file for full copyright and licensing details.
 
-from odoo import api, fields, models, _
-from odoo.addons.web_editor.controllers.main import handle_history_divergence
+from odoo import api, fields, models
+from odoo.addons.html_editor.tools import handle_history_divergence
 
 
-class Job(models.Model):
-
-    _name = "hr.job"
+class HrJob(models.Model):
+    _name = 'hr.job'
     _description = "Job Position"
     _inherit = ['mail.thread']
     _order = 'sequence'
 
+    def _recruiter_domain(self):
+        return [
+            ("user_id", "!=", False),
+            ("user_id.share", "=", False),
+        ]
+
     active = fields.Boolean(default=True)
     name = fields.Char(string='Job Position', required=True, index='trigram', translate=True)
     sequence = fields.Integer(default=10)
-    expected_employees = fields.Integer(compute='_compute_employees', string='Total Forecasted Employees', store=True,
-        help='Expected number of employees for this job position after new recruitment.')
-    no_of_employee = fields.Integer(compute='_compute_employees', string="Current Number of Employees", store=True,
-        help='Number of employees currently occupying this job position.')
+    expected_employees = fields.Integer(compute='_compute_employees', string='Total Forecasted Employees',
+        help='Expected number of employees for this job position after new recruitment.', groups="hr.group_hr_user")
+    no_of_employee = fields.Integer(compute='_compute_employees', string="Current Number of Employees",
+        help='Number of employees currently occupying this job position.', groups="hr.group_hr_user")
     no_of_recruitment = fields.Integer(string='Target', copy=False,
         help='Number of new employees you expect to recruit.', default=1)
-    no_of_hired_employee = fields.Integer(string='Hired Employees', copy=False,
-        help='Number of hired employees for this job position during recruitment phase.')
     employee_ids = fields.One2many('hr.employee', 'job_id', string='Employees', groups='base.group_user')
     description = fields.Html(string='Job Description', sanitize_attributes=False)
-    requirements = fields.Text('Requirements')
-    department_id = fields.Many2one('hr.department', string='Department', domain="['|', ('company_id', '=', False), ('company_id', '=', company_id)]")
-    company_id = fields.Many2one('res.company', string='Company', default=lambda self: self.env.company)
-    contract_type_id = fields.Many2one('hr.contract.type', string='Employment Type')
+    requirements = fields.Text('Requirements', groups="hr.group_hr_user")
+    recruiter_id = fields.Many2one(
+        'hr.employee',
+        "Recruiter",
+        domain=_recruiter_domain,
+        check_company=True,
+        default=lambda self: self.env.user.employee_id,
+        groups="hr.group_hr_user",
+        tracking=True,
+        help="The Recruiter will be the default value for all Applicants in this job \
+            position. The Recruiter is automatically added to all meetings with the Applicant.",
+    )
+    department_id = fields.Many2one('hr.department', string='Department', check_company=True, tracking=True, index='btree_not_null')
+    company_id = fields.Many2one('res.company', string='Company', default=lambda self: self.env.company, tracking=True, required=True)
+    employee_type_id = fields.Many2one('hr.employee.type', string='Employee Type', tracking=True)
+    company_country_code = fields.Char(related='company_id.country_id.code', depends=["company_id.country_id"])
 
-    _sql_constraints = [
-        ('name_company_uniq', 'unique(name, company_id, department_id)', 'The name of the job position must be unique per department in company!'),
-        ('no_of_recruitment_positive', 'CHECK(no_of_recruitment >= 0)', 'The expected number of new employees must be positive.')
-    ]
+    _name_company_uniq = models.Constraint(
+        'unique(name, company_id, department_id)',
+        'The name of the job position must be unique per department in company!',
+    )
+    _no_of_recruitment_positive = models.Constraint(
+        'CHECK(no_of_recruitment >= 0)',
+        'The expected number of new employees must be positive.',
+    )
 
     @api.depends('no_of_recruitment', 'employee_ids.job_id', 'employee_ids.active')
     def _compute_employees(self):
@@ -46,17 +65,13 @@ class Job(models.Model):
     @api.model_create_multi
     def create(self, vals_list):
         """ We don't want the current user to be follower of all created job """
-        return super(Job, self.with_context(mail_create_nosubscribe=True)).create(vals_list)
+        return super(HrJob, self.with_context(mail_create_nosubscribe=True)).create(vals_list)
 
-    @api.returns('self', lambda value: value.id)
-    def copy(self, default=None):
-        self.ensure_one()
-        default = dict(default or {})
-        if 'name' not in default:
-            default['name'] = _("%s (copy)") % (self.name)
-        return super(Job, self).copy(default=default)
+    def copy_data(self, default=None):
+        vals_list = super().copy_data(default=default)
+        return [dict(vals, name=self.env._("%s (copy)", job.name)) for job, vals in zip(self, vals_list)]
 
     def write(self, vals):
         if len(self) == 1:
             handle_history_divergence(self, 'description', vals)
-        return super(Job, self).write(vals)
+        return super().write(vals)

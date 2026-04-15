@@ -1,67 +1,53 @@
-/** @odoo-module */
-
+import { Component } from "@odoo/owl";
 import { registry } from "@web/core/registry";
-import { useService } from "@web/core/utils/hooks";
-import { Many2OneField, many2OneField } from "@web/views/fields/many2one/many2one_field";
+import { computeM2OProps, Many2One } from "@web/views/fields/many2one/many2one";
+import { buildM2OFieldDescription, Many2OneField } from "@web/views/fields/many2one/many2one_field";
 
-const { onWillStart} = owl;
+export class StockPickFrom extends Component {
+    static template = "stock.StockPickFrom";
+    static components = { Many2One };
+    static props = { ...Many2OneField.props };
 
-export class StockPickFrom extends Many2OneField {
-    setup() {
-        super.setup();
-        this.user = useService('user');
-        onWillStart(async () => {
-            const testedGroup = [
-                ['location', 'stock.group_stock_multi_locations'],
-                ['lot', 'stock.group_production_lot'],
-                ['package', 'stock.group_tracking_lot'],
-                ['owner', 'stock.group_tracking_owner'],
-            ];
-            const userGroups = await Promise.all(
-                testedGroup.map((group) => this.user.hasGroup(group[1]))
-            );
-            this.enabledGroups = {};
-            for (const [index, group] of testedGroup.entries()) {
-                this.enabledGroups[group[0]] = userGroups[index];
-            }
-        });
-    }
-    get displayName() {
-        return super.displayName || this._quant_display_name();
-    }
-
-    get value() {
-        return super.value || [0, this._quant_display_name()];
+    get m2oProps() {
+        const props = computeM2OProps(this.props);
+        return {
+            ...props,
+            value: props.value || { id: 0, display_name: this._quant_display_name() },
+        };
     }
 
     _quant_display_name() {
         let name_parts = [];
-        if (this.props.record.data.id) {
-            // if location group is activated
-            const data = this.props.record.data;
-            if (this.enabledGroups?.location && data.location_id) {
-                name_parts.push(data.location_id?.[1])
-            }
-            if (this.enabledGroups?.lot && data.lot_id) {
-                name_parts.push(data.lot_id?.[1] || data.lot_name)
-            }
-            if (this.enabledGroups?.package && data.package_id) {
-                name_parts.push(data.pachage_id?.[1])
-            }
-            if (this.enabledGroups?.owner&& data.owner) {
-                name_parts.push(data.owner?.[1])
-            }
-            const result = name_parts.join(" - ");
-            if (result) return result;
-            return "- no data -";
+        // if location group is activated
+        const data = this.props.record.data;
+        name_parts.push(data.location_id?.display_name)
+        if (data.lot_id) {
+            name_parts.push(data.lot_id?.display_name || data.lot_name)
         }
+        if (data.package_id) {
+            let packageName = data.package_id?.display_name;
+            if (packageName && ["done", "cancel"].includes(data.state)) {
+                packageName = packageName.split(" > ").pop();
+            }
+            name_parts.push(packageName);
+        }
+        if (data.owner) {
+            name_parts.push(data.owner?.display_name)
+        }
+        const result = name_parts.join(" - ");
+        if (result) return result;
         return "";
     }
 }
 
-export const stockPickFrom = {
-    ...many2OneField,
-    component: StockPickFrom,
-};
-
-registry.category("fields").add("pick_from", stockPickFrom);
+registry.category("fields").add("pick_from", {
+    ...buildM2OFieldDescription(StockPickFrom),
+    fieldDependencies: [
+        // dependencies to build the quant display name
+        { name: "location_id", type: "relation" },
+        { name: "location_dest_id", type: "relation" },
+        { name: "package_id", type: "relation" },
+        { name: "owner_id", type: "relation" },
+        { name: "state", type: "char" },
+    ],
+});

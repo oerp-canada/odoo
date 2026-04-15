@@ -1,9 +1,7 @@
-# -*- coding: utf-8 -*-
 # Part of Odoo. See LICENSE file for full copyright and licensing details.
 
 {
     'name': 'Outlook Calendar',
-    'version': '1.0',
     'category': 'Productivity',
     'depends': ['microsoft_account', 'calendar'],
     'data': [
@@ -14,19 +12,16 @@
         'views/res_users_views.xml',
         'views/microsoft_calendar_views.xml',
         ],
-    'installable': True,
     'post_init_hook': 'init_initiating_microsoft_uuid',
     'assets': {
         'web.assets_backend': [
             'microsoft_calendar/static/src/scss/microsoft_calendar.scss',
             'microsoft_calendar/static/src/views/**/*',
         ],
-        'web.qunit_suite_tests': [
-            'microsoft_calendar/static/tests/microsoft_calendar_mock_server.js',
-        ],
-        'web.qunit_mobile_suite_tests': [
-            'microsoft_calendar/static/tests/microsoft_calendar_mock_server.js',
+        'web.assets_unit_tests': [
+            'microsoft_calendar/static/tests/**/*',
         ],
     },
+    'author': 'Odoo S.A.',
     'license': 'LGPL-3',
 }

@@ -1,46 +1,33 @@
-/* @odoo-module */
-
-import { threadActionsRegistry } from "@mail/core/common/thread_actions";
+import { registerThreadAction } from "@mail/core/common/thread_actions";
 import { _t } from "@web/core/l10n/translation";
-import { useComponent } from "@odoo/owl";
-import { useService } from "@web/core/utils/hooks";
 
-threadActionsRegistry.add("open-hr-profile", {
-    condition(component) {
-        return (
-            component.thread?.type === "chat" &&
-            component.props.chatWindow?.isOpen &&
-            component.thread.correspondent.employeeId
-        );
-    },
+registerThreadAction("open-hr-profile", {
+    condition: ({ channel, owner }) =>
+        channel?.channel_type === "chat" &&
+        owner.props.chatWindow?.isOpen &&
+        channel.correspondent?.partner_id?.employeeId &&
+        !owner.isDiscussSidebarChannelActions,
     icon: "fa fa-fw fa-id-card",
     name: _t("Open Profile"),
-    async open(component) {
-        component.actionService.doAction({
+    onSelected: async ({ channel, store }) =>
+        store.env.services.action.doAction({
             type: "ir.actions.act_window",
-            res_id: component.thread.correspondent.employeeId,
-            res_model: "hr.employee",
+            res_id: channel.correspondent.partner_id?.employeeId,
+            res_model: "hr.employee.public",
             views: [[false, "form"]],
-        });
-    },
-    async setup(action) {
-        const component = useComponent();
-        const orm = useService("orm");
-        const personaService = useService("mail.persona");
+        }),
+    async setup({ channel }) {
         let employeeId;
-        if (!component.thread?.correspondent?.employeeId && component.thread?.chatPartnerId) {
-            const employees = await orm.silent.searchRead(
+        if (channel?.correspondent?.partner_id && !channel.correspondent.partner_id.employeeId) {
+            const employees = await this.store.env.services.orm.silent.searchRead(
                 "hr.employee",
-                [["user_partner_id", "=", component.thread.chatPartnerId]],
+                [["user_partner_id", "=", channel.correspondent.partner_id.id]],
                 ["id"]
             );
             employeeId = employees[0]?.id;
-        }
-        if (employeeId) {
-            personaService.insert({
-                ...component.thread.correspondent,
-                employeeId,
-            });
+            if (employeeId) {
+                channel.correspondent.partner_id.employeeId = employeeId;
+            }
         }
     },
     sequence: 16,

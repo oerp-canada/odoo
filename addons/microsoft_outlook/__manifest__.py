@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Part of Odoo. See LICENSE file for full copyright and licensing details.
 
 {
@@ -15,5 +14,7 @@
         "views/res_config_settings_views.xml",
         "views/templates.xml",
     ],
+    "auto_install": True,
+    "author": "Odoo S.A.",
     "license": "LGPL-3",
 }

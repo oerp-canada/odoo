@@ -1,14 +1,39 @@
-/** @odoo-module **/
+import { useState } from "@web/owl2/utils";
+import { Component, onWillUnmount } from "@odoo/owl";
 
-import { Component } from "@odoo/owl";
+const { DateTime } = luxon;
+export class CardLayout extends Component {
+    static template = "hr_attendance.CardLayout";
+    static props = {
+        slots: Object,
+        fromTrialMode: { type: Boolean, optional: true },
+        companyImageUrl: { type: String },
+        kioskReturn: { type: Function },
+        activeDisplay: { type: String },
+    };
+    static defaultProps = {
+        kioskModeClasses: "",
+    };
 
-export class CardLayout extends Component {}
+    setup() {
+        this.state = useState(this.getDateTime());
+        this.timeInterval = setInterval(() => {
+            Object.assign(this.state, this.getDateTime());
+        }, 1000);
+        onWillUnmount(() => {
+            clearInterval(this.timeInterval);
+        });
+    }
 
-CardLayout.template = "hr_attendance.CardLayout";
-CardLayout.props = {
-    kioskModeClasses: { type: String, optional: true },
-    slots: Object,
-};
-CardLayout.defaultProps = {
-    kioskModeClasses: "",
-};
+    getDateTime() {
+        const now = DateTime.now();
+        return {
+            dayOfWeek: now.toFormat("cccc"),
+            date: now.toLocaleString({
+                ...DateTime.DATE_FULL,
+                weekday: undefined,
+            }),
+            time: now.toLocaleString(DateTime.TIME_SIMPLE),
+        };
+    }
+}

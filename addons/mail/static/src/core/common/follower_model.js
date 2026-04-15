@@ -1,32 +1,42 @@
-/* @odoo-module */
+import { fields, Record } from "@mail/model/export";
+import { rpc } from "@web/core/network/rpc";
+import { _t } from "@web/core/l10n/translation";
 
-/**
- * @typedef Data
- * @property {import("@mail/core/common/thread_model").Thread} followedThread
- * @property {number} id
- * @property {Boolean} is_active
- * @property {import("@mail/core/common/partner_model").Data} partner
- */
+export class Follower extends Record {
+    static _name = "mail.followers";
 
-export class Follower {
-    /** @type {import("@mail/core/common/thread_model").Thread} */
-    followedThread;
+    thread = fields.One("mail.thread");
     /** @type {number} */
     id;
     /** @type {boolean} */
-    isActive;
-    /** @type {import("@mail/core/common/persona_model").Persona} */
-    partner;
-    /** @type {import("@mail/core/common/store_service").Store} */
-    _store;
+    is_active;
+    partner_id = fields.One("res.partner");
+    subtype_ids = fields.Many("mail.message.subtype");
 
-    /**
-     * @returns {boolean}
-     */
+    get displayName() {
+        return this.partner_id.name || this.display_name || _t("Unnamed");
+    }
+
+    /** @returns {boolean} */
     get isEditable() {
-        const hasWriteAccess = this.followedThread ? this.followedThread.hasWriteAccess : false;
-        return this._store.user === this.partner
-            ? this.followedThread.hasReadAccess
+        const hasWriteAccess = this.thread ? this.thread.hasWriteAccess : false;
+        return this.partner_id.eq(this.store.self_user?.partner_id)
+            ? this.thread.hasReadAccess
             : hasWriteAccess;
     }
+
+    async remove() {
+        const data = await rpc("/mail/thread/unsubscribe", {
+            res_model: this.thread.model,
+            res_id: this.thread.id,
+            partner_ids: [this.partner_id.id],
+        });
+        this.store.insert(data);
+    }
+
+    removeRecipient() {
+        this.thread.recipients.delete(this);
+    }
 }
+
+Follower.register();

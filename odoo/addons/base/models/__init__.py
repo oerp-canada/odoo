@@ -8,6 +8,7 @@ from . import ir_ui_menu
 from . import ir_ui_view
 from . import ir_asset
 from . import ir_actions
+from . import ir_embedded_actions
 from . import ir_actions_report
 from . import ir_attachment
 from . import ir_binary
@@ -24,10 +25,11 @@ from . import ir_qweb
 from . import ir_qweb_fields
 from . import ir_http
 from . import ir_logging
-from . import ir_property
 from . import ir_module
 from . import ir_demo
 from . import ir_demo_failure
+from . import properties_base_definition
+from . import properties_base_definition_mixin
 from . import report_layout
 from . import report_paperformat
 
@@ -38,12 +40,16 @@ from . import avatar_mixin
 from . import res_country
 from . import res_lang
 from . import res_partner
-from . import res_bank
+from . import clearing_label
+from . import res_partner_bank
 from . import res_config
 from . import res_currency
 from . import res_company
+from . import res_groups_privilege
+from . import res_groups
 from . import res_users
 from . import res_users_settings
 from . import res_users_deletion
+from . import res_device
 
 from . import decimal_precision

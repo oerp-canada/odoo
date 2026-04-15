@@ -144,11 +144,10 @@ Fully Integrated With Other Apps
 
 Easily create awesome websites with no technical knowledge required.
 
-### Blogs
+### Blog
 
 Write news, attract new visitors, build customer loyalty.
 
 ### Online Events
 
 Schedule, organize, promote or sell events online; conferences, webinars, trainings, etc.
-

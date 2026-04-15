@@ -1,19 +1,22 @@
 # Part of Odoo. See LICENSE file for full copyright and licensing details.
 
-import pytz
 import uuid
+from datetime import datetime, timedelta
 
-from odoo.tools import consteq
+from odoo.tools import consteq, get_lang
 from odoo import _, api, fields, models
+from odoo.http import request
 from odoo.addons.base.models.res_partner import _tz_get
 from odoo.exceptions import UserError
-from odoo.addons.bus.models.bus_presence import AWAY_TIMER, DISCONNECTION_TIMER
+from odoo.tools.date_utils import all_timezones
+from odoo.tools.misc import limited_field_access_token
+from odoo.addons.mail.tools.discuss import Store
 
 
 class MailGuest(models.Model):
     _name = 'mail.guest'
     _description = "Guest"
-    _inherit = ['avatar.mixin']
+    _inherit = ["avatar.mixin", "bus.listener.mixin"]
     _avatar_name_field = "name"
     _cookie_name = 'dgid'
     _cookie_separator = '|'
@@ -25,52 +28,61 @@ class MailGuest(models.Model):
     name = fields.Char(string="Name", required=True)
     access_token = fields.Char(string="Access Token", default=lambda self: str(uuid.uuid4()), groups='base.group_system', required=True, readonly=True, copy=False)
     country_id = fields.Many2one(string="Country", comodel_name='res.country')
+    email = fields.Char()
     lang = fields.Selection(string="Language", selection=_lang_get)
     timezone = fields.Selection(string="Timezone", selection=_tz_get)
     channel_ids = fields.Many2many(string="Channels", comodel_name='discuss.channel', relation='discuss_channel_member', column1='guest_id', column2='channel_id', copy=False)
-    im_status = fields.Char('IM Status', compute='_compute_im_status')
+    presence_ids = fields.One2many("mail.presence", "guest_id", groups="base.group_system")
+    # sudo: mail.guest - can access presence of accessible guest
+    im_status = fields.Char("IM Status", compute="_compute_im_status", compute_sudo=True)
+    offline_since = fields.Datetime("Offline since", compute="_compute_im_status", compute_sudo=True)
 
+    @api.depends("presence_ids.status")
     def _compute_im_status(self):
-        self.env.cr.execute("""
-            SELECT
-                guest_id as id,
-                CASE WHEN age(now() AT TIME ZONE 'UTC', last_poll) > interval %s THEN 'offline'
-                     WHEN age(now() AT TIME ZONE 'UTC', last_presence) > interval %s THEN 'away'
-                     ELSE 'online'
-                END as status
-            FROM bus_presence
-            WHERE guest_id IN %s
-        """, ("%s seconds" % DISCONNECTION_TIMER, "%s seconds" % AWAY_TIMER, tuple(self.ids)))
-        res = dict(((status['id'], status['status']) for status in self.env.cr.dictfetchall()))
         for guest in self:
-            guest.im_status = res.get(guest.id, 'offline')
+            guest.im_status = guest.presence_ids.status or "offline"
+            guest.offline_since = (
+                guest.presence_ids.last_poll
+                if guest.im_status == "offline"
+                else None
+            )
+
+    def _get_guest_from_token(self, token=""):
+        """Returns the guest record for the given token, if applicable."""
+        guest = self.env["mail.guest"]
+        parts = token.split(self._cookie_separator)
+        if len(parts) == 2:
+            guest_id, guest_access_token = parts
+            # sudo: mail.guest: guests need sudo to read their access_token
+            guest = self.browse(int(guest_id)).sudo().exists()
+            if not guest or not guest.access_token or not consteq(guest.access_token, guest_access_token):
+                guest = self.env["mail.guest"]
+        return guest.sudo(False)
 
     def _get_guest_from_context(self):
         """Returns the current guest record from the context, if applicable."""
         guest = self.env.context.get('guest')
         if isinstance(guest, self.pool['mail.guest']):
-            return guest
+            assert len(guest) <= 1, "Context guest should be empty or a single record."
+            return guest.sudo(False).with_context(guest=guest)
         return self.env['mail.guest']
 
-    def _get_guest_from_request(self, request):
-        parts = request.httprequest.cookies.get(self._cookie_name, '').split(self._cookie_separator)
-        if len(parts) != 2:
-            return self.env['mail.guest']
-        guest_id, guest_access_token = parts
-        if not guest_id or not guest_access_token:
-            return self.env['mail.guest']
-        guest = self.env['mail.guest'].browse(int(guest_id)).sudo().exists()
-        if not guest or not guest.access_token or not consteq(guest.access_token, guest_access_token):
-            return self.env['mail.guest']
-        if not guest.timezone:
-            timezone = self._get_timezone_from_request(request)
-            if timezone:
-                guest._update_timezone(timezone)
-        return guest.sudo(False).with_context(guest=guest)
+    def _get_or_create_guest(self, *, guest_name, country_code, timezone):
+        if not (guest := self._get_guest_from_context()):
+            guest = self.create(
+                {
+                    "country_id": self.env["res.country"].search([("code", "=", country_code)]).id,
+                    "lang": get_lang(self.env).code,
+                    "name": guest_name,
+                    "timezone": timezone,
+                }
+            )
+            guest._set_auth_cookie()
+        return guest.sudo(False)
 
     def _get_timezone_from_request(self, request):
-        timezone = request.httprequest.cookies.get('tz')
-        return timezone if timezone in pytz.all_timezones else False
+        timezone = request.cookies.get('tz')
+        return timezone if timezone in all_timezones else False
 
     def _update_name(self, name):
         self.ensure_one()
@@ -80,13 +92,9 @@ class MailGuest(models.Model):
         if len(name) > 512:
             raise UserError(_("Guest's name is too long."))
         self.name = name
-        guest_data = {
-            'id': self.id,
-            'name': self.name
-        }
-        bus_notifs = [(channel, 'mail.record/insert', {'Guest': guest_data}) for channel in self.channel_ids]
-        bus_notifs.append((self, 'mail.record/insert', {'Guest': guest_data}))
-        self.env['bus.bus']._sendmany(bus_notifs)
+        for channel in self.channel_ids:
+            Store(bus_channel=channel).add(self, "_store_avatar_fields").bus_send()
+        Store(bus_channel=self).add(self, "_store_avatar_fields").bus_send()
 
     def _update_timezone(self, timezone):
         query = """
@@ -99,43 +107,43 @@ class MailGuest(models.Model):
         """
         self.env.cr.execute(query, (timezone, self.id))
 
-    def _init_messaging(self):
-        self.ensure_one()
-        odoobot = self.env.ref('base.partner_root')
-        return {
-            'channels': self.channel_ids._channel_info(),
-            'companyName': self.env.company.name,
-            'currentGuest': {
-                'id': self.id,
-                'name': self.name,
-            },
-            'current_partner': False,
-            'current_user_id': False,
-            'current_user_settings': False,
-            'hasGifPickerFeature': bool(self.env["ir.config_parameter"].sudo().get_param("discuss.tenor_api_key")),
-            'hasLinkPreviewFeature': self.env['mail.link.preview']._is_link_preview_enabled(),
-            'initBusId': self.env['bus.bus'].sudo()._bus_last_id(),
-            'menu_id': False,
-            'needaction_inbox_counter': False,
-            'odoobot': {
-                'id': odoobot.id,
-                'name': odoobot.name,
-            },
-            'shortcodes': [],
-            'starred_counter': False,
-        }
+    def _get_im_status_access_token(self):
+        """Return a scoped access token for the `im_status` field. The token is used in
+        `ir_websocket._prepare_subscribe_data` to grant access to presence channels.
 
-    def _guest_format(self, fields=None):
-        if not fields:
-            fields = {'id': True, 'name': True, 'im_status': True}
-        guests_formatted_data = {}
-        for guest in self:
-            data = {}
-            if 'id' in fields:
-                data['id'] = guest.id
-            if 'name' in fields:
-                data['name'] = guest.name
-            if 'im_status' in fields:
-                data['im_status'] = guest.im_status
-            guests_formatted_data[guest] = data
-        return guests_formatted_data
+        :rtype: str
+        """
+        self.ensure_one()
+        return limited_field_access_token(self, "im_status", scope="mail.presence")
+
+    def _store_avatar_fields(self, res: Store.FieldList):
+        res.attr("avatar_128_access_token", lambda g: g._get_avatar_128_access_token())
+        res.extend(["name", "write_date"])
+
+    def _store_im_status_fields(self, res: Store.FieldList):
+        res.attr("im_status")
+        res.attr("im_status_access_token", lambda g: g._get_im_status_access_token())
+
+    def _set_auth_cookie(self):
+        """Add a cookie to the response to identify the guest. Every route
+        that expects a guest will make use of it to authenticate the guest
+        through `add_guest_to_context`.
+        """
+        self.ensure_one()
+        expiration_date = datetime.now() + timedelta(days=365)
+        request.future_response.set_cookie(
+            self._cookie_name,
+            self._format_auth_cookie(),
+            httponly=True,
+            expires=expiration_date,
+        )
+        request.update_context(guest=self.sudo(False))
+
+    def _format_auth_cookie(self):
+        """Format the cookie value for the given guest.
+
+        :return: formatted cookie value
+        :rtype: str
+        """
+        self.ensure_one()
+        return f"{self.id}{self._cookie_separator}{self.access_token}"

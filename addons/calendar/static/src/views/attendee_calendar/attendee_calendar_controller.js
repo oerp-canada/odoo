@@ -1,69 +1,84 @@
-/** @odoo-module **/
-
+import { _t } from "@web/core/l10n/translation";
+import { AttendeeCalendarSidePanel } from "@calendar/views/attendee_calendar/side_panel/attendee_calendar_side_panel";
 import { CalendarController } from "@web/views/calendar/calendar_controller";
+import { user } from "@web/core/user";
 import { useService } from "@web/core/utils/hooks";
 import { onWillStart } from "@odoo/owl";
 import { CalendarQuickCreate } from "@calendar/views/calendar_form/calendar_quick_create";
 export class AttendeeCalendarController extends CalendarController {
+    static template = "calendar.AttendeeCalendarController";
+    static components = {
+        ...AttendeeCalendarController.components,
+        CalendarSidePanel: AttendeeCalendarSidePanel,
+        QuickCreateFormView: CalendarQuickCreate,
+    };
+
     setup() {
         super.setup();
         this.actionService = useService("action");
-        this.user = useService("user");
         this.orm = useService("orm");
         onWillStart(async () => {
-            this.isSystemUser = await this.user.hasGroup('base.group_system');
+            this.isSystemUser = await user.hasGroup("base.group_system");
         });
     }
 
     onClickAddButton() {
-        this.actionService.doAction({
-            type: 'ir.actions.act_window',
-            res_model: 'calendar.event',
-            views: [[false, 'form']],
-        }, {
-            additionalContext: this.props.context,
-        });
+        this.actionService.doAction(
+            {
+                type: "ir.actions.act_window",
+                res_model: "calendar.event",
+                views: [[false, "form"]],
+            },
+            {
+                additionalContext: this.props.context,
+            }
+        );
     }
 
-    goToFullEvent (resId, additionalContext) {
-        this.actionService.doAction({
-            type: 'ir.actions.act_window',
-            res_model: 'calendar.event',
-            views: [[false, 'form']],
-            res_id: resId || false,
-        }, {
-            additionalContext
-        });
+    goToFullEvent(resId, additionalContext) {
+        this.actionService.doAction(
+            {
+                type: "ir.actions.act_window",
+                res_model: "calendar.event",
+                views: [[false, "form"]],
+                res_id: resId || false,
+            },
+            {
+                additionalContext: {
+                    ...this.props.context,
+                    ...additionalContext,
+                },
+            }
+        );
+    }
+
+    getQuickCreateFormViewProps(record) {
+        const props = super.getQuickCreateFormViewProps(record);
+        return {
+            ...props,
+            size: "md",
+            context: { ...props.context, ...this.props.context },
+            onRecordSave: async (record) => {
+                const updates = {
+                    ...(!record.data.name && { name: _t("(No Title)") }),
+                    ...(record.data.allday && { show_as: "free" }),
+                };
+                if (Object.keys(updates).length) {
+                    await record.update(updates);
+                }
+                const saved = await record.save({ reload: false });
+                if (saved) {
+                    this.model.load();
+                }
+                return saved;
+            },
+        };
     }
 
     async editRecord(record, context = {}) {
         if (record.id) {
             return this.goToFullEvent(record.id, context);
         }
-        const onDialogClosed = () => {
-            this.model.load();
-        };
-        return new Promise((resolve) => {
-            this.displayDialog(
-                CalendarQuickCreate, {
-                    viewId: this.model.quickCreateFormViewId,
-                    resModel: "calendar.event",
-                    size: "md",
-                    context,
-                    goToFullEvent: (contextData) => {
-                        const fullContext = {
-                            ...context,
-                            ...contextData
-                        };
-                        this.goToFullEvent(false, fullContext)
-                    },
-                    onRecordSaved: () => resolve(onDialogClosed()),
-                    onRecordDiscarded: () => resolve(onDialogClosed())
-                }, {
-                    onClose: () => resolve()
-                }
-            );
-        });
     }
 
     /**
@@ -72,51 +87,71 @@ export class AttendeeCalendarController extends CalendarController {
      * If the event is deleted by the organizer, the event is deleted, otherwise it is declined.
      */
     deleteRecord(record) {
-        if (this.user.partnerId === record.attendeeId && this.user.partnerId === record.rawRecord.partner_id[0]) {
+        if (
+            user.partnerId === record.attendeeId &&
+            user.partnerId === record.rawRecord.partner_id[0]
+        ) {
             if (record.rawRecord.recurrency) {
                 this.openRecurringDeletionWizard(record);
-            } else {
+            } else if (user.partnerId === record.attendeeId &&
+                record.rawRecord.attendees_count == 1) {
                 super.deleteRecord(...arguments);
+            } else {
+                this.orm.call("calendar.event", "action_unlink_event", [
+                    record.id,
+                    record.attendeeId,
+                ])
+                .then((action) => {
+                    if (action && action.context) {
+                        this.actionService.doAction(action);
+                    } else {
+                        location.reload();
+                    }
+                });
             }
         } else {
             // Decline event
-            this.orm.call(
-                "calendar.attendee",
-                "do_decline",
-                [record.attendeeId],
-            ).then(this.model.load.bind(this.model));
+            this.orm
+                .call("calendar.attendee", "do_decline", [record.calendarAttendeeId])
+                .then(this.model.load.bind(this.model));
         }
     }
 
     openRecurringDeletionWizard(record) {
-        this.actionService.doAction({
-            type: 'ir.actions.act_window',
-            res_model: 'calendar.popover.delete.wizard',
-            views: [[false, 'form']],
-            view_mode: "form",
-            name: 'Delete Recurring Event',
-            context: {'default_record': record.id},
-            target: 'new'
-        }, {
-            onClose: () => {
-                location.reload();
+        this.actionService.doAction(
+            {
+                type: "ir.actions.act_window",
+                res_model: "calendar.popover.delete.wizard",
+                views: [[false, "form"]],
+                view_mode: "form",
+                name: "Delete Recurring Event",
+                context: {
+                    default_calendar_event_id: record.id,
+                    default_attendee_id: record.attendeeId,
+                    form_view_ref: 'calendar.calendar_popover_delete_view',
+                },
+                target: "new",
             },
-        });
+            {
+                onClose: () => {
+                    this.model.load();
+                },
+            }
+        );
     }
 
     configureCalendarProviderSync(providerName) {
         this.actionService.doAction({
-            name: this.env._t('Connect your Calendar'),
-            type: 'ir.actions.act_window',
-            res_model: 'calendar.provider.config',
+            name: _t("Connect your Calendar"),
+            type: "ir.actions.act_window",
+            res_model: "calendar.provider.config",
             views: [[false, "form"]],
             view_mode: "form",
-            target: 'new',
+            target: "new",
             context: {
-                'default_external_calendar_provider': providerName,
-                'dialog_size': 'medium',
-            }
+                default_external_calendar_provider: providerName,
+                dialog_size: "medium",
+            },
         });
     }
 }
-AttendeeCalendarController.template = "calendar.AttendeeCalendarController";

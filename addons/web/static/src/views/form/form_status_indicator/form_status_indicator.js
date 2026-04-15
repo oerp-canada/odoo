@@ -1,9 +1,15 @@
-/** @odoo-module **/
-
-import { Component, useEffect, useRef, useState } from "@odoo/owl";
+import { useLayoutEffect, useRef, useState } from "@web/owl2/utils";
+import { Component } from "@odoo/owl";
 import { useBus } from "@web/core/utils/hooks";
 
 export class FormStatusIndicator extends Component {
+    static template = "web.FormStatusIndicator";
+    static props = {
+        model: Object,
+        save: Function,
+        discard: Function,
+    };
+
     setup() {
         this.state = useState({
             fieldIsDirty: false,
@@ -13,7 +19,7 @@ export class FormStatusIndicator extends Component {
             "FIELD_IS_DIRTY",
             (ev) => (this.state.fieldIsDirty = ev.detail)
         );
-        useEffect(
+        useLayoutEffect(
             () => {
                 if (!this.props.model.root.isNew && this.indicatorMode === "invalid") {
                     this.saveButton.el.setAttribute("disabled", "1");
@@ -21,7 +27,7 @@ export class FormStatusIndicator extends Component {
                     this.saveButton.el.removeAttribute("disabled");
                 }
             },
-            () => [this.props.model.root.isValid]
+            () => [this.props.model.root.isValid, this.state.fieldIsDirty]
         );
 
         this.saveButton = useRef("save");
@@ -31,16 +37,18 @@ export class FormStatusIndicator extends Component {
         return this.indicatorMode !== "saved";
     }
 
+    get isNew() {
+        const { isNew, offlineId } = this.props.model.root;
+        return isNew && !offlineId;
+    }
+
     get indicatorMode() {
-        if (this.props.model.root.isNew) {
-            return this.props.model.root.isValid ? "dirty" : "invalid";
-        } else if (!this.props.model.root.isValid) {
-            return "invalid";
-        } else if (this.props.model.root.isDirty || this.state.fieldIsDirty) {
-            return "dirty";
-        } else {
-            return "saved";
+        const { isValid } = this.props.model.root;
+        const isDirty = this.props.model.root.dirty || this.state.fieldIsDirty;
+        if (this.isNew || isDirty) {
+            return isValid ? "dirty" : "invalid";
         }
+        return "saved";
     }
 
     async discard() {
@@ -50,9 +58,3 @@ export class FormStatusIndicator extends Component {
         await this.props.save();
     }
 }
-FormStatusIndicator.template = "web.FormStatusIndicator";
-FormStatusIndicator.props = {
-    model: Object,
-    save: Function,
-    discard: Function,
-};

@@ -1,11 +1,12 @@
-/** @odoo-module **/
-
-import { Component, onWillStart, useState } from "@odoo/owl";
+import { useState } from "@web/owl2/utils";
+import { _t } from "@web/core/l10n/translation";
+import { Component, onWillStart } from "@odoo/owl";
 import { download } from "@web/core/network/download";
 import { registry } from "@web/core/registry";
 import { useService } from "@web/core/utils/hooks";
+import { useSetupAction } from "@web/search/action_hook";
 import { Layout } from "@web/search/layout";
-import { useSetupAction } from "@web/webclient/actions/action_hook";
+import { standardActionServiceProps } from "@web/webclient/actions/action_service";
 
 function processLine(line) {
     return { ...line, lines: [], isFolded: true };
@@ -32,11 +33,11 @@ function extractPrintData(lines) {
 export class TraceabilityReport extends Component {
     static template = "stock.TraceabilityReport";
     static components = { Layout };
+    static props = { ...standardActionServiceProps };
 
     setup() {
         this.actionService = useService("action");
         this.orm = useService("orm");
-        this.user = useService("user");
 
         onWillStart(this.onWillStart);
         useSetupAction({
@@ -49,7 +50,7 @@ export class TraceabilityReport extends Component {
             lines: this.props.state?.lines || [],
         });
 
-        const { active_id, active_model, auto_unfold, context, lot_name, ttype, url } =
+        const { active_id, active_model, auto_unfold, context, lot_name, ttype, url, lang } =
             this.props.action.context;
         this.controllerUrl = url;
 
@@ -57,10 +58,15 @@ export class TraceabilityReport extends Component {
         Object.assign(this.context, {
             active_id: active_id || this.props.action.params.active_id,
             auto_unfold: auto_unfold || false,
-            model: active_model || false,
+            model: active_model || this.props.action.context.params?.active_model || false,
             lot_name: lot_name || false,
             ttype: ttype || false,
+            lang: lang || false,
         });
+
+        if (this.context.model) {
+            this.props.updateActionState({ active_model: this.context.model });
+        }
 
         this.display = {
             controlPanel: {},
@@ -87,16 +93,23 @@ export class TraceabilityReport extends Component {
         });
     }
 
-    onCLickOpenLot(line) {
+    onClickPartner(line) {
         this.actionService.doAction({
-            type: "ir.actions.client",
-            tag: "stock_report_generic",
-            name: line.lot_name !== undefined && line.lot_name.toString(),
-            context: {
-                active_id: line.lot_id,
-                active_model: "stock.lot",
-                url: "/stock/output_format/stock?active_id=:active_id&active_model=:active_model",
-            },
+            type: "ir.actions.act_window",
+            res_model: "res.partner",
+            res_id: line.partner_id,
+            views: [[false, "form"]],
+            target: "current",
+        });
+    }
+
+    onClickOpenLot(line) {
+        this.actionService.doAction({
+            type: 'ir.actions.act_window',
+            res_model: 'stock.lot',
+            res_id: line.lot_id,
+            views: [[false, 'form']],
+            target: 'current',
         });
     }
 
@@ -104,7 +117,7 @@ export class TraceabilityReport extends Component {
         this.actionService.doAction({
             type: "ir.actions.client",
             tag: "stock_report_generic",
-            name: this.env._t("Traceability Report"),
+            name: _t("Traceability Report"),
             context: {
                 active_id: line.model_id,
                 active_model: line.model,

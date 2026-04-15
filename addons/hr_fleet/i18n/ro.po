@@ -1,33 +1,52 @@
 # Translation of Odoo Server.
 # This file contains the translation of the following modules:
-# 	* hr_fleet
+# * hr_fleet
 #
 # Translators:
 # Hongu Cosmin <cosmin513@gmail.com>, 2022
-# Dorin Hongu <dhongu@gmail.com>, 2022
+# Dorin Hongu <dhongu@gmail.com>, 2022, 2025.
 # Martin Trigaux, 2022
 # Foldi Robert <foldirobert@nexterp.ro>, 2022
 # Cozmin Candea <office@terrabit.ro>, 2023
-#
+# "Tiffany Chang (tic)" <tic@odoo.com>, 2025.
 msgid ""
 msgstr ""
 "Project-Id-Version: Odoo Server 16.0beta\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2023-05-16 13:49+0000\n"
-"PO-Revision-Date: 2022-09-22 05:46+0000\n"
-"Last-Translator: Cozmin Candea <office@terrabit.ro>, 2023\n"
-"Language-Team: Romanian (https://app.transifex.com/odoo/teams/41243/ro/)\n"
+"POT-Creation-Date: 2026-03-12 18:36+0000\n"
+"PO-Revision-Date: 2025-11-24 12:07+0000\n"
+"Last-Translator: Dorin Hongu <dhongu@gmail.com>\n"
+"Language-Team: Romanian <https://translate.odoo.com/projects/odoo-19/"
+"hr_fleet/ro/>\n"
 "Language: ro\n"
 "MIME-Version: 1.0\n"
 "Content-Type: text/plain; charset=UTF-8\n"
 "Content-Transfer-Encoding: \n"
-"Plural-Forms: nplurals=3; plural=(n==1?0:(((n%100>19)||((n%100==0)&&(n!=0)))?2:1));\n"
+"Plural-Forms: nplurals=3; plural=n==1 ? 0 : (n==0 || (n%100 > 0 && n%100 < "
+"20)) ? 1 : 2;\n"
+"X-Generator: Weblate 5.12.2\n"
+
+#. module: hr_fleet
+#: model_terms:ir.ui.view,arch_db:hr_fleet.fleet_vehicle_log_contract_view_form_inherit_hr
+msgid "<span class=\"o_stat_text\">Employee</span>"
+msgstr "<span class=\"o_stat_text\">Angajat</span>"
 
 #. module: hr_fleet
 #: model_terms:ir.ui.view,arch_db:hr_fleet.fleet_vehicle_view_form_inherit_hr
 msgid ""
 "<span class=\"o_stat_value\">1</span>\n"
 "                        <span class=\"o_stat_text\">Employee</span>"
+msgstr ""
+
+#. module: hr_fleet
+#: model_terms:ir.ui.view,arch_db:hr_fleet.hr_employee_departure_view_form
+#: model_terms:ir.ui.view,arch_db:hr_fleet.view_employee_form
+msgid "<span>Unassign Company Car</span>"
+msgstr ""
+
+#. module: hr_fleet
+#: model:ir.model,name:hr_fleet.model_ir_attachment
+msgid "Attachment"
 msgstr ""
 
 #. module: hr_fleet
@@ -38,20 +57,22 @@ msgstr "Atașamente"
 
 #. module: hr_fleet
 #. odoo-python
-#: code:addons/hr_fleet/models/employee.py:0
-#, python-format
+#: code:addons/hr_fleet/models/hr_employee.py:0
 msgid "Cannot remove address from employees with linked cars."
 msgstr ""
 
 #. module: hr_fleet
 #: model:ir.model.fields,field_description:hr_fleet.field_hr_employee__employee_cars_count
-#: model:ir.model.fields,field_description:hr_fleet.field_res_users__employee_cars_count
+#: model:ir.model.fields,field_description:hr_fleet.field_hr_employee_public__employee_cars_count
 msgid "Cars"
 msgstr "Mașini"
 
 #. module: hr_fleet
-#: model_terms:ir.ui.view,arch_db:hr_fleet.hr_departure_wizard_view_form
-msgid "Company Car"
+#. odoo-python
+#: code:addons/hr_fleet/models/hr_employee.py:0
+#: model_terms:ir.ui.view,arch_db:hr_fleet.hr_employee_public_view_form
+#: model_terms:ir.ui.view,arch_db:hr_fleet.view_employee_form
+msgid "Cars History"
 msgstr ""
 
 #. module: hr_fleet
@@ -60,14 +81,23 @@ msgid "Current Driver"
 msgstr "Șofer Actual"
 
 #. module: hr_fleet
-#: model_terms:ir.ui.view,arch_db:hr_fleet.fleet_vehicle_view_search_inherit_hr
-msgid "Current Driver (Employee)"
+#: model_terms:ir.ui.view,arch_db:hr_fleet.view_attachment_kanban_inherit_hr
+msgid "Delete"
 msgstr ""
 
 #. module: hr_fleet
-#: model:ir.model,name:hr_fleet.model_hr_departure_wizard
-msgid "Departure Wizard"
-msgstr "Asistent Plecare"
+#: model:ir.model.fields,field_description:hr_fleet.field_fleet_vehicle__display_name
+#: model:ir.model.fields,field_description:hr_fleet.field_fleet_vehicle_assignation_log__display_name
+#: model:ir.model.fields,field_description:hr_fleet.field_fleet_vehicle_log_contract__display_name
+#: model:ir.model.fields,field_description:hr_fleet.field_fleet_vehicle_log_services__display_name
+#: model:ir.model.fields,field_description:hr_fleet.field_fleet_vehicle_odometer__display_name
+#: model:ir.model.fields,field_description:hr_fleet.field_hr_employee__display_name
+#: model:ir.model.fields,field_description:hr_fleet.field_hr_employee_departure__display_name
+#: model:ir.model.fields,field_description:hr_fleet.field_hr_employee_public__display_name
+#: model:ir.model.fields,field_description:hr_fleet.field_hr_version__display_name
+#: model:ir.model.fields,field_description:hr_fleet.field_ir_attachment__display_name
+msgid "Display Name"
+msgstr ""
 
 #. module: hr_fleet
 #: model_terms:ir.ui.view,arch_db:hr_fleet.fleet_vehicle_log_contract_view_form_inherit_hr
@@ -96,10 +126,13 @@ msgid "Employee"
 msgstr "Angajat"
 
 #. module: hr_fleet
-#. odoo-python
-#: code:addons/hr_fleet/models/hr_plan_activity_type.py:0
-#, python-format
-msgid "Employee %s is not linked to a vehicle."
+#: model:ir.model,name:hr_fleet.model_hr_version
+msgid "Employee Contract"
+msgstr ""
+
+#. module: hr_fleet
+#: model:ir.model,name:hr_fleet.model_hr_employee_departure
+msgid "Employee Departure"
 msgstr ""
 
 #. module: hr_fleet
@@ -109,19 +142,14 @@ msgstr "Nume angajat"
 
 #. module: hr_fleet
 #. odoo-python
-#: code:addons/hr_fleet/models/hr_plan_activity_type.py:0
-#, python-format
-msgid "Employee's vehicle %s is not linked to a fleet manager."
+#: code:addons/hr_fleet/models/hr_employee_departure.py:0
+msgid "Employee has been removed from %(car)s future driver list"
 msgstr ""
 
 #. module: hr_fleet
-#: model:ir.model.fields.selection,name:hr_fleet.selection__hr_plan_activity_type__responsible__fleet_manager
-msgid "Fleet Manager"
-msgstr ""
-
-#. module: hr_fleet
+#: model_terms:ir.ui.view,arch_db:hr_fleet.hr_employee_departure_view_form
 #: model_terms:ir.ui.view,arch_db:hr_fleet.view_employee_form
-msgid "Fleet Mobility Card"
+msgid "Fleet"
 msgstr ""
 
 #. module: hr_fleet
@@ -130,16 +158,23 @@ msgid "Future Driver (Employee)"
 msgstr ""
 
 #. module: hr_fleet
+#: model:ir.model.fields,field_description:hr_fleet.field_fleet_vehicle__id
+#: model:ir.model.fields,field_description:hr_fleet.field_fleet_vehicle_assignation_log__id
+#: model:ir.model.fields,field_description:hr_fleet.field_fleet_vehicle_log_contract__id
+#: model:ir.model.fields,field_description:hr_fleet.field_fleet_vehicle_log_services__id
+#: model:ir.model.fields,field_description:hr_fleet.field_fleet_vehicle_odometer__id
+#: model:ir.model.fields,field_description:hr_fleet.field_hr_employee__id
+#: model:ir.model.fields,field_description:hr_fleet.field_hr_employee_departure__id
+#: model:ir.model.fields,field_description:hr_fleet.field_hr_employee_public__id
+#: model:ir.model.fields,field_description:hr_fleet.field_hr_version__id
+#: model:ir.model.fields,field_description:hr_fleet.field_ir_attachment__id
+msgid "ID"
+msgstr ""
+
+#. module: hr_fleet
 #: model:ir.model.fields,field_description:hr_fleet.field_hr_employee__license_plate
 msgid "License Plate"
 msgstr "Placuță de înmatriculare"
-
-#. module: hr_fleet
-#: model:ir.model.fields,field_description:hr_fleet.field_fleet_vehicle__mobility_card
-#: model:ir.model.fields,field_description:hr_fleet.field_hr_employee__mobility_card
-#: model:ir.model.fields,field_description:hr_fleet.field_hr_employee_public__mobility_card
-msgid "Mobility Card"
-msgstr ""
 
 #. module: hr_fleet
 #: model:ir.model.fields,field_description:hr_fleet.field_fleet_vehicle_assignation_log__attachment_number
@@ -152,30 +187,22 @@ msgid "Odometer log for a vehicle"
 msgstr "Registrul Controrului de kilometraj pentru un vehicul"
 
 #. module: hr_fleet
-#: model:ir.model,name:hr_fleet.model_hr_plan_activity_type
-msgid "Plan activity type"
-msgstr ""
-
-#. module: hr_fleet
 #: model:ir.model,name:hr_fleet.model_hr_employee_public
 msgid "Public Employee"
-msgstr "Angajați Publici "
+msgstr "Angajați Publici"
 
 #. module: hr_fleet
 #. odoo-python
 #: code:addons/hr_fleet/models/fleet_vehicle.py:0
-#, python-format
+#: code:addons/hr_fleet/models/fleet_vehicle_log_contract.py:0
 msgid "Related Employee"
 msgstr ""
 
 #. module: hr_fleet
-#: model:ir.model.fields,field_description:hr_fleet.field_hr_departure_wizard__release_campany_car
+#: model:ir.model.fields,field_description:hr_fleet.field_hr_employee__departure_do_unassign_company_car
+#: model:ir.model.fields,field_description:hr_fleet.field_hr_employee_departure__do_unassign_company_car
+#: model:ir.model.fields,field_description:hr_fleet.field_hr_version__departure_do_unassign_company_car
 msgid "Release Company Car"
-msgstr ""
-
-#. module: hr_fleet
-#: model:ir.model.fields,field_description:hr_fleet.field_hr_plan_activity_type__responsible
-msgid "Responsible"
 msgstr ""
 
 #. module: hr_fleet
@@ -184,16 +211,31 @@ msgid "Services for vehicles"
 msgstr "Service pentru vehicule"
 
 #. module: hr_fleet
-#. odoo-javascript
-#: code:addons/hr_fleet/static/src/views/hr_fleet_kanban/hr_fleet_kanban_controller.xml:0
-#, python-format
-msgid "Upload"
-msgstr "Încărcare "
+#. odoo-python
+#: code:addons/hr_fleet/models/hr_employee_departure.py:0
+msgid ""
+"The future driver has been removed due to the end of collaboration with "
+"%(employee)s"
+msgstr ""
 
 #. module: hr_fleet
-#: model:ir.model,name:hr_fleet.model_res_users
-msgid "User"
-msgstr "Operator"
+#. odoo-python
+#: code:addons/hr_fleet/models/hr_employee_departure.py:0
+msgid "The vehicle %(car)s has been freed"
+msgstr ""
+
+#. module: hr_fleet
+#. odoo-python
+#: code:addons/hr_fleet/models/hr_employee_departure.py:0
+msgid ""
+"The vehicle has been freed due to the end of collaboration with %(employee)s"
+msgstr ""
+
+#. module: hr_fleet
+#. odoo-javascript
+#: code:addons/hr_fleet/static/src/views/hr_fleet_kanban/hr_fleet_kanban_controller.xml:0
+msgid "Upload"
+msgstr "Încărcare"
 
 #. module: hr_fleet
 #: model:ir.model,name:hr_fleet.model_fleet_vehicle

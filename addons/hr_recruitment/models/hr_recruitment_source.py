@@ -1,45 +1,61 @@
 # -*- coding: utf-8 -*-
 # Part of Odoo. See LICENSE file for full copyright and licensing details.
 
-from odoo import api, fields, models
+from odoo import fields, models
 
 
-class RecruitmentSource(models.Model):
-    _name = "hr.recruitment.source"
+class HrRecruitmentSource(models.Model):
+    _name = 'hr.recruitment.source'
     _description = "Source of Applicants"
-    _inherit = ['utm.source.mixin']
+    _rec_name = "source_id"
 
     email = fields.Char(related='alias_id.display_name', string="Email", readonly=True)
     has_domain = fields.Char(compute='_compute_has_domain')
-    job_id = fields.Many2one('hr.job', "Job", ondelete='cascade')
-    alias_id = fields.Many2one('mail.alias', "Alias ID")
-    medium_id = fields.Many2one('utm.medium', default=lambda self: self.env.ref('utm.utm_medium_website'))
+    job_id = fields.Many2one('hr.job', "Job", index=True, ondelete='cascade')
+    alias_id = fields.Many2one('mail.alias', "Alias ID", ondelete='restrict')
+    medium_id = fields.Many2one('utm.medium', default=lambda self: self.env['utm.mixin']._utm_ref('utm.utm_medium_social_media'))
+    campaign_id = fields.Many2one('utm.campaign')
+    source_id = fields.Many2one('utm.source', string='Source', required=True, ondelete='restrict',
+                                copy=False, default=lambda self: self.env['utm.mixin']._utm_ref('utm.utm_source_linkedin'))
 
     def _compute_has_domain(self):
-        self.has_domain = bool(self.env["ir.config_parameter"].sudo().get_param("mail.catchall.domain"))
+        for source in self:
+            if source.alias_id:
+                source.has_domain = bool(source.alias_id.alias_domain_id)
+            else:
+                source.has_domain = bool(source.job_id.company_id.alias_domain_id
+                                         or self.env.company.alias_domain_id)
 
     def create_alias(self):
         campaign = self.env.ref('hr_recruitment.utm_campaign_job')
-        medium = self.env.ref('utm.utm_medium_email')
-        for source in self:
+        medium = self.env['utm.mixin']._utm_ref('utm.utm_medium_email')
+        for source in self.filtered(lambda s: not s.alias_id):
             vals = {
-                'alias_parent_thread_id': source.job_id.id,
-                'alias_model_id': self.env['ir.model']._get('hr.applicant').id,
-                'alias_parent_model_id': self.env['ir.model']._get('hr.job').id,
-                'alias_name': "%s+%s" % (source.job_id.alias_name or source.job_id.name, source.name),
                 'alias_defaults': {
                     'job_id': source.job_id.id,
                     'campaign_id': campaign.id,
                     'medium_id': medium.id,
                     'source_id': source.source_id.id,
                 },
+                'alias_domain_id': source.job_id.company_id.alias_domain_id.id or self.env.company.alias_domain_id.id,
+                'alias_model_id': self.env['ir.model']._get_id('hr.applicant'),
+                'alias_name': f"{source.job_id.alias_name or source.job_id.name}+{source.source_id.name}",
+                'alias_parent_thread_id': source.job_id.id,
+                'alias_parent_model_id': self.env['ir.model']._get_id('hr.job'),
             }
-            source.alias_id = self.env['mail.alias'].create(vals)
 
-    @api.model
-    def _get_view(self, view_id=None, view_type='form', **options):
-        arch, view = super()._get_view(view_id, view_type, **options)
-        if view_type == 'tree' and not bool(self.env["ir.config_parameter"].sudo().get_param("mail.catchall.domain")):
-            email = arch.xpath("//field[@name='email']")[0]
-            email.getparent().remove(email)
-        return arch, view
+            # check that you can create source before to call mail.alias in sudo with known/controlled vals
+            source.check_access('create')
+            source.alias_id = self.env['mail.alias'].sudo().create(vals)
+
+    def create_and_get_alias(self):
+        self.ensure_one()
+        self.create_alias()
+        return self.email
+
+    def unlink(self):
+        """ Cascade delete aliases to avoid useless / badly configured aliases. """
+        aliases = self.alias_id
+        res = super().unlink()
+        aliases.sudo().unlink()
+        return res

@@ -10,20 +10,13 @@ class AccountChartTemplate(models.AbstractModel):
     def _get_nz_template_data(self):
         return {
             'code_digits': '5',
-            'use_anglo_saxon': True,
-            'property_account_receivable_id': 'nz_11200',
-            'property_account_payable_id': 'nz_21200',
-            'property_account_expense_categ_id': 'nz_51110',
-            'property_account_income_categ_id': 'nz_41110',
-            'property_stock_account_input_categ_id': 'nz_21210',
-            'property_stock_account_output_categ_id': 'nz_11340',
-            'property_stock_valuation_account_id': 'nz_11330',
         }
 
     @template('nz', 'res.company')
     def _get_nz_res_company(self):
         return {
             self.env.company.id: {
+                'anglo_saxon_accounting': True,
                 'account_fiscal_country_id': 'base.nz',
                 'bank_account_code_prefix': '1111',
                 'cash_account_code_prefix': '1113',
@@ -33,5 +26,15 @@ class AccountChartTemplate(models.AbstractModel):
                 'expense_currency_exchange_account_id': 'nz_61630',
                 'account_journal_early_pay_discount_loss_account_id': 'nz_61610',
                 'account_journal_early_pay_discount_gain_account_id': 'nz_61620',
+                'account_sale_tax_id': 'nz_tax_sale_15',
+                'account_purchase_tax_id': 'nz_tax_purchase_15',
+                'fiscalyear_last_month': '3',
+                'fiscalyear_last_day': 31,
+                'expense_account_id': 'nz_51110',
+                'income_account_id': 'nz_41110',
+                'receivable_account_id': 'nz_11200',
+                'payable_account_id': 'nz_21200',
+                'account_stock_valuation_id': 'nz_11330',
+                'stock_account_production_cost_id': 'nz_11350',
             },
         }

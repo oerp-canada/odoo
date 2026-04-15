@@ -3,16 +3,18 @@
 
 from odoo import _, api, fields, models
 from odoo.exceptions import UserError
-from odoo.addons.resource.models.utils import filter_domain_leaf
+from odoo.models import TableSQL
+from odoo.tools import SQL
+from odoo.addons.resource.models.utils import filter_map_domain
 
 
-class ReportProjectTaskBurndownChart(models.AbstractModel):
+class ProjectTaskBurndownChartReport(models.AbstractModel):
     _name = 'project.task.burndown.chart.report'
     _description = 'Burndown Chart'
     _auto = False
     _order = 'date'
 
-    planned_hours = fields.Float(string='Allocated Hours', readonly=True)
+    allocated_hours = fields.Float(string='Allocated Time', readonly=True)
     date = fields.Datetime('Date', readonly=True)
     date_assign = fields.Datetime(string='Assignment Date', readonly=True)
     date_deadline = fields.Date(string='Deadline', readonly=True)
@@ -22,9 +24,10 @@ class ReportProjectTaskBurndownChart(models.AbstractModel):
         ('1_done', 'Done'),
         ('04_waiting_normal', 'Waiting'),
         ('03_approved', 'Approved'),
-        ('1_canceled', 'Canceled'),
+        ('1_canceled', 'Cancelled'),
         ('02_changes_requested', 'Changes Requested'),
     ], string='State', readonly=True)
+    is_closed = fields.Selection([('closed', 'Closed tasks'), ('open', 'Open tasks')], string="Closing Stage", readonly=True)
     milestone_id = fields.Many2one('project.milestone', readonly=True)
     partner_id = fields.Many2one('res.partner', string='Customer', readonly=True)
     project_id = fields.Many2one('project.project', readonly=True)
@@ -54,51 +57,44 @@ class ReportProjectTaskBurndownChart(models.AbstractModel):
             'user_ids',
         ]
 
-    def _where_calc(self, domain, active_test=True):
+    @api.model
+    def _search(self, domain, offset=0, limit=None, order=None, **kwargs):
         burndown_specific_domain, task_specific_domain = self._determine_domains(domain)
-
-        main_query = super()._where_calc(burndown_specific_domain, active_test)
+        main_query = super()._search(
+            burndown_specific_domain, offset=offset, limit=limit, order=order, **kwargs)
 
         # Build the query on `project.task` with the domain fields that are linked to that model. This is done in order
         # to be able to reduce the number of treated records in the query by limiting them to the one corresponding to
         # the ids that are returned from this sub query.
-        self.env['project.task']._flush_search(task_specific_domain, fields=self.task_specific_fields)
-        project_task_query = self.env['project.task']._where_calc(task_specific_domain)
-        project_task_from_clause, project_task_where_clause, project_task_where_clause_params = project_task_query.get_sql()
-
-        # Insert `WHERE` clause parameter that apply on `project_task` prior to the one that apply on
-        # `project_task_burndown_chart_report` as the `project_task` CTE is placed at the beginning of the `SQL`.
-        main_query._where_params = project_task_where_clause_params + main_query._where_params
+        project_task_query = self.env['project.task']._search(task_specific_domain, **kwargs)
 
         # Get the stage_id `ir.model.fields`'s id in order to inject it directly in the query and avoid having to join
         # on `ir_model_fields` table.
-        IrModelFieldsSudo = self.env['ir.model.fields'].sudo()
-        field_id = IrModelFieldsSudo.search([('name', '=', 'stage_id'), ('model', '=', 'project.task')]).id
+        field_id = self.sudo().env['ir.model.fields'].search([('name', '=', 'stage_id'), ('model', '=', 'project.task')]).id
 
-        groupby = self.env.context['project_task_burndown_chart_report_groupby']
+        groupby = self.env.context.get('project_task_burndown_chart_report_groupby', ['date:month', 'stage_id'])
         date_groupby = [g for g in groupby if g.startswith('date')][0]
 
         # Computes the interval which needs to be used in the `SQL` depending on the date group by interval.
         interval = date_groupby.split(':')[1]
         sql_interval = '1 %s' % interval if interval != 'quarter' else '3 month'
 
-        simple_date_groupby_sql, __ = self._read_group_groupby(f"date:{interval}", main_query)
+        simple_date_groupby_sql = self._read_group_groupby(TableSQL('project_task_burndown_chart_report', self, main_query), f"date:{interval}")
         # Removing unexistant table name from the expression
+        simple_date_groupby_sql = self.env.cr.mogrify(simple_date_groupby_sql).decode()
         simple_date_groupby_sql = simple_date_groupby_sql.replace('"project_task_burndown_chart_report".', '')
 
-        burndown_chart_query = """
-              WITH task_ids AS (
-                 SELECT id
-                 FROM %(task_query_from)s
-                 %(task_query_where)s
-              ),
+        burndown_chart_sql = SQL("""
+            (
+              WITH task_ids AS %(task_query_subselect)s,
               all_stage_task_moves AS (
                  SELECT count(*) as __count,
-                        sum(planned_hours) as planned_hours,
+                        sum(allocated_hours) as allocated_hours,
                         project_id,
                         %(date_begin)s as date_begin,
                         %(date_end)s as date_end,
-                        stage_id
+                        stage_id,
+                        is_closed
                    FROM (
                             -- Gathers the stage_ids history per task_id. This query gets:
                             -- * All changes except the last one for those for which we have at least a mail
@@ -106,14 +102,15 @@ class ReportProjectTaskBurndownChart(models.AbstractModel):
                             -- * The stage at creation for those for which we do not have any mail message and a
                             --   mail tracking value on project.task stage_id.
                             SELECT DISTINCT task_id,
-                                   planned_hours,
+                                   allocated_hours,
                                    project_id,
                                    %(date_begin)s as date_begin,
                                    %(date_end)s as date_end,
-                                   first_value(stage_id) OVER task_date_begin_window AS stage_id
+                                   first_value(stage_id) OVER task_date_begin_window AS stage_id,
+                                   is_closed
                               FROM (
                                      SELECT pt.id as task_id,
-                                            pt.planned_hours,
+                                            pt.allocated_hours,
                                             pt.project_id,
                                             COALESCE(LAG(mm.date) OVER (PARTITION BY mm.res_id ORDER BY mm.id), pt.create_date) as date_begin,
                                             CASE WHEN mtv.id IS NOT NULL THEN mm.date
@@ -121,12 +118,18 @@ class ReportProjectTaskBurndownChart(models.AbstractModel):
                                             END as date_end,
                                             CASE WHEN mtv.id IS NOT NULL THEN mtv.old_value_integer
                                                ELSE pt.stage_id
-                                            END as stage_id
+                                            END as stage_id,
+                                            CASE
+                                                WHEN mtv.id IS NOT NULL AND mtv.old_value_char IN ('1_done', '1_canceled') THEN 'closed'
+                                                WHEN mtv.id IS NOT NULL AND mtv.old_value_char NOT IN ('1_done', '1_canceled') THEN 'open'
+                                                WHEN mtv.id IS NULL AND pt.state IN ('1_done', '1_canceled') THEN 'closed'
+                                                ELSE 'open'
+                                            END as is_closed
                                        FROM project_task pt
                                                 LEFT JOIN (
                                                     mail_message mm
                                                         JOIN mail_tracking_value mtv ON mm.id = mtv.mail_message_id
-                                                                                     AND mtv.field = %(field_id)s
+                                                                                     AND mtv.field_id = %(field_id)s
                                                                                      AND mm.model='project.task'
                                                                                      AND mm.message_type = 'notification'
                                                         JOIN project_task_type ptt ON ptt.id = mtv.old_value_integer
@@ -134,29 +137,32 @@ class ReportProjectTaskBurndownChart(models.AbstractModel):
                                       WHERE pt.active=true AND pt.id IN (SELECT id from task_ids)
                                    ) task_stage_id_history
                           GROUP BY task_id,
-                                   planned_hours,
+                                   allocated_hours,
                                    project_id,
                                    %(date_begin)s,
                                    %(date_end)s,
-                                   stage_id
+                                   stage_id,
+                                   is_closed
                             WINDOW task_date_begin_window AS (PARTITION BY task_id, %(date_begin)s)
                           UNION ALL
                             -- Gathers the current stage_ids per task_id for those which values changed at least
                             -- once (=those for which we have at least a mail message and a mail tracking value
                             -- on project.task stage_id).
                             SELECT pt.id as task_id,
-                                   pt.planned_hours,
+                                   pt.allocated_hours,
                                    pt.project_id,
                                    last_stage_id_change_mail_message.date as date_begin,
                                    (now() at time zone 'utc')::date + INTERVAL '%(interval)s' as date_end,
-                                   pt.stage_id as old_value_integer
+                                   pt.stage_id as old_value_integer,
+                                   CASE WHEN pt.state IN ('1_done', '1_canceled') THEN 'closed'
+                                       ELSE 'open'
+                                   END as is_closed
                               FROM project_task pt
-                                   JOIN project_task_type ptt ON ptt.id = pt.stage_id
                                    JOIN LATERAL (
                                        SELECT mm.date
                                        FROM mail_message mm
                                        JOIN mail_tracking_value mtv ON mm.id = mtv.mail_message_id
-                                       AND mtv.field = %(field_id)s
+                                       AND mtv.field_id = %(field_id)s
                                        AND mm.model='project.task'
                                        AND mm.message_type = 'notification'
                                        AND mm.res_id = pt.id
@@ -165,31 +171,35 @@ class ReportProjectTaskBurndownChart(models.AbstractModel):
                                    ) AS last_stage_id_change_mail_message ON TRUE
                              WHERE pt.active=true AND pt.id IN (SELECT id from task_ids)
                         ) AS project_task_burndown_chart
-               GROUP BY planned_hours,
+               GROUP BY allocated_hours,
                         project_id,
                         %(date_begin)s,
                         %(date_end)s,
-                        stage_id
+                        stage_id,
+                        is_closed
               )
               SELECT (project_id*10^13 + stage_id*10^7 + to_char(date, 'YYMMDD')::integer)::bigint as id,
-                     planned_hours,
+                     allocated_hours,
                      project_id,
                      stage_id,
+                     is_closed,
                      date,
                      __count
                 FROM all_stage_task_moves t
                          JOIN LATERAL generate_series(t.date_begin, t.date_end-INTERVAL '1 day', '%(interval)s')
                             AS date ON TRUE
-        """ % {
-            'task_query_from': project_task_from_clause,
-            'task_query_where': f'WHERE {project_task_where_clause}' if project_task_where_clause else '',
-            'date_begin': simple_date_groupby_sql.replace('"date"', '"date_begin"'),
-            'date_end': simple_date_groupby_sql.replace('"date"', '"date_end"'),
-            'interval': sql_interval,
-            'field_id': field_id,
-        }
+            )
+            """,
+            task_query_subselect=project_task_query.subselect(),
+            date_begin=SQL(simple_date_groupby_sql.replace('"date"', '"date_begin"')),
+            date_end=SQL(simple_date_groupby_sql.replace('"date"', '"date_end"')),
+            interval=SQL(sql_interval),
+            field_id=field_id,
+        )
 
-        main_query._tables['project_task_burndown_chart_report'] = burndown_chart_query
+        # hardcode 'project_task_burndown_chart_report' as the query above
+        # (with its own parameters)
+        main_query._joins['project_task_burndown_chart_report'] = (SQL(), burndown_chart_sql, SQL())
 
         return main_query
 
@@ -199,18 +209,17 @@ class ReportProjectTaskBurndownChart(models.AbstractModel):
 
         :param groupby: List of group by fields.
         """
-        stage_id_in_groupby = False
-        date_in_groupby = False
 
+        is_closed_or_stage_in_groupby = False
+        date_in_groupby = False
         for gb in groupby:
             if gb.startswith('date'):
                 date_in_groupby = True
-            else:
-                if gb == 'stage_id':
-                    stage_id_in_groupby = True
+            elif gb in ['stage_id', 'is_closed']:
+                is_closed_or_stage_in_groupby = True
 
-        if not date_in_groupby or not stage_id_in_groupby:
-            raise UserError(_('The view must be grouped by date and by stage_id'))
+        if not date_in_groupby or not is_closed_or_stage_in_groupby:
+            raise UserError(_('The view must be grouped by date and by Stage - Burndown chart or Is Closed - Burnup chart'))
 
     @api.model
     def _determine_domains(self, domain):
@@ -218,20 +227,34 @@ class ReportProjectTaskBurndownChart(models.AbstractModel):
         * A domain that only contains fields that are specific to `project.task.burndown.chart.report`
         * A domain that only contains fields that are specific to `project.task`
 
-        See `filter_domain_leaf` for more details on the new domains.
+        See `filter_map_domain` for more details on the new domains.
 
         :param domain: The domain that has been passed to the read_group.
         :return: A tuple containing the non `project.task` specific domain and the `project.task` specific domain.
         """
         burndown_chart_specific_fields = list(set(self._fields) - set(self.task_specific_fields))
-        task_specific_domain = filter_domain_leaf(domain, lambda field: field not in burndown_chart_specific_fields)
-        non_task_specific_domain = filter_domain_leaf(domain, lambda field: field not in self.task_specific_fields)
+        task_specific_domain = filter_map_domain(
+            domain,
+            lambda condition: (
+                None
+                if condition.field_expr in burndown_chart_specific_fields
+                else condition
+            ),
+        )
+        non_task_specific_domain = filter_map_domain(
+            domain,
+            lambda condition: (
+                None
+                if condition.field_expr in self.task_specific_fields
+                else condition
+            ),
+        )
         return non_task_specific_domain, task_specific_domain
 
-    def _read_group_select(self, aggregate_spec, query):
+    def _read_group_select(self, table, aggregate_spec):
         if aggregate_spec == '__count':
-            return f'SUM("{self._table}"."__count")', []
-        return super()._read_group_select(aggregate_spec, query)
+            return SQL("SUM(%s)", SQL.identifier(self._table, '__count'))
+        return super()._read_group_select(table, aggregate_spec)
 
     def _read_group(self, domain, groupby=(), aggregates=(), having=(), offset=0, limit=None, order=None):
         self._validate_group_by(groupby)

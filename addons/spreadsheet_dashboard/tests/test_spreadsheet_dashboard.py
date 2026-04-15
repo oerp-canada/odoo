@@ -1,9 +1,14 @@
 import json
 
-from odoo.tests.common import TransactionCase
 from odoo.exceptions import UserError
 
-class TestSpreadsheetDashboard(TransactionCase):
+from odoo.tests import tagged
+
+from .common import DashboardTestCommon
+
+
+@tagged('at_install', '-post_install')  # LEGACY at_install
+class TestSpreadsheetDashboard(DashboardTestCommon):
     def test_create_with_default_values(self):
         group = self.env["spreadsheet.dashboard.group"].create(
             {"name": "a group"}
@@ -20,6 +25,30 @@ class TestSpreadsheetDashboard(TransactionCase):
             dashboard._empty_spreadsheet_data()
         )
 
+    def test_copy_name(self):
+        group = self.env["spreadsheet.dashboard.group"].create(
+            {"name": "a group"}
+        )
+        dashboard = self.env["spreadsheet.dashboard"].create(
+            {
+                "name": "a dashboard",
+                "dashboard_group_id": group.id,
+            }
+        )
+        copy = dashboard.copy()
+        self.assertEqual(copy.name, "a dashboard (copy)")
+
+        copy = dashboard.copy({"name": "a copy"})
+        self.assertEqual(copy.name, "a copy")
+
+    def test_copy_group_name(self):
+        group = self.env["spreadsheet.dashboard.group"].create(
+            {"name": "My section"}
+        )
+
+        copy = group.copy()
+        self.assertEqual(copy.name, "My section (copy)")
+
     def test_unlink_prevent_spreadsheet_group(self):
         group = self.env["spreadsheet.dashboard.group"].create(
             {"name": "a_group"}
@@ -32,3 +61,38 @@ class TestSpreadsheetDashboard(TransactionCase):
         })
         with self.assertRaises(UserError, msg="You cannot delete a_group as it is used in another module"):
             group.unlink()
+
+    def test_unpublish_dashboard(self):
+        group = self.env["spreadsheet.dashboard.group"].create({
+            "name": "Dashboard group"
+        })
+        dashboard = self.create_dashboard(group)
+        self.assertEqual(group.published_dashboard_ids, dashboard)
+        dashboard.is_published = False
+        self.assertFalse(group.published_dashboard_ids)
+
+    def test_publish_dashboard(self):
+        group = self.env["spreadsheet.dashboard.group"].create({
+            "name": "Dashboard group"
+        })
+        dashboard = self.create_dashboard(group)
+        dashboard.is_published = False
+        self.assertFalse(group.published_dashboard_ids)
+        dashboard.is_published = True
+        self.assertEqual(group.published_dashboard_ids, dashboard)
+
+    def test_toggle_favorite(self):
+        dashboard = self.create_dashboard().with_user(self.user)
+
+        self.assertFalse(dashboard.is_favorite)
+        self.assertNotIn(self.user, dashboard.favorite_user_ids)
+
+        dashboard.with_user(self.user).action_toggle_favorite()
+
+        self.assertTrue(dashboard.is_favorite)
+        self.assertIn(self.user, dashboard.favorite_user_ids)
+
+        dashboard.with_user(self.user).action_toggle_favorite()
+
+        self.assertFalse(dashboard.is_favorite)
+        self.assertNotIn(self.user, dashboard.favorite_user_ids)

@@ -1,4 +1,4 @@
-/** @odoo-module alias=website_sale.multirange **/
+/** @odoo-module **/
 /**
  * This code has been more that widely inspired by the multirange library
  * which can be found on https://github.com/LeaVerou/multirange.
@@ -192,8 +192,8 @@ export class Multirange {
             this.rightInput.addEventListener("focus", this.selectAllFocus.bind(this));
         }
         this.update();
-        $(this.rangeDiv).addClass('visible');
-
+        // Single change from original lib: removed jQ from next line:
+        this.rangeDiv.classList.add('visible');
     }
 
     update() {
@@ -264,11 +264,21 @@ export class Multirange {
     }
 
     formatNumber(number) {
-        number = String(number).split('.');
-        if (number[1] && number[1].length === 1) {
-            number[1] += '0';
-        }
-        let formatedNumber = number[0].replace(/(?=(?:\d{3})+$)(?!\b)/g, ',') + (number[1] ? '.' + number[1] : '.00');
+        const language = document.querySelector("html").getAttribute("lang");
+        const locale = (() => {
+            switch (language) {
+                case "sr@latin":
+                    return "sr-Latn";
+                case "sr@Cyrl":
+                    return "sr-Cyrl";
+                default:
+                    return language.replaceAll("_", "-");
+            }
+        })();
+        let formatedNumber = number.toLocaleString(locale, {
+            minimumFractionDigits: 2,
+            maximumFractionDigits: 2,
+        });
         if (this.currency.length) {
             if (this.currencyPosition === 'after') {
                 formatedNumber = formatedNumber + ' ' + this.currency;

@@ -3,10 +3,12 @@
 
 from odoo.addons.mass_mailing.tests.common import MassMailCommon
 from odoo.addons.base.tests.test_ir_cron import CronMixinCase
-from odoo.tests.common import users
+from odoo.tests.common import tagged, users
 
 from unittest.mock import patch
 
+
+@tagged('at_install', '-post_install')  # LEGACY at_install
 class TestMailingRetry(MassMailCommon, CronMixinCase):
 
     @classmethod
@@ -17,7 +19,6 @@ class TestMailingRetry(MassMailCommon, CronMixinCase):
     @users('user_marketing')
     def test_mailing_retry_immediate_trigger(self):
         mailing = self.env['mailing.mailing'].create({
-            'name': 'TestMailing',
             'subject': 'Test',
             'mailing_type': 'mail',
             'body_html': '<div>Hello</div>',
@@ -27,10 +28,14 @@ class TestMailingRetry(MassMailCommon, CronMixinCase):
         mailing.action_launch()
 
         # force email sending to fail to test our retry mechanism
-        def patched_mail_mail_send(mail_records, auto_commit=False, raise_exception=False, smtp_session=None):
+        def patched_mail_mail_send(mail_records, auto_commit=False, raise_exception=False, smtp_session=None,
+                                   alias_domain_id=False, mail_server=False, post_send_callback=None):
             mail_records.write({'state': 'exception', 'failure_reason': 'forced_failure'})
 
-        with patch('odoo.addons.mail.models.mail_mail.MailMail._send', patched_mail_mail_send):
+        with (
+            patch('odoo.addons.mail.models.mail_mail.MailMail._send', patched_mail_mail_send),
+            self.enter_registry_test_mode(),
+        ):
             self.env.ref('mass_mailing.ir_cron_mass_mailing_queue').sudo().method_direct_trigger()
 
         with self.capture_triggers('mass_mailing.ir_cron_mass_mailing_queue') as captured_triggers:

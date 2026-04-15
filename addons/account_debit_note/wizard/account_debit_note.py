@@ -2,7 +2,7 @@
 from odoo import models, fields, api
 from odoo.tools.translate import _
 from odoo.exceptions import UserError
-from markupsafe import escape
+
 
 class AccountDebitNote(models.TransientModel):
     """
@@ -24,7 +24,7 @@ class AccountDebitNote(models.TransientModel):
                                      "We won't copy them for debit notes from credit notes. ")
     # computed fields
     move_type = fields.Char(compute="_compute_from_moves")
-    journal_type = fields.Char(compute="_compute_from_moves")
+    journal_type = fields.Char(compute="_compute_journal_type")
     country_code = fields.Char(related='move_ids.company_id.country_id.code')
 
     @api.model
@@ -45,10 +45,14 @@ class AccountDebitNote(models.TransientModel):
         for record in self:
             move_ids = record.move_ids
             record.move_type = move_ids[0].move_type if len(move_ids) == 1 or not any(m.move_type != move_ids[0].move_type for m in move_ids) else False
+
+    @api.depends('move_type')
+    def _compute_journal_type(self):
+        for record in self:
             record.journal_type = record.move_type in ['in_refund', 'in_invoice'] and 'purchase' or 'sale'
 
     def _prepare_default_values(self, move):
-        if move.move_type in ('in_refund', 'out_refund'):
+        if move.is_refund():
             type = 'in_invoice' if move.move_type == 'in_refund' else 'out_invoice'
         else:
             type = move.move_type
@@ -61,7 +65,7 @@ class AccountDebitNote(models.TransientModel):
                 'debit_origin_id': move.id,
                 'move_type': type,
             }
-        if not self.copy_lines or move.move_type in [('in_refund', 'out_refund')]:
+        if not self.copy_lines or move.is_refund():
             default_values['line_ids'] = [(5, 0, 0)]
         return default_values
 
@@ -71,8 +75,6 @@ class AccountDebitNote(models.TransientModel):
         for move in self.move_ids.with_context(include_business_fields=True): #copy sale/purchase links
             default_values = self._prepare_default_values(move)
             new_move = move.copy(default=default_values)
-            move_msg = escape(_("This debit note was created from: %s")) % move._get_html_link()
-            new_move.message_post(body=move_msg)
             new_moves |= new_move
 
         action = {
@@ -88,7 +90,7 @@ class AccountDebitNote(models.TransientModel):
             })
         else:
             action.update({
-                'view_mode': 'tree,form',
+                'view_mode': 'list,form',
                 'domain': [('id', 'in', new_moves.ids)],
             })
         return action

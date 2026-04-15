@@ -17,10 +17,24 @@
                                         <span class="o_stat_text">Routes</span>
                                     </div>
                             </button>
+                            <button name="action_open_internal_locations"
+                                    string="Locations"
+                                    icon="fa-th"
+                                    class="oe_stat_button"
+                                    type="object"
+                                    groups="stock.group_stock_multi_locations">
+                                    <div class="o_stat_info">
+                                        <span class="o_stat_text">Locations</span>
+                                    </div>
+                            </button>
                         </div>
-                        <widget name="web_ribbon" title="Archived" bg_color="text-bg-danger" attrs="{'invisible': [('active', '=', True)]}"/>
-                        <label for="name"/>
-                        <h1><field name="name" placeholder="e.g. Central Warehouse" class="w-100"/></h1>
+                        <widget name="web_ribbon" title="Archived" bg_color="text-bg-danger" invisible="active"/>
+                        <group>
+                            <label for="name" class="d-md-none"/>
+                            <h1>
+                                <field name="name" placeholder="e.g. Central Warehouse" class="w-100"/>
+                            </h1>
+                        </group>
                         <group>
                             <group>
                                 <field name="active" invisible="1"/>
@@ -40,7 +54,7 @@
                                         <field name="delivery_steps" widget='radio'/>
                                     </group>
                                     <group name="group_resupply" string="Resupply" groups="stock.group_stock_multi_warehouses">
-                                        <field name="resupply_wh_ids" domain="[('id', '!=', id)]" widget="many2many_checkboxes" groups="stock.group_stock_multi_warehouses"/>
+                                        <field name="resupply_wh_ids" domain="[('id', '!=', id), ('company_id', '=', company_id)]" widget="many2many_checkboxes" groups="stock.group_stock_multi_warehouses"/>
                                     </group>
                                 </group>
                             </page>
@@ -55,11 +69,14 @@
                                         <field name="wh_output_stock_loc_id" readonly="1"/>
                                     </group>
                                     <group string="Operation Types">
-                                        <field name="in_type_id" readonly="1"/>
                                         <field name="int_type_id" readonly="1"/>
+                                        <field name="in_type_id" readonly="1"/>
+                                        <field name="qc_type_id" readonly="1"/>
+                                        <field name="store_type_id" readonly="1"/>
                                         <field name="pick_type_id" readonly="1"/>
                                         <field name="pack_type_id" readonly="1"/>
                                         <field name="out_type_id" readonly="1"/>
+                                        <field name="xdock_type_id" readonly="1"/>
                                     </group>
                                 </group>
                             </page>
@@ -70,17 +87,17 @@
         </record>
 
         <record id="view_warehouse_tree" model="ir.ui.view">
-            <field name="name">stock.warehouse.tree</field>
+            <field name="name">stock.warehouse.list</field>
             <field name="model">stock.warehouse</field>
             <field name="arch" type="xml">
-                <tree string="Warehouse">
+                <list string="Warehouse">
                     <field name="sequence" widget="handle"/>
                     <field name="name"/>
-                    <field name="active" invisible="1"/>
+                    <field name="active" column_invisible="True"/>
                     <field name="lot_stock_id" groups="stock.group_stock_multi_locations"/>
                     <field name="partner_id"/>
                     <field name="company_id" groups="base.group_multi_company"/>
-                </tree>
+                </list>
             </field>
         </record>
 

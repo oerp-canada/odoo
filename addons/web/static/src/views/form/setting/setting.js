@@ -1,18 +1,35 @@
-/** @odoo-module **/
-
-import { session } from "@web/session";
 import { Component } from "@odoo/owl";
 import { FormLabel } from "../form_label";
 import { DocumentationLink } from "@web/views/widgets/documentation_link/documentation_link";
+import { user } from "@web/core/user";
 
 export class Setting extends Component {
+    static template = "web.Setting";
+    static components = {
+        FormLabel,
+        DocumentationLink,
+    };
+    static props = {
+        id: { type: String, optional: true },
+        info: { type: String, optional: true },
+        title: { type: String, optional: true },
+        fieldId: { type: String, optional: true },
+        help: { type: String, optional: true },
+        fieldName: { type: String, optional: true },
+        fieldInfo: { type: Object, optional: true },
+        class: { type: String, optional: true },
+        record: { type: Object, optional: true },
+        documentation: { type: String, optional: true },
+        string: { type: String, optional: true },
+        addLabel: { type: Boolean },
+        companyDependent: { type: Boolean, optional: true },
+        slots: { type: Object, optional: true },
+    };
+
     setup() {
         if (this.props.fieldName) {
             this.fieldType = this.props.record.fields[this.props.fieldName].type;
-            if (
-                typeof this.props.fieldInfo.modifiers.readonly === "boolean" &&
-                this.props.fieldInfo.modifiers.readonly === true
-            ) {
+            if (this.props.fieldInfo.readonly === "True") {
                 this.notMuttedLabel = true;
             }
         }
@@ -31,9 +48,7 @@ export class Setting extends Component {
     }
 
     get displayCompanyDependentIcon() {
-        return (
-            this.labelString && this.props.companyDependent && session.display_switch_company_menu
-        );
+        return this.labelString && this.props.companyDependent && user.allowedCompanies.length > 1;
     }
 
     get labelString() {
@@ -47,22 +62,3 @@ export class Setting extends Component {
         return label || "";
     }
 }
-Setting.components = {
-    FormLabel,
-    DocumentationLink,
-};
-Setting.template = "web.Setting";
-Setting.props = {
-    title: { type: String, optional: 1 },
-    fieldId: { type: String, optional: 1 },
-    help: { type: String, optional: 1 },
-    fieldName: { type: String, optional: 1 },
-    fieldInfo: { type: Object, optional: 1 },
-    class: { type: String, optional: 1 },
-    record: { type: Object, optional: 1 },
-    documentation: { type: String, optional: 1 },
-    string: { type: String, optional: 1 },
-    addLabel: { type: Boolean },
-    companyDependent: { type: Boolean, optional: 1 },
-    slots: { type: Object, optional: 1 },
-};

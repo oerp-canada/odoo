@@ -1,10 +1,10 @@
 # Part of Odoo. See LICENSE file for full copyright and licensing details.
 {
     'name': 'Luxembourg - Accounting',
-    'website': 'https://www.odoo.com/documentation/master/applications/finance/fiscal_localizations/luxembourg.html',
+    'website': 'https://www.odoo.com/documentation/latest/applications/finance/fiscal_localizations/luxembourg.html',
     'icon': '/account/static/description/l10n.png',
     'countries': ['lu'],
-    'version': '2.1',
+    'version': '2.2',
     'category': 'Accounting/Localizations/Account Charts',
     'description': """
 This is the base module to manage the accounting chart for Luxembourg.
@@ -23,12 +23,17 @@ Notes:
     'author': 'Odoo S.A., ADN, ACSONE SA/NV',
     'depends': [
         'account',
-        'base_iban',
         'base_vat',
+        'account_edi_ubl_cii',
     ],
+    'auto_install': ['account'],
     'data': [
+        'data/account.account.tag.csv',
         'data/l10n_lu_chart_data.xml',
-        'data/account_tax_report_line.xml',
+        'data/tax_report/section_1.xml',
+        'data/tax_report/section_2.xml',
+        'data/tax_report/sections_34.xml',
+        'data/tax_report/tax_report.xml',
     ],
     'demo': [
         'demo/demo_company.xml',

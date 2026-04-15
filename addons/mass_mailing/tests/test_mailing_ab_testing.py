@@ -4,12 +4,13 @@
 from datetime import datetime, timedelta
 
 from odoo.addons.mass_mailing.tests.common import MassMailCommon
-from odoo.tests import users, tagged
+from odoo.tests import Form, users, tagged
 from odoo.tools import mute_logger
+from odoo import fields
 
 
 @tagged('post_install', '-at_install')
-class TestMailingABTesting(MassMailCommon):
+class TestMailingABTestingCommon(MassMailCommon):
 
     def setUp(self):
         super().setUp()
@@ -29,6 +30,8 @@ class TestMailingABTesting(MassMailCommon):
         self.ab_testing_mailing_ids = self.ab_testing_mailing_1 + self.ab_testing_mailing_2
         self.env.flush_all()
         self.env.invalidate_all()
+
+class TestMailingABTesting(TestMailingABTestingCommon):
 
     @mute_logger('odoo.addons.mail.models.mail_mail')
     @users('user_marketing')
@@ -50,7 +53,7 @@ class TestMailingABTesting(MassMailCommon):
         self.ab_testing_mailing_2.mailing_trace_ids[:15].set_opened()
         self.ab_testing_mailing_ids.invalidate_recordset()
 
-        self.assertEqual(self.ab_testing_mailing_1.opened_ratio, 66)
+        self.assertEqual(self.ab_testing_mailing_1.opened_ratio, 66.67)
         self.assertEqual(self.ab_testing_mailing_2.opened_ratio, 50)
 
         with self.mock_mail_gateway():
@@ -82,10 +85,10 @@ class TestMailingABTesting(MassMailCommon):
         self.ab_testing_mailing_2.mailing_trace_ids[:15].set_opened()
         self.ab_testing_mailing_ids.invalidate_recordset()
 
-        self.assertEqual(self.ab_testing_mailing_1.opened_ratio, 66)
+        self.assertEqual(self.ab_testing_mailing_1.opened_ratio, 66.67)
         self.assertEqual(self.ab_testing_mailing_2.opened_ratio, 50)
 
-        with self.mock_mail_gateway():
+        with self.mock_mail_gateway(), self.enter_registry_test_mode():
             self.env.ref('mass_mailing.ir_cron_mass_mailing_ab_testing').sudo().method_direct_trigger()
         self.ab_testing_mailing_ids.invalidate_recordset()
         winner_mailing = self.ab_testing_campaign.mailing_mail_ids.filtered(lambda mailing: mailing.ab_testing_pc == 100)
@@ -165,7 +168,7 @@ class TestMailingABTesting(MassMailCommon):
         self.ab_testing_mailing_2.mailing_trace_ids[:15].set_opened()
         self.ab_testing_mailing_ids.invalidate_recordset()
 
-        self.assertEqual(self.ab_testing_mailing_1.opened_ratio, 66)
+        self.assertEqual(self.ab_testing_mailing_1.opened_ratio, 66.67)
         self.assertEqual(self.ab_testing_mailing_2.opened_ratio, 50)
 
         with self.mock_mail_gateway():
@@ -192,3 +195,11 @@ class TestMailingABTesting(MassMailCommon):
             ab_testing.action_send_mail()
         self.assertEqual(ab_testing.state, 'done')
         self.assertEqual(len(self._mails), 1)
+
+    def test_mailing_ab_testing_duplicate_date(self):
+        """ Test that "Send final on" date value should be copied in new mass_mailing """
+        ab_testing_mail_1 = Form(self.ab_testing_mailing_1)
+        ab_testing_mail_1.ab_testing_schedule_datetime = datetime.now() + timedelta(days=10)
+        action = ab_testing_mail_1.save().action_duplicate()
+        ab_testing_mailing_2 = self.env[action['res_model']].browse(action['res_id'])
+        self.assertEqual(fields.Datetime.to_string(ab_testing_mailing_2.ab_testing_schedule_datetime), ab_testing_mail_1.ab_testing_schedule_datetime)

@@ -1,35 +1,22 @@
-# -*- coding: utf-8 -*-
 # Part of Odoo. See LICENSE file for full copyright and licensing details.
 
-from odoo import models, fields, _
+from odoo import models, fields
+
 
 class HrEmployee(models.Model):
     _inherit = 'hr.employee'
 
-    has_work_entries = fields.Boolean(compute='_compute_has_work_entries')
+    work_entry_source = fields.Selection(readonly=False, related="version_id.work_entry_source", inherited=True, groups="base.group_system,hr.group_hr_manager")
+    external_code = fields.Char("External Code", copy=False, help="Use this code to export your data to a third party", groups="hr.group_hr_user")
 
-    def _compute_has_work_entries(self):
-        self.env.cr.execute("""
-        SELECT id, EXISTS(SELECT 1 FROM hr_work_entry WHERE employee_id = e.id limit 1)
-          FROM hr_employee e
-         WHERE id in %s
-        """, (tuple(self.ids), ))
+    # YTI TODO: Rename private method into _get_work_entries_vals()
+    # Public method probably to drop
+    def generate_work_entries(self, date_start, date_stop):
+        date_start = fields.Date.to_date(date_start)
+        date_stop = fields.Date.to_date(date_stop)
 
-        result = {eid[0]: eid[1] for eid in self.env.cr.fetchall()}
-
-        for employee in self:
-            employee.has_work_entries = result.get(employee.id, False)
-
-    def action_open_work_entries(self, initial_date=False):
-        self.ensure_one()
-        ctx = {'default_employee_id': self.id}
-        if initial_date:
-            ctx['initial_date'] = initial_date
-        return {
-            'type': 'ir.actions.act_window',
-            'name': _('%s work entries', self.display_name),
-            'view_mode': 'calendar,tree,form',
-            'res_model': 'hr.work.entry',
-            'context': ctx,
-            'domain': [('employee_id', '=', self.id)],
-        }
+        if self:
+            versions = self._get_versions_with_contract_overlap_with_period(date_start, date_stop)
+        else:
+            versions = self._get_all_versions_with_contract_overlap_with_period(date_start, date_stop)
+        return versions.generate_work_entries(date_start, date_stop)

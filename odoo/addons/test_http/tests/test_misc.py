@@ -1,27 +1,36 @@
 # Part of Odoo. See LICENSE file for full copyright and licensing details.
 
 import json
+from importlib import metadata
 from io import StringIO
 from socket import gethostbyname
 from unittest.mock import patch
-from urllib.parse import urlparse
 
-import odoo
-from odoo.http import root
+from odoo.http.requestlib import Request
+from odoo.http.router import root
+from odoo.http.stream import content_disposition
 from odoo.tests import tagged
-from odoo.tests.common import HOST, new_test_user, get_db_name
-from odoo.tools import config, file_path
-from odoo.addons.test_http.controllers import CT_JSON
+from odoo.tests.common import HOST, BaseCase, get_db_name, new_test_user
+from odoo.tools import DotDict, config, file_path, mute_logger, parse_version
 
-from odoo.addons.test_http.utils import TEST_IP
 from .test_common import TestHttpBase
+from odoo.addons import test_http
+from odoo.addons.test_http.controllers import CT_JSON
+from odoo.addons.test_http.utils import TEST_IP
+
+werkzeug_version = metadata.version('werkzeug')
 
 
 @tagged('post_install', '-at_install')
 class TestHttpMisc(TestHttpBase):
     def test_misc0_redirect(self):
         res = self.nodb_url_open('/test_http//greeting')
-        self.assertEqual(res.status_code, 404)
+        awaited_codes = [404]
+        if parse_version('2.2.0') <= parse_version(werkzeug_version) <= parse_version('3.0.1'):
+            # Bug in werkzeug from 2.2.0 up to 3.0.1 (shipped in Ubuntu Noble 24.04)
+            # not a big deal but should be removed once fixed upstream.
+            awaited_codes.append(308)
+        self.assertIn(res.status_code, awaited_codes)
 
     def test_misc1_reverse_proxy(self):
         # client <-> reverse-proxy <-> odoo
@@ -52,14 +61,25 @@ class TestHttpMisc(TestHttpBase):
 
     def test_misc2_local_redirect(self):
         def local_redirect(path):
-            fake_req = odoo.tools.misc.DotDict(db=False)
-            return odoo.http.Request.redirect(fake_req, path, local=True).headers['Location']
+            fake_req = DotDict(db=False)
+            return Request.redirect(fake_req, path, local=True).headers['Location']
         self.assertEqual(local_redirect('https://www.example.com/hello?a=b'), '/hello?a=b')
+        self.assertEqual(local_redirect('http://user:pass@www.example.com/hello?a=b'), '/hello?a=b')
         self.assertEqual(local_redirect('/hello?a=b'), '/hello?a=b')
         self.assertEqual(local_redirect('hello?a=b'), '/hello?a=b')
         self.assertEqual(local_redirect('www.example.com/hello?a=b'), '/www.example.com/hello?a=b')
         self.assertEqual(local_redirect('https://www.example.comhttps://www.example2.com/hello?a=b'), '/www.example2.com/hello?a=b')
         self.assertEqual(local_redirect('https://https://www.example.com/hello?a=b'), '/www.example.com/hello?a=b')
+        # https://infra.spec.whatwg.org/#c0-control
+        cO_control = [chr(i) for i in range(0x20)]
+        for char in cO_control:
+            with self.subTest(f"Redirect with control character {char.encode()}"):
+                self.assertEqual(local_redirect(f'{char}/hello?a=b'), '/hello?a=b')
+
+        # https://infra.spec.whatwg.org/#ascii-tab-or-newline
+        for char in "\t\n\r":
+            with self.subTest(f"Redirect with control character {char.encode()}"):
+                self.assertEqual(local_redirect(f'/{char}/hello?a=b'), '/hello?a=b')
 
     def test_misc3_is_static_file(self):
         uri = 'test_http/static/src/img/gizeh.png'
@@ -88,7 +108,8 @@ class TestHttpMisc(TestHttpBase):
 
         for method in (self.db_url_open, self.nodb_url_open):
             with self.subTest(method=method.__name__):
-                res = method('/jsonrpc', data=payload, headers=CT_JSON)
+                with mute_logger('odoo.addons.rpc.controllers.jsonrpc'):
+                    res = method('/jsonrpc', data=payload, headers=CT_JSON)
                 res.raise_for_status()
 
                 res_rpc = res.json()
@@ -115,7 +136,7 @@ class TestHttpMisc(TestHttpBase):
             'X-Forwarded-Host': 'odoo.com',
             'X-Forwarded-Proto': 'https'
         }
-        with patch.dict('odoo.tools.config.options', {'proxy_mode': True}):
+        with patch.dict(config.options, {'proxy_mode': True}):
             res = self.nodb_url_open('/test_http/geoip', headers=headers)
             res.raise_for_status()
             self.assertEqual(res.json(), {
@@ -129,25 +150,39 @@ class TestHttpMisc(TestHttpBase):
             })
 
     def test_misc6_upload_file_retry(self):
-        from odoo.addons.test_http import controllers  # pylint: disable=C0415
-
-        with patch.object(controllers, "should_fail", True), StringIO("Hello world!") as file:
-            res = self.url_open("/test_http/upload_file", files={"ufile": file}, timeout=None)
-            self.assertEqual(res.status_code, 200)
+        file = StringIO("Hello world!")
+        with patch.object(test_http.controllers, 'should_fail', True):
+            res = self.url_open('/test_http/upload_file', files={'ufile': file})
+            res.raise_for_status()
             self.assertEqual(res.text, file.getvalue())
 
     def test_misc7_robotstxt(self):
         self.nodb_url_open('/robots.txt').raise_for_status()
 
+    def test_misc8_concurrency_error(self):
+        with (
+            self.assertLogs('odoo.http') as log_catcher,
+            patch.object(test_http.controllers, 'should_fail', True),
+        ):
+            self.url_open('/test_http/concurrency_error').raise_for_status()
+        self.assertIn("A dummy concurrency error occurred", log_catcher.output[0])
+
+    def test_misc9_webversion(self):
+        res = self.nodb_url_open('/web/version')
+        res.raise_for_status()
+        self.assertEqual(res.headers.get('Content-Type'), 'application/json; charset=utf-8')
+        self.assertEqual(set(res.json()), {'version', 'version_info'})
+
+
 @tagged('post_install', '-at_install')
 class TestHttpCors(TestHttpBase):
     def test_cors0_http_default(self):
-        res_opt = self.opener.options(f'{self.base_url()}/test_http/cors_http_default', timeout=10, allow_redirects=False)
+        res_opt = self.url_open(f'{self.base_url()}/test_http/cors_http_default', timeout=10, method='OPTIONS')
         self.assertIn(res_opt.status_code, (200, 204))
         self.assertEqual(res_opt.headers.get('Access-Control-Allow-Origin'), '*')
         self.assertEqual(res_opt.headers.get('Access-Control-Allow-Methods'), 'GET, POST')
         self.assertEqual(res_opt.headers.get('Access-Control-Max-Age'), '86400')  # one day
-        self.assertEqual(res_opt.headers.get('Access-Control-Allow-Headers'), 'Origin, X-Requested-With, Content-Type, Accept, Authorization')
+        self.assertEqual(res_opt.headers.get('Access-Control-Allow-Headers'), 'Origin, X-Requested-With, Content-Type, Accept, Authorization, Range')
 
         res_get = self.url_open('/test_http/cors_http_default')
         self.assertEqual(res_get.status_code, 200)
@@ -155,12 +190,12 @@ class TestHttpCors(TestHttpBase):
         self.assertEqual(res_get.headers.get('Access-Control-Allow-Methods'), 'GET, POST')
 
     def test_cors1_http_methods(self):
-        res_opt = self.opener.options(f'{self.base_url()}/test_http/cors_http_methods', timeout=10, allow_redirects=False)
+        res_opt = self.url_open(f'{self.base_url()}/test_http/cors_http_methods', timeout=10, method='OPTIONS')
         self.assertIn(res_opt.status_code, (200, 204))
         self.assertEqual(res_opt.headers.get('Access-Control-Allow-Origin'), '*')
         self.assertEqual(res_opt.headers.get('Access-Control-Allow-Methods'), 'GET, PUT')
         self.assertEqual(res_opt.headers.get('Access-Control-Max-Age'), '86400')  # one day
-        self.assertEqual(res_opt.headers.get('Access-Control-Allow-Headers'), 'Origin, X-Requested-With, Content-Type, Accept, Authorization')
+        self.assertEqual(res_opt.headers.get('Access-Control-Allow-Headers'), 'Origin, X-Requested-With, Content-Type, Accept, Authorization, Range')
 
         res_post = self.url_open('/test_http/cors_http_methods')
         self.assertEqual(res_post.status_code, 200)
@@ -168,12 +203,12 @@ class TestHttpCors(TestHttpBase):
         self.assertEqual(res_post.headers.get('Access-Control-Allow-Methods'), 'GET, PUT')
 
     def test_cors2_json(self):
-        res_opt = self.opener.options(f'{self.base_url()}/test_http/cors_json', timeout=10, allow_redirects=False)
+        res_opt = self.url_open(f'{self.base_url()}/test_http/cors_json', timeout=10, method='OPTIONS')
         self.assertIn(res_opt.status_code, (200, 204), res_opt.text)
         self.assertEqual(res_opt.headers.get('Access-Control-Allow-Origin'), '*')
         self.assertEqual(res_opt.headers.get('Access-Control-Allow-Methods'), 'POST')
         self.assertEqual(res_opt.headers.get('Access-Control-Max-Age'), '86400')  # one day
-        self.assertEqual(res_opt.headers.get('Access-Control-Allow-Headers'), 'Origin, X-Requested-With, Content-Type, Accept, Authorization')
+        self.assertEqual(res_opt.headers.get('Access-Control-Allow-Headers'), 'Origin, X-Requested-With, Content-Type, Accept, Authorization, Range')
 
         res_post = self.url_open('/test_http/cors_json', data=json.dumps({'params': {}}), headers=CT_JSON)
         self.assertEqual(res_post.status_code, 200)
@@ -188,17 +223,19 @@ class TestHttpEnsureDb(TestHttpBase):
         self.db_list = ['db0', 'db1']
 
     def test_ensure_db0_db_selector(self):
-        res = self.multidb_url_open('/test_http/ensure_db')
-        res.raise_for_status()
-        self.assertEqual(res.status_code, 303)
-        self.assertEqual(urlparse(res.headers.get('Location', '')).path, '/web/database/selector')
+        for url in ('/web', '/test_http/ensure_db'):
+            with self.subTest(url=url):
+                res = self.multidb_url_open(url)
+                res.raise_for_status()
+                self.assertEqual(res.status_code, 303)
+                self.assertURLEqual(res.headers.get('Location'), '/web/database/selector')
 
     def test_ensure_db1_grant_db(self):
-        res = self.multidb_url_open('/test_http/ensure_db?db=db0', timeout=10000)
+        res = self.multidb_url_open('/test_http/ensure_db?db=db0')
         res.raise_for_status()
         self.assertEqual(res.status_code, 302)
-        self.assertEqual(urlparse(res.headers.get('Location', '')).path, '/test_http/ensure_db')
-        self.assertEqual(odoo.http.root.session_store.get(res.cookies['session_id']).db, 'db0')
+        self.assertURLEqual(res.headers.get('Location'), '/test_http/ensure_db?db=db0')
+        self.assertEqual(res.session['db'], 'db0')
 
         # follow the redirection
         res = self.multidb_url_open('/test_http/ensure_db')
@@ -207,33 +244,70 @@ class TestHttpEnsureDb(TestHttpBase):
         self.assertEqual(res.text, 'db0')
 
     def test_ensure_db2_use_session_db(self):
-        session = self.authenticate(None, None)
-        session.db = 'db0'
-        odoo.http.root.session_store.save(session)
-
+        self.authenticate(None, None, session_extra={'db': 'db0'})
         res = self.multidb_url_open('/test_http/ensure_db')
         res.raise_for_status()
         self.assertEqual(res.status_code, 200)
         self.assertEqual(res.text, 'db0')
 
     def test_ensure_db3_change_db(self):
-        session = self.authenticate(None, None)
-        session.db = 'db0'
-        odoo.http.root.session_store.save(session)
-
+        self.authenticate(None, None, session_extra={'db': 'db0'})
         res = self.multidb_url_open('/test_http/ensure_db?db=db1')
         res.raise_for_status()
         self.assertEqual(res.status_code, 302)
-        self.assertEqual(urlparse(res.headers.get('Location', '')).path, '/test_http/ensure_db')
-
-        new_session = odoo.http.root.session_store.get(res.cookies['session_id'])
-        self.assertNotEqual(session.sid, new_session.sid)
-        self.assertEqual(new_session.db, 'db1')
-        self.assertEqual(new_session.uid, None)
+        self.assertURLEqual(res.headers.get('Location'), '/test_http/ensure_db?db=db1')
+        self.assertNotEqual(self.session.sid, res.session.sid)
+        self.assertEqual(res.session['db'], 'db1')
+        self.assertEqual(res.session['uid'], None)
 
         # follow redirection
-        self.opener.cookies['session_id'] = new_session.sid
+        self.opener.cookies.set("session_id", res.session.sid, domain=HOST)
         res = self.multidb_url_open('/test_http/ensure_db')
         res.raise_for_status()
         self.assertEqual(res.status_code, 200)
         self.assertEqual(res.text, 'db1')
+
+    def test_ensure_db4_unicode(self):
+        self.db_list = ["basededonnée1", "basededonnée2"]  # é matters
+
+        res = self.multidb_url_open('/test_http/ensure_db?db=basededonnée1')
+        res.raise_for_status()
+        self.assertEqual(res.status_code, 302)
+        self.assertURLEqual(
+            res.headers.get('Location'),
+            '/test_http/ensure_db?db=basededonnée1')
+        self.assertEqual(res.session['db'], 'basededonnée1')
+
+        # follow the redirection
+        res = self.multidb_url_open('/test_http/ensure_db')
+        res.raise_for_status()
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.text, 'basededonnée1')
+
+
+@tagged('at_install', '-post_install')  # LEGACY at_install
+class TestContentDisposition(BaseCase):
+
+    def test_content_disposition(self):
+        """ Test that content_disposition filename conforms to RFC 6266, RFC 5987 """
+        assertions = [
+            ('foo bar.xls', 'foo%20bar.xls', 'Space character'),
+            ('foo(bar).xls', 'foo%28bar%29.xls', 'Parenthesis'),
+            ('foo<bar>.xls', 'foo%3Cbar%3E.xls', 'Angle brackets'),
+            ('foo[bar].xls', 'foo%5Bbar%5D.xls', 'Brackets'),
+            ('foo{bar}.xls', 'foo%7Bbar%7D.xls', 'Curly brackets'),
+            ('foo@bar.xls', 'foo%40bar.xls', 'At sign'),
+            ('foo,bar.xls', 'foo%2Cbar.xls', 'Comma sign'),
+            ('foo;bar.xls', 'foo%3Bbar.xls', 'Semicolon sign'),
+            ('foo:bar.xls', 'foo%3Abar.xls', 'Colon sign'),
+            ('foo\\bar.xls', 'foo%5Cbar.xls', 'Backslash sign'),
+            ('foo"bar.xls', 'foo%22bar.xls', 'Double quote sign'),
+            ('foo/bar.xls', 'foo%2Fbar.xls', 'Slash sign'),
+            ('foo?bar.xls', 'foo%3Fbar.xls', 'Question mark'),
+            ('foo=bar.xls', 'foo%3Dbar.xls', 'Equal sign'),
+            ('foo*bar.xls', 'foo%2Abar.xls', 'Star sign'),
+            ("foo'bar.xls", 'foo%27bar.xls', 'Single-quote sign'),
+            ('foo%bar.xls', 'foo%25bar.xls', 'Percent sign'),
+        ]
+        for filename, pct_encoded, hint in assertions:
+            self.assertEqual(content_disposition(filename), f"attachment; filename*=UTF-8''{pct_encoded}", f'{hint} should be percent encoded')

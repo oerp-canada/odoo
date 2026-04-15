@@ -2,9 +2,12 @@
 # Part of Odoo. See LICENSE file for full copyright and licensing details.
 
 from odoo.addons.sms.tests.common import SMSCommon
+from odoo.tests import tagged
+
 from odoo.addons.test_mail_sms.tests.common import TestSMSRecipients
 
 
+@tagged('at_install', '-post_install')  # LEGACY at_install
 class TestSmsTemplate(SMSCommon, TestSMSRecipients):
 
     @classmethod
@@ -61,7 +64,7 @@ class TestSmsTemplate(SMSCommon, TestSMSRecipients):
                 self.assertTrue(False)
 
         tpl_to_rids = self.sms_template._classify_per_lang((self.test_record | test_record_2).ids)
-        for lang, (tpl, rids) in tpl_to_rids.items():
+        for lang, (_tpl, rids) in tpl_to_rids.items():
             # TDE FIXME: False or en_US ?
             if lang == 'en_US':
                 self.assertEqual(rids, self.test_record.ids)

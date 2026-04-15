@@ -1,76 +1,78 @@
 <?xml version="1.0" encoding="utf-8"?>
 <templates>
 
-    <t t-name="account.TaxGroupComponent" owl="1">
+    <t t-name="account.TaxGroupComponent">
         <tr>
             <td class="o_td_label">
-                <label class="o_form_label o_tax_total_label" t-out="props.taxGroup.tax_group_name"/>
+                <label class="o_form_label o_tax_total_label" t-out="this.props.taxGroup.group_name"/>
             </td>
 
-            <td>
-                <t t-if="!props.isReadonly">
-                    <t t-if="['edit', 'disable'].includes(state.value)">
-                        <span class="o_tax_group_edit_input">
+            <td  class="o_tax_group">
+                <t t-if="!this.props.isReadonly">
+                    <t t-if="['edit', 'disable'].includes(this.state.value)">
+                        <span class="o_tax_group_edit_input" t-custom-ref="numpadDecimal">
                             <input
                                 type="text"
-                                t-ref="taxValueInput"
+                                t-custom-ref="taxValueInput"
                                 class="o_field_float
                                 o_field_number o_input"
-                                t-att-disabled="state.value === 'disable'"
-                                t-on-change.prevent="_onChangeTaxValue"
-                                t-on-blur="_onChangeTaxValue"/>
+                                t-att-disabled="this.state.value === 'disable'"
+                                t-on-change.prevent="this._onChangeTaxValue"
+                                t-on-blur="this._onChangeTaxValue"/>
                         </span>
                     </t>
                     <t t-else="">
                         <span class="o_tax_group_edit" t-on-click.prevent="() => this.setState('edit')">
-                            <i class="fa fa-pencil me-2"/>
-                            <span class="o_tax_group_amount_value">
-                                <t t-out="props.taxGroup.formatted_tax_group_amount"/>
+                            <span class="o_tax_group_amount_value o_list_monetary">
+                                <i class="fa fa-pencil me-2"/> <t t-out="this.formatMonetary(this.props.taxGroup.tax_amount_currency)"/>
                             </span>
                         </span>
                     </t>
                 </t>
                 <t t-else="">
-                    <span class="o_tax_group_amount_value">
-                        <t t-out="props.taxGroup.formatted_tax_group_amount" style="white-space: nowrap;"/>
+                    <span class="o_tax_group_amount_value o_list_monetary">
+                        <t t-out="this.formatMonetary(this.props.taxGroup.tax_amount_currency)" style="white-space: nowrap;"/>
                     </span>
                 </t>
             </td>
         </tr>
     </t>
 
-    <t t-name="account.TaxTotalsField" owl="1">
-        <table t-if="totals" class="oe_right">
+    <t t-name="account.TaxTotalsField">
+        <table t-if="this.totals" class="float-end">
             <tbody>
-                <t t-foreach="totals.subtotals" t-as="subtotal" t-key="subtotal['name']">
+                <t t-foreach="this.totals.subtotals" t-as="subtotal" t-key="subtotal_index">
                     <tr>
                         <td class="o_td_label">
-                            <label class="o_form_label o_tax_total_label" t-out="subtotal['name']"/>
+                            <label class="o_form_label o_tax_total_label" t-out="subtotal.name"/>
                         </td>
 
-                        <td>
-                            <span t-att-name="subtotal['name']" style="white-space: nowrap; font-weight: bold;" t-out="subtotal['formatted_amount']"/>
+                        <td class="o_list_monetary">
+                            <span t-att-name="subtotal.name"
+                                  style="white-space: nowrap; font-weight: bold;"
+                                  t-out="this.formatMonetary(subtotal.base_amount_currency)"/>
                         </td>
                     </tr>
 
-                    <t t-foreach="totals.groups_by_subtotal[subtotal['name']]" t-as="taxGroup" t-key="taxGroup.group_key">
+                    <t t-foreach="subtotal.tax_groups" t-as="taxGroup" t-key="taxGroup_index">
                         <TaxGroupComponent
-                            currency="currency"
+                            totals="this.totals"
+                            subtotal="subtotal"
                             taxGroup="taxGroup"
-                            isReadonly="readonly"
-                            onChangeTaxGroup.bind="_onChangeTaxValueByTaxGroup"
-                            invalidate.bind="invalidate"
+                            isReadonly="this.readonly"
+                            onChangeTaxGroup.bind="this._onChangeTaxValueByTaxGroup"
+                            invalidate.bind="this.invalidate"
                         />
                     </t>
                 </t>
 
-                <tr t-if="'formatted_rounding_amount' in totals and totals.rounding_amount !== 0 and totals.display_rounding">
+                <tr t-if="'cash_rounding_base_amount_currency' in this.totals">
                     <td class="o_td_label">
                         <label class="o_form_label o_tax_total_label">Rounding</label>
                     </td>
-                    <td>
+                    <td class="o_list_monetary">
                         <span
-                            t-out="totals.formatted_rounding_amount"
+                            t-out="this.formatMonetary(this.totals.cash_rounding_base_amount_currency)"
                         />
                     </td>
                 </tr>
@@ -81,12 +83,12 @@
                         <label class="o_form_label o_tax_total_label">Total</label>
                     </td>
 
-                    <td>
+                    <td class="o_list_monetary">
                         <span
                             name="amount_total"
-                            t-att-class="Object.keys(totals.groups_by_subtotal).length > 0 ? 'oe_subtotal_footer_separator' : ''"
-                            t-out="totals.formatted_amount_total"
-                            style="'font-size: 1.3em; font-weight: bold; white-space: nowrap;'"
+                            t-att-class="{'oe_subtotal_footer_separator': this.totals.has_tax_groups}"
+                            t-out="this.formatMonetary(this.totals.total_amount_currency)"
+                            style="font-size: 1.3em; font-weight: bold; white-space: nowrap;"
                         />
                     </td>
                 </tr>

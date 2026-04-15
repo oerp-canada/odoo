@@ -1,8 +1,14 @@
-/** @odoo-module **/
+import { _t } from "@web/core/l10n/translation";
 import { useService } from "@web/core/utils/hooks";
-const { Component} = owl;
+import { Component, markup } from "@odoo/owl";
 
 export class ForecastedButtons extends Component {
+    static template = "stock.ForecastedButtons";
+    static props = {
+        action: Object,
+        resModel: { type: String, optional: true },
+        reloadReport: Function,
+    };
 
     setup() {
         this.actionService = useService("action");
@@ -18,7 +24,7 @@ export class ForecastedButtons extends Component {
      * @param {Object | undefined} res
      */
     _onClose(res) {
-        return res?.special || this.props.reloadReport();
+        return res?.special || !res?.noReload || this.props.reloadReport();
     }
 
     async _onClickReplenish() {
@@ -28,11 +34,11 @@ export class ForecastedButtons extends Component {
         } else if (this.resModel === 'product.template') {
             context.default_product_tmpl_id = this.productId;
         }
-        context.default_warehouse_id = this.context.warehouse;
+        context.default_warehouse_id = this.context.warehouse_id;
 
         const action = {
             res_model: 'product.replenish',
-            name: this.env._t('Product Replenish'),
+            name: _t('Product Replenish'),
             type: 'ir.actions.act_window',
             views: [[false, 'form']],
             target: 'new',
@@ -42,17 +48,13 @@ export class ForecastedButtons extends Component {
     }
 
     async _onClickUpdateQuantity() {
-        const action = await this.orm.call(this.resModel, "action_update_quantity_on_hand", [[this.productId]]);
+        const action = await this.orm.call(this.resModel, "action_open_quants", [[this.productId]]);
         if (action.res_model === "stock.quant") { // Quant view in inventory mode.
-            action.views = [[false, "tree"]];
+            action.views = [[false, "list"]];
+        }
+        if (action.help) {
+            action.help = markup(action.help);
         }
         return this.actionService.doAction(action, { onClose: this._onClose.bind(this) });
     }
 }
-
-ForecastedButtons.props = {
-    action : Object,
-    resModel: {type: String, optional: true},
-    reloadReport : Function,
-};
-ForecastedButtons.template = 'stock.ForecastedButtons';

@@ -1,6 +1,5 @@
-/** @odoo-module **/
-
-import { useEffect } from "@odoo/owl";
+import { useLayoutEffect } from "@web/owl2/utils";
+import { memoize } from "@web/core/utils/functions";
 
 /**
  * This is used on text inputs or textareas to automatically resize it based on its
@@ -13,32 +12,72 @@ import { useEffect } from "@odoo/owl";
  * @param {Ref} ref
  */
 export function useAutoresize(ref, options = {}) {
+    let wasProgrammaticallyResized = false;
     let resize = null;
-    useEffect(
+    useLayoutEffect(
         (el) => {
             if (el) {
-                resize = (el instanceof HTMLInputElement ? resizeInput : resizeTextArea).bind(
-                    null,
-                    el,
-                    options
-                );
-                el.addEventListener("input", resize);
+                resize = (programmaticResize = false) => {
+                    wasProgrammaticallyResized = programmaticResize;
+                    if (options.ignoreIfEmpty && !el.value) {
+                        return;
+                    }
+                    if (el instanceof HTMLInputElement) {
+                        resizeInput(el);
+                    } else {
+                        resizeTextArea(el, options);
+                    }
+                    options.onResize?.(el, options);
+                };
+                el.addEventListener("input", () => resize(true));
+                const resizeObserver = new ResizeObserver(() => {
+                    // This ensures that the resize function is not called twice on input or page load
+                    if (wasProgrammaticallyResized) {
+                        wasProgrammaticallyResized = false;
+                        return;
+                    }
+                    resize();
+                });
+                resizeObserver.observe(el);
                 return () => {
                     el.removeEventListener("input", resize);
+                    resizeObserver.unobserve(el);
+                    resizeObserver.disconnect();
                     resize = null;
                 };
             }
         },
         () => [ref.el]
     );
-    useEffect(() => {
+    useLayoutEffect(() => {
         if (resize) {
-            resize(ref.el, options);
+            resize(true);
         }
     });
 }
 
+const doesScrollWidthExcludePadding = memoize(() => {
+    const input = document.createElement("input");
+    input.style.cssText = `
+        position: absolute;
+        visibility: hidden;
+        padding: 0;
+        border: 0;
+        width: auto;
+    `;
+    document.body.appendChild(input);
+    const widthWithoutPadding = input.scrollWidth;
+    input.style.padding = "10px";
+    const widthWithPadding = input.scrollWidth;
+    input.remove();
+    return widthWithPadding === widthWithoutPadding;
+});
+
+/**
+ * @param {HTMLInputElement} input
+ */
 function resizeInput(input) {
+    const style = window.getComputedStyle(input);
     // This mesures the maximum width of the input which can get from the flex layout.
     input.style.width = "100%";
     const maxWidth = input.clientWidth;
@@ -48,14 +87,26 @@ function resizeInput(input) {
         input.style.width = "auto";
         return;
     }
-    if (input.scrollWidth + 5 > maxWidth) {
+    // scrollWidth measures the content box only; borders are added separately
+    let boxExtraWidth = parseFloat(style.borderLeftWidth) + parseFloat(style.borderRightWidth);
+    // Some browsers (Safari ≤16, Firefox ≥145) exclude padding from input scrollWidth
+    if (doesScrollWidthExcludePadding()) {
+        const padding = parseFloat(style.paddingLeft) + parseFloat(style.paddingRight);
+        boxExtraWidth += padding;
+    }
+    const desiredWidth = input.scrollWidth + boxExtraWidth + 1;
+    if (desiredWidth > maxWidth) {
         input.style.width = "100%";
         return;
     }
-    input.style.width = input.scrollWidth + 5 + "px";
+    input.style.width = `${desiredWidth}px`;
 }
 
-function resizeTextArea(textarea, options) {
+/**
+ * @param {HTMLTextAreaElement} input
+ * @param {{ minimumHeight?: number }} [options]
+ */
+export function resizeTextArea(textarea, options = {}) {
     const minimumHeight = options.minimumHeight || 0;
     let heightOffset = 0;
     const style = window.getComputedStyle(textarea);
@@ -74,9 +125,7 @@ function resizeTextArea(textarea, options) {
         borderTopWidth: 0,
         borderBottomWidth: 0,
         paddingTop: 0,
-        paddingRight: style.paddingRight,
         paddingBottom: 0,
-        paddingLeft: style.paddingLeft,
     });
     textarea.style.height = "auto";
     const height = Math.max(minimumHeight, textarea.scrollHeight + heightOffset);

@@ -1,3 +1,5 @@
+# Part of Odoo. See LICENSE file for full copyright and licensing details.
+
 import json
 import requests
 from unittest.mock import patch, call, MagicMock
@@ -5,13 +7,14 @@ from unittest.mock import patch, call, MagicMock
 from odoo import fields
 from odoo.addons.microsoft_calendar.utils.microsoft_calendar import MicrosoftCalendarService
 from odoo.addons.microsoft_calendar.utils.microsoft_event import MicrosoftEvent
-from odoo.addons.microsoft_account.models.microsoft_service import MicrosoftService
-from odoo.tests import TransactionCase
+from odoo.addons.microsoft_account.models.microsoft_service import MicrosoftService, DEFAULT_MICROSOFT_TOKEN_ENDPOINT
+from odoo.tests import tagged, TransactionCase
 
 
 DEFAULT_TIMEOUT = 20
 
 
+@tagged('at_install', '-post_install')  # LEGACY at_install
 class TestMicrosoftService(TransactionCase):
 
     def _do_request_result(self, data):
@@ -28,7 +31,10 @@ class TestMicrosoftService(TransactionCase):
         self.fake_next_sync_token_url = f"https://graph.microsoft.com/v1.0/me/calendarView/delta?$deltatoken={self.fake_next_sync_token}"
 
         self.header_prefer = 'outlook.body-content-type="html", odata.maxpagesize=50'
-        self.header = {'Content-type': 'application/json', 'Authorization': 'Bearer %s' % self.fake_token}
+        self.delete_header = {
+            'Authorization': 'Bearer %s' % self.fake_token,
+        }
+        self.header = {'Content-type': 'application/json', **self.delete_header}
         self.call_with_sync_token = call(
             "/v1.0/me/calendarView/delta",
             {"$deltatoken": self.fake_sync_token},
@@ -38,8 +44,8 @@ class TestMicrosoftService(TransactionCase):
         self.call_without_sync_token = call(
             "/v1.0/me/calendarView/delta",
             {
-                'startDateTime': fields.Datetime.subtract(fields.Datetime.now(), years=2).strftime("%Y-%m-%dT00:00:00Z"),
-                'endDateTime': fields.Datetime.add(fields.Datetime.now(), years=2).strftime("%Y-%m-%dT00:00:00Z"),
+                'startDateTime': fields.Datetime.subtract(fields.Datetime.now(), days=365).strftime("%Y-%m-%dT00:00:00Z"),
+                'endDateTime': fields.Datetime.add(fields.Datetime.now(), days=365 * 2).strftime("%Y-%m-%dT00:00:00Z"),
             },
             {**self.header, 'Prefer': self.header_prefer},
             method="GET", timeout=DEFAULT_TIMEOUT,
@@ -62,8 +68,9 @@ class TestMicrosoftService(TransactionCase):
         with self.assertRaises(Exception):
             self.service._get_events_delta(token=self.fake_token, timeout=DEFAULT_TIMEOUT)
 
+    @patch.object(MicrosoftCalendarService, "_check_full_sync_required")
     @patch.object(MicrosoftService, "_do_request")
-    def test_get_events_delta_token_error(self, mock_do_request):
+    def test_get_events_delta_token_error(self, mock_do_request, mock_check_full_sync_required):
         """
         When the provided sync token is invalid, an exception should be raised and then
         a full sync should be done.
@@ -72,6 +79,7 @@ class TestMicrosoftService(TransactionCase):
             requests.HTTPError(response=MagicMock(status_code=410, content="fullSyncRequired")),
             self._do_request_result({"value": []}),
         ]
+        mock_check_full_sync_required.return_value = (True)
 
         events, next_token = self.service._get_events_delta(
             token=self.fake_token, sync_token=self.fake_sync_token, timeout=DEFAULT_TIMEOUT
@@ -224,8 +232,8 @@ class TestMicrosoftService(TransactionCase):
         mock_do_request.assert_called_with(
             "/v1.0/me/events/123/instances",
             {
-                'startDateTime': fields.Datetime.subtract(fields.Datetime.now(), years=2).strftime("%Y-%m-%dT00:00:00Z"),
-                'endDateTime': fields.Datetime.add(fields.Datetime.now(), years=2).strftime("%Y-%m-%dT00:00:00Z"),
+                'startDateTime': fields.Datetime.subtract(fields.Datetime.now(), days=365).strftime("%Y-%m-%dT00:00:00Z"),
+                'endDateTime': fields.Datetime.add(fields.Datetime.now(), days=365 * 2).strftime("%Y-%m-%dT00:00:00Z"),
             },
             {**self.header, 'Prefer': self.header_prefer},
             method='GET', timeout=DEFAULT_TIMEOUT,
@@ -363,7 +371,7 @@ class TestMicrosoftService(TransactionCase):
         self.assertFalse(res)
         mock_do_request.assert_called_with(
             f"/v1.0/me/calendar/events/{event_id}",
-            {}, headers={'Authorization': 'Bearer %s' % self.fake_token}, method="DELETE", timeout=DEFAULT_TIMEOUT
+            {}, headers=self.delete_header, method="DELETE", timeout=DEFAULT_TIMEOUT
         )
 
     @patch.object(MicrosoftService, "_do_request")
@@ -382,7 +390,7 @@ class TestMicrosoftService(TransactionCase):
             self.assertTrue(res)
             mock_do_request.assert_called_with(
                 f"/v1.0/me/calendar/events/{event_id}",
-                {}, headers={'Authorization': 'Bearer %s' % self.fake_token}, method="DELETE", timeout=DEFAULT_TIMEOUT
+                {}, headers=self.delete_header, method="DELETE", timeout=DEFAULT_TIMEOUT
             )
 
 
@@ -396,7 +404,7 @@ class TestMicrosoftService(TransactionCase):
         self.assertTrue(res)
         mock_do_request.assert_called_with(
             f"/v1.0/me/calendar/events/{event_id}",
-            {}, headers={'Authorization': 'Bearer %s' % self.fake_token}, method="DELETE", timeout=DEFAULT_TIMEOUT
+            {}, headers=self.delete_header, method="DELETE", timeout=DEFAULT_TIMEOUT
         )
 
     def test_answer_token_error(self):
@@ -437,3 +445,62 @@ class TestMicrosoftService(TransactionCase):
             json.dumps(values),
             self.header, method="POST", timeout=DEFAULT_TIMEOUT
         )
+
+    @patch.object(MicrosoftCalendarService, "_check_full_sync_required")
+    @patch.object(MicrosoftService, "_do_request")
+    def test_get_events_delta_with_outdated_sync_token(self, mock_do_request, mock_check_full_sync_required):
+        """ When an outdated sync token is provided, we must fetch all events again for updating the old token. """
+        # Throw a 'HTTPError' when the token is outdated, thus triggering the fetching of all events.
+        # Simulate a scenario which the full sync is required, such as when getting the 'SyncStateNotFound' error code.
+        mock_do_request.side_effect = [
+            requests.HTTPError(response=MagicMock(status_code=410, error={'code': "SyncStateNotFound"})),
+            self._do_request_result({"value": []}),
+        ]
+        mock_check_full_sync_required.return_value = (True)
+
+        # Call the regular 'delta' get events with an outdated token for triggering the all events fetching.
+        self.env.user.microsoft_calendar_sync_token = self.fake_sync_token
+        self.service._get_events_delta(token=self.fake_token, sync_token=self.fake_sync_token, timeout=DEFAULT_TIMEOUT)
+
+        # Two calls must have been made: one call with the outdated sync token and another one with no sync token.
+        mock_do_request.assert_has_calls([
+            self.call_with_sync_token,
+            self.call_without_sync_token
+        ])
+
+    @patch.object(MicrosoftService, "_do_request")
+    def test_refresh_microsoft_calendar_token_uses_correct_endpoint(self, mock_do_request):
+        # Ensure we use the correct endpoint (useful for single/multi-tenant deployments).
+        mock_do_request.return_value = self._do_request_result(
+            {
+                "access_token": "dummy_access_token",
+                "token_type": "Bearer",
+                "expires_in": 3599,
+                "scope": "Mail.Read User.Read",
+                "refresh_token": "dummy_refresh_token",
+            }
+        )
+        IrParameter = self.env["ir.config_parameter"].sudo()
+        IrParameter.set_str("microsoft_calendar_client_id", "dummy_client_id")
+        IrParameter.set_str("microsoft_calendar_client_secret", "dummy_client_secret")
+
+        self.env.user._refresh_microsoft_calendar_token()
+
+        custom_token_endpoint = "https://login.microsoftonline.com/dummy_tenant_id/oauth2/v2.0/token"
+        IrParameter.set_str("microsoft_account.token_endpoint", custom_token_endpoint)
+        self.env.user._refresh_microsoft_calendar_token()
+
+        kwargs = {
+            "params": {
+                "client_id": "dummy_client_id",
+                "client_secret": "dummy_client_secret",
+                "grant_type": "refresh_token",
+                "refresh_token": False,
+            },
+            "headers": {"Content-type": "application/x-www-form-urlencoded"},
+            "method": "POST",
+            "preuri": "",
+        }
+        first_call = call(DEFAULT_MICROSOFT_TOKEN_ENDPOINT, **kwargs)
+        second_call = call(custom_token_endpoint, **kwargs)
+        mock_do_request.assert_has_calls([first_call, second_call])

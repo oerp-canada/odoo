@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Part of Odoo. See LICENSE file for full copyright and licensing details.
 
 import odoo.http as http
@@ -10,7 +9,7 @@ from odoo.tools.misc import get_lang
 class CalendarController(http.Controller):
 
     # YTI Note: Keep id and kwargs only for retrocompatibility purpose
-    @http.route('/calendar/meeting/accept', type='http', auth="calendar")
+    @http.route('/calendar/meeting/accept', type='http', auth="calendar", methods=['POST'])
     def accept_meeting(self, token, id, **kwargs):
         attendee = request.env['calendar.attendee'].sudo().search([
             ('access_token', '=', token),
@@ -32,7 +31,7 @@ class CalendarController(http.Controller):
             attendees.do_accept()
         return self.view_meeting(token, id)
 
-    @http.route('/calendar/meeting/decline', type='http', auth="calendar")
+    @http.route('/calendar/meeting/decline', type='http', auth="calendar", methods=['POST'])
     def decline_meeting(self, token, id, **kwargs):
         attendee = request.env['calendar.attendee'].sudo().search([
             ('access_token', '=', token),
@@ -68,8 +67,8 @@ class CalendarController(http.Controller):
 
         # If user is internal and logged, redirect to form view of event
         # otherwise, display the simplifyed web page with event informations
-        if request.session.uid and request.env['res.users'].browse(request.session.uid).user_has_groups('base.group_user'):
-            return request.redirect('/web?db=%s#id=%s&view_type=form&model=calendar.event' % (request.env.cr.dbname, id))
+        if request.env.user._is_internal():
+            return request.redirect('/odoo/calendar.event/%s?db=%s' % (id, request.env.cr.dbname))
 
         # NOTE : we don't use request.render() since:
         # - we need a template rendering which is not lazy, to render before cursor closing
@@ -94,11 +93,11 @@ class CalendarController(http.Controller):
         return request.redirect('/calendar/meeting/view?token=%s&id=%s' % (attendee.access_token, event.id))
 
     # Function used, in RPC to check every 5 minutes, if notification to do for an event or not
-    @http.route('/calendar/notify', type='json', auth="user")
+    @http.route('/calendar/notify', type='jsonrpc', auth="user")
     def notify(self):
         return request.env['calendar.alarm_manager'].get_next_notif()
 
-    @http.route('/calendar/notify_ack', type='json', auth="user")
+    @http.route('/calendar/notify_ack', type='jsonrpc', auth="user")
     def notify_ack(self):
         return request.env['res.partner'].sudo()._set_calendar_last_notif_ack()
 
@@ -113,3 +112,8 @@ class CalendarController(http.Controller):
             event._create_videocall_channel()
 
         return request.redirect(event.videocall_channel_id.invitation_url)
+
+    @http.route('/calendar/check_credentials', type='jsonrpc', auth='user')
+    def check_calendar_credentials(self):
+        # method should be overwritten by sync providers
+        return request.env['res.users'].check_calendar_credentials()

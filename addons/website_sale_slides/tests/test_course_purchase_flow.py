@@ -2,7 +2,7 @@
 # Part of Odoo. See LICENSE file for full copyright and licensing details.
 
 from odoo.addons.website_slides.tests import common
-from odoo.tests.common import users
+from odoo.tests.common import tagged, users
 
 
 class TestCoursePurchaseFlow(common.SlidesCase):
@@ -13,7 +13,7 @@ class TestCoursePurchaseFlow(common.SlidesCase):
             'name': 'salesman',
             'login': 'salesman',
             'email': 'salesman007@example.com',
-            'groups_id': [(6, 0, cls.env.ref('sales_team.group_sale_salesman').ids)],
+            'group_ids': [(6, 0, cls.env.ref('sales_team.group_sale_salesman').ids)],
         })
 
         cls.course_product = cls.env['product.product'].create({

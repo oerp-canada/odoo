@@ -1,73 +1,70 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <templates xml:space="preserve">
 
-<t t-name="web.X2ManyFieldDialog" owl="1">
-    <Dialog title="title" withBodyPadding="false" modalRef="modalRef" contentClass="contentClass">
-        <FormRenderer record="record" archInfo="archInfo"/>
+<t t-name="web.X2ManyFieldDialog">
+    <Dialog t-props="this.dialogProps">
+        <FormRenderer readonly="this.readonly" record="this.record" archInfo="this.archInfo"/>
         <t t-set-slot="footer">
-            <t t-if="footerArchInfo">
-                <FormRenderer record="record" archInfo="footerArchInfo"/>
+            <t t-if="this.footerArchInfo">
+                <FormRenderer readonly="this.readonly" record="this.record" archInfo="this.footerArchInfo">
+                    <t t-set-slot="default_buttons">
+                        <t t-call="web.X2ManyFieldDialogDefaultButtons"/>
+                    </t>
+                </FormRenderer>
             </t>
             <t t-else="">
-                <t t-if="record.isInEdition">
-                    <t t-if="canCreate">
-                        <button class="btn btn-primary o_form_button_save" t-on-click="save" data-hotkey="c">Save &amp; Close</button>
-                        <button class="btn btn-primary o_form_button_save_new" t-on-click="saveAndNew" data-hotkey="n">Save &amp; New</button>
-                    </t>
-                    <t t-else="">
-                        <button class="btn btn-primary o_form_button_save" t-on-click="save" data-hotkey="c">Save</button>
-                    </t>
-                    <button class="btn btn-secondary o_form_button_cancel" t-on-click="discard" data-hotkey="j">Discard</button>
-
-                    <t t-if="props.delete">
-                        <button class="btn btn-secondary o_btn_remove" t-on-click="remove" data-hotkey="k">
-                            <t t-if="props.deleteButtonLabel" t-out="props.deleteButtonLabel"/>
-                            <t t-else="">Remove</t>
-                        </button>
-                    </t>
-                </t>
-                <t t-else="">
-                    <button class="btn btn-primary o_form_button_cancel" t-on-click="() => this.props.close()" data-hotkey="j">Close</button>
-                </t>
+                <t t-call="web.X2ManyFieldDialogDefaultButtons"/>
             </t>
         </t>
     </Dialog>
 </t>
 
-<t t-name="web.Many2XAutocomplete" owl="1" >
-    <div class="o_input_dropdown" t-ref="autocomplete_container">
-        <input t-if="env.isSmall and props.dropdown"
+<t t-name="web.Many2XAutocomplete" >
+    <div class="o_input_dropdown" t-custom-ref="autocomplete_container">
+        <input t-if="this.env.isSmall and this.props.dropdown"
             type="text"
-            t-att-id="props.id"
+            t-att-id="this.props.id"
             class="o_input"
             readonly=""
-            t-att-placeholder="props.placeholder"
-            t-att-value="props.value"
-            t-on-click="onViewAll"
-            t-on-barcode-search="onBarcodeSearch"
+            autocomplete="off"
+            t-att-placeholder="this.props.placeholder"
+            t-att-value="this.props.value"
+            t-on-click="this.onSearchMore"
+            t-on-barcode-search="this.onBarcodeSearch"
         />
-        <AutoComplete t-else=""
-            value="props.value"
-            id="props.id"
-            placeholder="props.placeholder"
-            sources="sources"
-            autoSelect="props.autoSelect"
-            onSelect.bind="onSelect"
-            onInput.bind="onInput"
-            onChange.bind="onChange"
-            dropdown="props.dropdown"
-            autofocus="props.autofocus"
-        />
+        <AutoComplete t-else="" t-props="this.autoCompleteProps">
+            <t t-set-slot="option" t-slot-scope="optionScope">
+                <t t-slot="{{ optionScope.data.slotName }}" t-props="optionScope.data" label="optionScope.label">
+                    <t t-out="optionScope.label"/>
+                </t>
+            </t>
+        </AutoComplete>
         <span class="o_dropdown_button" />
     </div>
 </t>
 
-<t t-name="web.AvatarMany2XAutocomplete" owl="1">
-    <span class="o_avatar_many2x_autocomplete o_avatar d-flex align-items-center">
-        <img t-if="option.value" class="rounded me-1"
-             t-attf-src="/web/image/{{option.resModel}}/{{option.value}}/avatar_128" />
-        <t t-esc="option.label" />
-    </span>
+<t t-name="web.X2ManyFieldDialogDefaultButtons">
+    <t t-if="this.record.isInEdition">
+        <t t-if="this.canCreate">
+            <button class="btn btn-primary o_form_button_save" t-on-click="this.save" data-hotkey="c">Save &amp; Close</button>
+            <button t-if="!this.env.isSmall" class="btn btn-primary o_form_button_save_new" t-on-click="this.saveAndNew" data-hotkey="n">Save &amp; New</button>
+        </t>
+        <t t-else="">
+            <button class="btn btn-primary o_form_button_save" t-on-click="this.save" data-hotkey="c">Save</button>
+        </t>
+        <button class="btn btn-secondary o_form_button_cancel" t-on-click="this.discard" data-hotkey="j">Discard</button>
+
+        <t t-if="this.props.delete and this.displayDeleteButton">
+            <button class="btn btn-secondary d-flex flex-nowrap align-items-center justify-content-center gap-1 ms-md-auto o_btn_remove" t-on-click="this.remove" data-hotkey="k">
+                <i class="fa fa-trash"/>
+                <t t-if="this.props.deleteButtonLabel" t-out="this.props.deleteButtonLabel"/>
+                <t t-else="">Remove</t>
+            </button>
+        </t>
+    </t>
+    <t t-else="">
+        <button class="btn btn-primary o_form_button_cancel" t-on-click="() => this.props.close()" data-hotkey="j" data-available-offline="">Close</button>
+    </t>
 </t>
 
 </templates>

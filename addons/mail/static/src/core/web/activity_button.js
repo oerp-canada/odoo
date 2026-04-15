@@ -1,19 +1,24 @@
-/* @odoo-module */
-
+import { useEnv, useRef } from "@web/owl2/utils";
 import { ActivityListPopover } from "@mail/core/web/activity_list_popover";
 
-import { Component, useRef } from "@odoo/owl";
+import { Component } from "@odoo/owl";
 
 import { _t } from "@web/core/l10n/translation";
 import { usePopover } from "@web/core/popover/popover_hook";
 
 export class ActivityButton extends Component {
-    static props = ["record"];
+    static props = {
+        record: { type: Object },
+    };
     static template = "mail.ActivityButton";
 
     setup() {
+        super.setup();
         this.popover = usePopover(ActivityListPopover, { position: "bottom-start" });
         this.buttonRef = useRef("button");
+        this.env = useEnv();
+        this.defaultActivityStateClass = "text-muted";
+        this.defaultActivityDecorationClass = "fa-clock-o btn-link text-dark";
     }
 
     get buttonClass() {
@@ -29,7 +34,9 @@ export class ActivityButton extends Component {
                 classes.push("text-success");
                 break;
             default:
-                classes.push("text-muted");
+                if (this.defaultActivityStateClass) {
+                    classes.push(this.activityStateClass);
+                }
                 break;
         }
         switch (this.props.record.data.activity_exception_decoration) {
@@ -41,13 +48,15 @@ export class ActivityButton extends Component {
                 classes.push("text-danger");
                 classes.push(this.props.record.data.activity_exception_icon);
                 break;
-            default:
-                if (this.props.record.data.activity_type_icon) {
-                    classes.push(this.props.record.data.activity_type_icon);
+            default: {
+                const { activity_ids, activity_type_icon } = this.props.record.data;
+                if (activity_ids.records.length) {
+                    classes.push(activity_type_icon || "fa-tasks");
                     break;
                 }
-                classes.push("fa-clock-o");
+                classes.push(this.defaultActivityDecorationClass);
                 break;
+            }
         }
         return classes.join(" ");
     }
@@ -60,23 +69,36 @@ export class ActivityButton extends Component {
             return this.props.record.data.activity_summary;
         }
         if (this.props.record.data.activity_type_id) {
-            return this.props.record.data.activity_type_id[1 /* display_name */];
+            return this.props.record.data.activity_type_id.display_name;
         }
         return _t("Show activities");
     }
 
-    onClick() {
+    async onClick() {
         if (this.popover.isOpen) {
             this.popover.close();
         } else {
+            const resId = this.props.record.resId;
+            const selectedRecords = this.env?.model?.root?.selection ?? [];
+            const selectedIds = selectedRecords.map((r) => r.resId);
+            // If the current record is not selected, ignore the selection
+            const resIds =
+                selectedIds.includes(resId) && selectedIds.length > 1 ? selectedIds : undefined;
             this.popover.open(this.buttonRef.el, {
                 activityIds: this.props.record.data.activity_ids.currentIds,
-                onActivityChanged: () => {
-                    this.props.record.model.load({ resId: this.props.record.resId });
+                onActivityChanged: (thread) => {
+                    const recordToLoad = resIds ? selectedRecords : [this.props.record];
+                    recordToLoad.forEach((r) => r.load());
+                    this.onActivityChanged();
+                    this.popover.close();
                 },
-                resId: this.props.record.resId,
+                resId,
+                resIds,
                 resModel: this.props.record.resModel,
             });
         }
     }
+
+    /** Add custom behavior on activity changed */
+    onActivityChanged() {}
 }

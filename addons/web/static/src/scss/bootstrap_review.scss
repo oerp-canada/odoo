@@ -9,34 +9,6 @@
     clear: both;
 }
 
-%-card-body-reviewed {
-    // BS4 colored cards do not have a very popular design. This will reset them
-    // to a BS3-like one: only the header and footer are colored and the body
-    // will use the color of a default card background with a light opacity.
-    // Limitation: bg-* utilities cannot be used on card-body elements anymore.
-    // Note: these rules need grays utilities to be defined before so that the
-    // related o-bg-color text-muted rules work. Since backend and fronted
-    // generate these classes differently, this pseudo-class is called in the
-    // respective 'bootstrap_review_x' file immediately after gray classes
-    // generation.
-    @include o-bg-color(rgba($card-bg, $o-card-body-bg-opacity));
-
-    &:first-child {
-        @include border-top-radius($card-inner-border-radius);
-    }
-    &:last-child {
-        @include border-bottom-radius($card-inner-border-radius);
-    }
-
-    &.row {
-        // The 'row' class should not be used on a 'card-body' element but if
-        // it is done, our custom bg color would overflow the card. As a fix
-        // for those cases (normally only one at the time this fix is made),
-        // remove the background color.
-        // TODO remove me in master.
-        background-color: transparent !important;
-    }
-}
 .accordion {
     .collapsing, .collapse.show {
         > .card-body:first-child {
@@ -49,10 +21,6 @@
 
 .toast-header {
     background-clip: border-box;
-}
-.toast-body {
-    // Same as card-body, see explanation above
-    @include o-bg-color(opacify($toast-background-color, 0.08));
 }
 
 // Modify modals so that their scrollable element is the modal-body (except in
@@ -85,6 +53,7 @@
 // (e.g. the website #wrapwrap) whose stacking context is different of the body
 // one (where the backdrop is opened). This would make the backdrop appears on
 // top of the modal.
+// See MODAL_BACKDROP_WEBSITE.
 .modal-backdrop {
     display: none;
 }
@@ -93,8 +62,13 @@
 }
 
 // Force field label pointer to cursor
-.form-check, .form-select {
+.form-check {
     @include o-field-pointer();
+}
+
+// Update the border color when hovering form-select elements
+.form-select:where(:not(:disabled)):hover {
+    border-color: $form-check-input-checked-border-color;
 }
 
 // Disable RTL for the dropdown position
@@ -119,5 +93,55 @@
         &, &:hover, &:focus {
             text-decoration: none;
         }
+    }
+}
+
+// Disable markers when using Carousel's indicators on list
+.carousel-indicators {
+    list-style: none;
+}
+
+
+// Progress Bar
+
+// Solve a BS 5.3 issue causing progress bar's animation to flicker when
+// the component's height is modified using CSS variables.
+@keyframes progress-bar-stripes {
+    0% { background-position-x: var(--progress-height, #{$progress-height}); }
+}
+
+
+// Calendar
+
+$o-calendar-today-background-color: $o-danger;
+$o-calendar-today-color: color-contrast($o-calendar-today-background-color);
+
+// We need to compute the width to avoid decimals pixels (to avoid flickerin on hover).
+// To do so, we know that we have 7 or 8 columns (week number or not) and we multiply
+// by 5. This ratio has been chosen to have enough space for different language (e.g. Vietnamese)
+// Finally, we have to take into account the gaps.
+$o-datetime-picker-width: calc(5px * 7 * 8 + (2 * #{map-get($spacers, 2)}));
+$o-datetime-picker-reduced-width: calc(5px * 7 * 7 + (2 * #{map-get($spacers, 2)}));
+
+
+// Buttons
+
+.btn {
+    &:focus-visible {
+        // Make sure to have a fallback for :focus-visible state when the element use only the `.btn` class.
+        box-shadow: var(--#{$prefix}btn-focus-box-shadow, 0 0 0 #{$btn-focus-width} RGBA(#{$btn-link-focus-shadow-rgb}, .5));
+    }
+
+    &.btn-link.btn-link-inline {
+        --#{$prefix}btn-font-family: var(--#{$prefix}body-font-family);
+        --#{$prefix}btn-font-size: var(--#{$prefix}body-font-size);
+        --#{$prefix}btn-font-weight: var(--#{$prefix}body-font-weight);
+        --#{$prefix}btn-line-height: var(--#{$prefix}body-line-height);
+        --#{$prefix}btn-padding-x: 0;
+        --#{$prefix}btn-padding-y: 0;
+        --#{$prefix}btn-border-width: 0;
+        display: inline;
+        vertical-align: baseline;
+        font-weight: var(--#{$prefix}btn-font-weight); /* TODO: remove when the crappy overrides in bootstrap_review_backend are gone */
     }
 }

@@ -1,7 +1,5 @@
-# -*- coding: utf-8 -*-
 # Part of Odoo. See LICENSE file for full copyright and licensing details.
 
-import base64
 from datetime import timedelta
 
 from odoo.addons.crm.tests.common import TestLeadConvertMassCommon
@@ -34,18 +32,18 @@ class TestLeadMergeCommon(TestLeadConvertMassCommon):
 
 
 @tagged('lead_manage')
+@tagged('at_install', '-post_install')  # LEGACY at_install
 class TestLeadMerge(TestLeadMergeCommon):
 
     def _run_merge_wizard(self, leads):
-        res = self.env['crm.merge.opportunity'].with_context({
+        return self.env['crm.merge.opportunity'].with_context({
             'active_model': 'crm.lead',
             'active_ids': leads.ids,
             'active_id': False,
         }).create({
             'team_id': False,
             'user_id': False,
-        }).action_merge()
-        return self.env['crm.lead'].browse(res['res_id'])
+        })._action_merge_to_opportunity()
 
     def test_initial_data(self):
         """ Ensure initial data to avoid spaghetti test update afterwards
@@ -63,6 +61,9 @@ class TestLeadMerge(TestLeadMergeCommon):
         self.assertEqual(self.lead_1.user_id, self.user_sales_leads)
         self.assertEqual(self.lead_1.team_id, self.sales_team_1)
         self.assertEqual(self.lead_1.stage_id, self.stage_team1_1)
+        self.assertEqual(self.lead_1.probability, 20)
+        self.assertTrue(self.lead_1.automated_probability > 0)
+        self.assertFalse(self.lead_1.is_automated_probability)
 
         self.assertEqual(self.lead_w_partner.stage_id, self.env['crm.stage'])
         self.assertEqual(self.lead_w_partner.user_id, self.env['res.users'])
@@ -173,16 +174,13 @@ class TestLeadMerge(TestLeadMergeCommon):
         })
         self.assertEqual(merge.team_id, self.sales_team_convert)
 
-        # TDE FIXME: not sure the browse in default get of wizard intended to exlude lost, as it browse ids
-        # and exclude inactive leads, but that's not written anywhere ... intended ??
-        self.assertEqual(merge.opportunity_ids, self.leads - self.lead_w_partner_company - self.lead_w_email_lost)
+        self.assertEqual(merge.opportunity_ids, self.leads - self.lead_w_partner_company, 'Should not keep won opps')
         ordered_merge = self.lead_w_contact + self.lead_w_email + self.lead_1 + self.lead_w_partner
         ordered_merge_description = '<br><br>'.join(l.description for l in ordered_merge)
 
         # merged opportunity: in this test, all input are leads. Confidence is based on stage
         # sequence -> lead_w_contact has a stage sequence of 3 and probability is greater
-        result = merge.action_merge()
-        merge_opportunity = self.env['crm.lead'].browse(result['res_id'])
+        merge_opportunity = merge._action_merge_to_opportunity()
         self.assertFalse((ordered_merge - merge_opportunity).exists())
         self.assertEqual(merge_opportunity, self.lead_w_contact)
         self.assertEqual(merge_opportunity.type, 'lead')
@@ -221,13 +219,13 @@ class TestLeadMerge(TestLeadMergeCommon):
         # TDE FIXME: see aa44700dccdc2618e0b8bc94252789264104047c -> no user, no team -> strange
         merge.write({'team_id': self.sales_team_convert.id})
 
-        # TDE FIXME: not sure the browse in default get of wizard intended to exlude lost, as it browse ids
-        # and exclude inactive leads, but that's not written anywhere ... intended ??
+        self.assertEqual(merge.opportunity_ids, self.leads, 'Even lost are included if asked by user')
+        # remove lost lead, otherwise limit of 5 is going to raise
+        merge.write({'opportunity_ids': [(3, self.lead_w_email_lost.id)]})
         self.assertEqual(merge.opportunity_ids, self.leads - self.lead_w_email_lost)
         ordered_merge = self.lead_w_partner_company + self.lead_w_contact + self.lead_w_email + self.lead_w_partner
 
-        result = merge.action_merge()
-        merge_opportunity = self.env['crm.lead'].browse(result['res_id'])
+        merge_opportunity = merge._action_merge_to_opportunity()
         self.assertFalse((ordered_merge - merge_opportunity).exists())
         self.assertEqual(merge_opportunity, self.lead_1)
         self.assertEqual(merge_opportunity.type, 'opportunity')
@@ -284,6 +282,7 @@ class TestLeadMerge(TestLeadMergeCommon):
         leads = self.env['crm.lead'].browse((self.lead_1 + self.lead_w_partner + self.lead_w_partner_company).ids)
         merged_lead = self._run_merge_wizard(leads)
         self.assertEqual(merged_lead, self.lead_1)
+        self.assertTrue(self.lead_1.automated_probability > 0)
         self.assertEqual(merged_lead.probability, 0, "Manual Probability should remain the same after the merge")
         self.assertFalse(merged_lead.is_automated_probability)
 
@@ -440,16 +439,16 @@ class TestLeadMerge(TestLeadMergeCommon):
         # create side documents
         attachments = self.env['ir.attachment'].create([
             {'name': '%02d.txt' % idx,
-             'datas': base64.b64encode(b'Att%02d' % idx),
+             'raw': b'Att%02d' % idx,
              'res_model': 'crm.lead',
              'res_id': self.lead_w_email.id,
             } for idx in range(4)
         ])
         lead_1 = self.env['crm.lead'].browse(self.lead_1.ids)
-        activity = lead_1.activity_schedule('crm.lead_test_activity_1')
+        activity = lead_1.activity_schedule('crm.lead_test_activity_1', user_id=self.user_sales_manager.id)
         calendar_event = self.env['calendar.event'].create({
             'name': 'Meeting with partner',
-            'activity_ids': [(4, activity.id)],
+            'meeting_activity_ids': [(4, activity.id)],
             'start': '2021-06-12 21:00:00',
             'stop': '2021-06-13 00:00:00',
             'res_model_id': self.env['ir.model']._get('crm.crm_lead').id,
@@ -460,15 +459,15 @@ class TestLeadMerge(TestLeadMergeCommon):
         # run merge and check documents are moved to the master record
         merge = self.env['crm.merge.opportunity'].with_context({
             'active_model': 'crm.lead',
-            'active_ids': self.leads.ids,
+            # with 'active_test' context key, lost are included, which would make 6 leads
+            # while 5 is maximum for manual merge -> exclude it directly
+            'active_ids': (self.leads - self.lead_w_email_lost).ids,
             'active_id': False,
         }).create({
             'team_id': self.sales_team_convert.id,
             'user_id': False,
         })
-        result = merge.action_merge()
-        master_lead = self.leads.filtered(lambda lead: lead.id == result['res_id'])
-
+        master_lead = merge._action_merge_to_opportunity()
         # check result of merge process
         self.assertEqual(master_lead, self.lead_w_partner_company)
         # records updated

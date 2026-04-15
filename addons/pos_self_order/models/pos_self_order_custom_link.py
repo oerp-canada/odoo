@@ -6,8 +6,9 @@ from odoo import fields, models, api
 from markupsafe import escape
 
 
-class PosSelfOrderCustomLink(models.Model):
-    _name = "pos_self_order.custom_link"
+class Pos_Self_OrderCustom_Link(models.Model):
+    _name = 'pos_self_order.custom_link'
+    _inherit = ["pos.load.mixin"]
     _description = (
         "Custom links that the restaurant can configure to be displayed on the self order screen"
     )
@@ -16,7 +17,7 @@ class PosSelfOrderCustomLink(models.Model):
     pos_config_ids = fields.Many2many(
         "pos.config",
         string="Points of Sale",
-        domain="[('self_order_view_mode', '=', True)]",
+        domain="[('self_ordering_mode', '!=', 'nothing')]",
         help="Select for which points of sale you want to display this link. Leave empty to display it for all points of sale. You have to select among the points of sale that have the 'QR Code Menu' feature enabled.",
     )
     style = fields.Selection(
@@ -36,6 +37,14 @@ class PosSelfOrderCustomLink(models.Model):
     )
     link_html = fields.Html("Preview", compute="_compute_link_html", store=True, readonly=True)
     sequence = fields.Integer("Sequence", default=1)
+
+    @api.model
+    def _load_pos_self_data_domain(self, data, config):
+        return [('pos_config_ids', 'in', config.id)]
+
+    @api.model
+    def _load_pos_self_data_fields(self, config):
+        return ['name', 'url', 'style', 'link_html', 'sequence']
 
     @api.depends("name", "style")
     def _compute_link_html(self):

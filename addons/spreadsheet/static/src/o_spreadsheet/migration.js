@@ -1,12 +1,9 @@
-/** @odoo-module */
-
 import * as spreadsheet from "@odoo/o-spreadsheet";
-const { load, CorePlugin, tokenize, parse, convertAstNodes, astToFormula } = spreadsheet;
-const { corePluginRegistry } = spreadsheet.registries;
+const { tokenize, parse, convertAstNodes, astToFormula, helpers } = spreadsheet;
+const { migrationStepRegistry } = spreadsheet.registries;
+const { schemeToColorScale } = helpers;
 
-export const ODOO_VERSION = 5;
-
-const MAP = {
+const MAP_V1 = {
     PIVOT: "ODOO.PIVOT",
     "PIVOT.HEADER": "ODOO.PIVOT.HEADER",
     "PIVOT.POSITION": "ODOO.PIVOT.POSITION",
@@ -15,42 +12,299 @@ const MAP = {
     "LIST.HEADER": "ODOO.LIST.HEADER",
 };
 
+const MAP_FN_NAMES_V10 = {
+    "ODOO.PIVOT": "PIVOT.VALUE",
+    "ODOO.PIVOT.HEADER": "PIVOT.HEADER",
+    "ODOO.PIVOT.TABLE": "PIVOT",
+};
+
 const dmyRegex = /^([0|1|2|3][1-9])\/(0[1-9]|1[0-2])\/(\d{4})$/i;
 
-export function migrate(data) {
-    let _data = load(data, !!odoo.debug);
-    const version = _data.odooVersion || 0;
+migrationStepRegistry.add("17.3.1", {
+    migrate(data) {
+        return migrateOdooData(data);
+    },
+});
+migrationStepRegistry.add("18.1.2", {
+    migrate(data) {
+        const version = data.odooVersion || 0;
+        if (version < 13) {
+            data = migrate12to13(data);
+        }
+        return data;
+    },
+});
+
+migrationStepRegistry.add("18.3.2", {
+    migrate(data) {
+        for (const sheet of data.sheets || []) {
+            for (const figure of sheet.figures || []) {
+                if (
+                    figure.tag === "chart" &&
+                    ["odoo_bar", "odoo_line", "odoo_pie"].includes(figure.data.type) &&
+                    !("cumulatedStart" in figure.data)
+                ) {
+                    const isCumulative = figure.data.cumulative || false;
+                    figure.data.cumulatedStart = isCumulative;
+                    figure.data.metaData.cumulatedStart = isCumulative;
+                }
+            }
+        }
+        return data;
+    },
+});
+
+migrationStepRegistry.add("18.4.10", {
+    migrate(data) {
+        for (const globalFilter of data.globalFilters || []) {
+            if (globalFilter.type === "text" && typeof globalFilter.defaultValue == "string") {
+                if (globalFilter.defaultValue === "") {
+                    delete globalFilter.defaultValue;
+                } else {
+                    globalFilter.defaultValue = [globalFilter.defaultValue];
+                }
+            }
+            if (globalFilter.type === "text" && globalFilter.rangeOfAllowedValues) {
+                globalFilter.rangesOfAllowedValues = [globalFilter.rangeOfAllowedValues];
+                delete globalFilter.rangeOfAllowedValues;
+            }
+        }
+        return data;
+    },
+});
+
+migrationStepRegistry.add("18.4.11", {
+    migrate(data) {
+        for (const globalFilter of data.globalFilters || []) {
+            if (globalFilter.type === "date" && globalFilter.rangeType === "fixedPeriod") {
+                if (typeof globalFilter.defaultValue !== "string") {
+                    // If the defaultValue is not a string, it's probably a
+                    // something very old that we do not support anymore
+                    // See migration2to3 (antepenultimate_year for example)
+                    delete globalFilter.defaultValue;
+                }
+            }
+        }
+        return data;
+    },
+});
+
+migrationStepRegistry.add("18.4.12", {
+    migrate(data) {
+        for (const globalFilter of data.globalFilters || []) {
+            if (globalFilter.defaultValue?.length === 0) {
+                delete globalFilter.defaultValue;
+            }
+        }
+        return data;
+    },
+});
+
+const defaultValueMap = {
+    last_week: "last_7_days",
+    last_month: "last_30_days",
+    last_three_months: "last_90_days",
+    last_year: "last_12_months",
+};
+
+migrationStepRegistry.add("18.4.13", {
+    migrate(data) {
+        for (const globalFilter of data.globalFilters || []) {
+            if (["last_six_month", "last_three_years"].includes(globalFilter.defaultValue)) {
+                delete globalFilter.defaultValue;
+            }
+            if (globalFilter.defaultValue in defaultValueMap) {
+                globalFilter.defaultValue = defaultValueMap[globalFilter.defaultValue];
+            }
+        }
+        return data;
+    },
+});
+
+migrationStepRegistry.add("18.4.14", {
+    migrate(data) {
+        for (const globalFilter of data.globalFilters || []) {
+            delete globalFilter.rangeType;
+            delete globalFilter.disabledPeriods;
+        }
+        return data;
+    },
+});
+
+migrationStepRegistry.add("18.5.10", {
+    migrate(data) {
+        for (const globalFilter of data.globalFilters || []) {
+            if (globalFilter.type === "relation" && globalFilter.defaultValue) {
+                const operator = globalFilter.includeChildren ? "child_of" : "in";
+                delete globalFilter.includeChildren;
+                globalFilter.defaultValue = {
+                    operator,
+                    ids: globalFilter.defaultValue,
+                };
+            } else if (globalFilter.type === "text" && globalFilter.defaultValue) {
+                globalFilter.defaultValue = {
+                    operator: "ilike",
+                    strings: globalFilter.defaultValue,
+                };
+            } else if (globalFilter.type === "boolean" && globalFilter.defaultValue) {
+                if (globalFilter.defaultValue.length === 2) {
+                    delete globalFilter.defaultValue; // [true, false] no longer supported
+                } else {
+                    globalFilter.defaultValue = {
+                        operator: globalFilter.defaultValue[0] ? "set" : "not set",
+                    };
+                }
+            }
+        }
+        const re = /ODOO\.FILTER\.VALUE/gi;
+        for (const sheet of data.sheets || []) {
+            for (const xc in sheet.cells || {}) {
+                const content = sheet.cells[xc];
+                if (re.test(content)) {
+                    sheet.cells[xc] = content.replaceAll(re, "ODOO.FILTER.VALUE.V18");
+                }
+            }
+        }
+        return data;
+    },
+});
+
+migrationStepRegistry.add("19.1.1", {
+    migrate(data) {
+        const odooDataSourceRefs = {};
+        for (const [chartId, menuId] of Object.entries(data.chartOdooMenusReferences || {})) {
+            odooDataSourceRefs[chartId] = { type: "odooMenu", odooMenuId: menuId };
+        }
+        delete data.chartOdooMenusReferences;
+        data.odooLinkReferences = odooDataSourceRefs;
+        return data;
+    },
+});
+
+migrationStepRegistry.add("19.1.2", {
+    migrate(data) {
+        for (const sheet of data.sheets || []) {
+            for (const figure of sheet.figures || []) {
+                if (figure.tag === "chart" && figure.data.type === "odoo_geo") {
+                    if ("colorScale" in figure.data && typeof figure.data.colorScale === "string") {
+                        figure.data.colorScale = schemeToColorScale(figure.data.colorScale);
+                    }
+                }
+                if (figure.tag === "carousel") {
+                    for (const definition of Object.values(figure.data.chartDefinitions) || []) {
+                        if (definition.type === "odoo_geo") {
+                            if (
+                                "colorScale" in definition &&
+                                typeof definition.colorScale === "string"
+                            ) {
+                                definition.colorScale = schemeToColorScale(definition.colorScale);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        return data;
+    },
+});
+
+migrationStepRegistry.add("19.3.10", {
+    migrate(data) {
+        for (const list of Object.values(data.lists || {})) {
+            list.columns = list.columns?.map((col) => ({ name: col, string: col })) || [];
+        }
+        renameFunctions(data, { "ODOO.LIST": "ODOO.LIST.VALUE" });
+
+        function migrateDefinition(definition) {
+            definition.type = definition.type.replace("odoo_", "");
+            definition.dataSource = {
+                type: "odoo",
+                actionXmlId: definition.actionXmlId,
+                cumulatedStart: definition.cumulatedStart,
+                metaData: definition.metaData,
+                searchParams: definition.searchParams,
+            };
+            delete definition.actionXmlId;
+            delete definition.cumulatedStart;
+            delete definition.metaData;
+            delete definition.searchParams;
+        }
+        for (const sheet of data.sheets || []) {
+            for (const figure of sheet.figures || []) {
+                if (figure.tag === "chart" && figure.data.type.startsWith("odoo_")) {
+                    migrateDefinition(figure.data);
+                }
+                if (figure.tag === "carousel") {
+                    for (const definition of Object.values(figure.data.chartDefinitions) || []) {
+                        if (definition.type.startsWith("odoo_")) {
+                            migrateDefinition(definition);
+                        }
+                    }
+                }
+            }
+        }
+        return data;
+    },
+});
+
+function migrateOdooData(data) {
+    const version = data.odooVersion || 0;
     if (version < 1) {
-        _data = migrate0to1(_data);
+        data = migrate0to1(data);
     }
     if (version < 2) {
-        _data = migrate1to2(_data);
+        data = migrate1to2(data);
     }
     if (version < 3) {
-        _data = migrate2to3(_data);
+        data = migrate2to3(data);
     }
     if (version < 4) {
-        _data = migrate3to4(_data);
+        data = migrate3to4(data);
     }
     if (version < 5) {
-        _data = migrate4to5(_data);
+        data = migrate4to5(data);
     }
-    return _data;
+    if (version < 6) {
+        data = migrate5to6(data);
+    }
+    if (version < 7) {
+        data = migrate6to7(data);
+    }
+    if (version < 8) {
+        data = migrate7to8(data);
+    }
+    if (version < 9) {
+        data = migrate8to9(data);
+    }
+    if (version < 10) {
+        data = migrate9to10(data);
+    }
+    if (version < 11) {
+        data = migrate10to11(data);
+    }
+    if (version < 12) {
+        data = migrate11to12(data);
+    }
+    return data;
 }
 
-function tokensToString(tokens) {
-    return tokens.reduce((acc, token) => acc + token.value, "");
+function parseDimension(dimension) {
+    const [name, granularity] = dimension.split(":");
+    if (granularity) {
+        return { name, granularity };
+    }
+    return { name };
 }
 
-function migrate0to1(data) {
-    for (const sheet of data.sheets) {
+function renameFunctionsPre19(data, map) {
+    for (const sheet of data.sheets || []) {
         for (const xc in sheet.cells || []) {
             const cell = sheet.cells[xc];
             if (cell.content && cell.content.startsWith("=")) {
                 const tokens = tokenize(cell.content);
                 for (const token of tokens) {
-                    if (token.type === "SYMBOL" && token.value.toUpperCase() in MAP) {
-                        token.value = MAP[token.value.toUpperCase()];
+                    if (token.type === "SYMBOL" && token.value.toUpperCase() in map) {
+                        token.value = map[token.value.toUpperCase()];
                     }
                 }
                 cell.content = tokensToString(tokens);
@@ -60,8 +314,34 @@ function migrate0to1(data) {
     return data;
 }
 
+function renameFunctions(data, map) {
+    for (const sheet of data.sheets || []) {
+        for (const xc in sheet.cells || []) {
+            const cell = sheet.cells[xc];
+            if (cell && typeof cell === "string" && cell?.startsWith("=")) {
+                const tokens = tokenize(cell);
+                for (const token of tokens) {
+                    if (token.type === "SYMBOL" && token.value.toUpperCase() in map) {
+                        token.value = map[token.value.toUpperCase()];
+                    }
+                }
+                sheet.cells[xc] = tokensToString(tokens);
+            }
+        }
+    }
+    return data;
+}
+
+function tokensToString(tokens) {
+    return tokens.reduce((acc, token) => acc + token.value, "");
+}
+
+function migrate0to1(data) {
+    return renameFunctionsPre19(data, MAP_V1);
+}
+
 function migrate1to2(data) {
-    for (const sheet of data.sheets) {
+    for (const sheet of data.sheets || []) {
         for (const xc in sheet.cells || []) {
             const cell = sheet.cells[xc];
             if (cell.content && cell.content.startsWith("=")) {
@@ -218,12 +498,146 @@ function migratePivotDaysParameters(formulaString) {
     return "=" + astToFormula(convertedAst);
 }
 
-export default class OdooVersion extends CorePlugin {
-    export(data) {
-        data.odooVersion = ODOO_VERSION;
+function migrate5to6(data) {
+    if (!data.globalFilters?.length) {
+        return data;
     }
+    for (const filter of data.globalFilters) {
+        if (filter.type === "date" && ["year", "quarter", "month"].includes(filter.rangeType)) {
+            if (filter.defaultsToCurrentPeriod) {
+                filter.defaultValue = `this_${filter.rangeType}`;
+            }
+            filter.rangeType = "fixedPeriod";
+        }
+        delete filter.defaultsToCurrentPeriod;
+    }
+    return data;
 }
 
-OdooVersion.getters = [];
+/**
+ * Migrate the pivot data to add the type, by default "ODOO". And replace the
+ * pivot with a new object that contains type and definition (the old pivot).
+ */
+function migrate6to7(data) {
+    if (data.pivots) {
+        for (const [id, definition] of Object.entries(data.pivots)) {
+            definition.measures = definition.measures.map((measure) => measure.field);
+            const fieldMatching = definition.fieldMatching;
+            delete definition.fieldMatching;
+            data.pivots[id] = {
+                type: "ODOO",
+                definition,
+                fieldMatching,
+            };
+        }
+    }
+    return data;
+}
 
-corePluginRegistry.add("odooMigration", OdooVersion);
+function migrate7to8(data) {
+    if (data.pivots) {
+        for (const [id, pivot] of Object.entries(data.pivots)) {
+            data.pivots[id] = {
+                type: pivot.type,
+                fieldMatching: pivot.fieldMatching,
+                ...pivot.definition,
+            };
+        }
+    }
+    return data;
+}
+
+function migrate8to9(data) {
+    if (data.pivots) {
+        for (const id of Object.keys(data.pivots)) {
+            data.pivots[id].formulaId = id;
+        }
+    }
+    return data;
+}
+
+function migrate9to10(data) {
+    return renameFunctionsPre19(data, MAP_FN_NAMES_V10);
+}
+
+function migrate10to11(data) {
+    if (data.pivots) {
+        for (const pivot of Object.values(data.pivots)) {
+            pivot.measures = pivot.measures.map((measure) => ({
+                name: measure,
+            }));
+            pivot.columns = pivot.colGroupBys.map(parseDimension);
+            delete pivot.colGroupBys;
+            pivot.rows = pivot.rowGroupBys.map(parseDimension);
+            delete pivot.rowGroupBys;
+        }
+    }
+    return data;
+}
+
+function migrate11to12(data) {
+    // remove the calls to ODOO.PIVOT.POSITION and replace
+    // the previous argument to a relative position
+    for (const sheet of data.sheets || []) {
+        for (const xc in sheet.cells || []) {
+            const cell = sheet.cells[xc];
+            if (
+                cell.content &&
+                cell.content.startsWith("=") &&
+                cell.content.includes("ODOO.PIVOT.POSITION")
+            ) {
+                const tokens = tokenize(cell.content);
+                /* given that odoo.pivot.position is automatically set, we know that:
+                1) it is always on the form of ODOO.PIVOT.POSITION(1, ...)
+                2) it is always preceded by a dimension of a pivot or header, inside another pivot formula
+                3) there is only one odoo.pivot.position per cell
+                4) odoo.pivot.position can only exist after the 3rd token and needs at least 7 tokens to be valid*/
+                for (let i = 2; i < tokens.length - 7; i++) {
+                    const token = tokens[i];
+                    if (
+                        token.type === "SYMBOL" &&
+                        token.value.toUpperCase() === "ODOO.PIVOT.POSITION"
+                    ) {
+                        const order = tokens[i + 6];
+                        tokens[i - 2].value = '"#' + tokens[i - 2].value.slice(1); // "dimension" becomes "#dimension"
+                        tokens.splice(i, 7); // remove "ODOO.PIVOT.POSITION", "(", "1", ",", "dimension", ", ", order
+                        // tokens[i-1] is the comma before odoo.pivot.position
+                        tokens[i] = order;
+                        cell.content = tokensToString(tokens);
+                    }
+                }
+            }
+        }
+    }
+    return data;
+}
+
+/**
+ * Change pivot sortedColumn of the odoo's pivot model to the sortedColumn of o-spreadsheet
+ */
+function migrate12to13(data) {
+    if (data.pivots) {
+        for (const pivot of Object.values(data.pivots)) {
+            if (!pivot.sortedColumn) {
+                continue;
+            }
+            const measure = pivot.measures.find(
+                (measure) => measure.fieldName === pivot.sortedColumn.measure
+            );
+            // We're missing some information to convert the sortedColumn (fieldType), so we'll drop the sorted columns
+            // that are not on the total column
+            // Also, a previous bug allowed to have a sortedColumn measure that is not in the measures,
+            // in this case we also drop the sortedColumn because we can't sort a measure that is not there
+            if (pivot.sortedColumn.groupId[1]?.length || !measure) {
+                pivot.sortedColumn = undefined;
+                continue;
+            }
+            pivot.sortedColumn = {
+                measure: measure.id,
+                order: pivot.sortedColumn.order,
+                domain: [],
+            };
+        }
+    }
+    return data;
+}

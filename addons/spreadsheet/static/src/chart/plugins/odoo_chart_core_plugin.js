@@ -1,33 +1,46 @@
-/** @odoo-module */
-import * as spreadsheet from "@odoo/o-spreadsheet";
-import { globalFiltersFieldMatchers } from "@spreadsheet/global_filters/plugins/global_filters_core_plugin";
 import { checkFilterFieldMatching } from "@spreadsheet/global_filters/helpers";
-import CommandResult from "../../o_spreadsheet/cancelled_reason";
-
-const { CorePlugin } = spreadsheet;
+import { CommandResult } from "../../o_spreadsheet/cancelled_reason";
+import { Domain } from "@web/core/domain";
+import { OdooCorePlugin } from "@spreadsheet/plugins";
+import { _t } from "@web/core/l10n/translation";
 
 /**
  * @typedef {Object} Chart
  * @property {Object} fieldMatching
  *
- * @typedef {import("@spreadsheet/global_filters/plugins/global_filters_core_plugin").FieldMatching} FieldMatching
+ * @typedef {import("@spreadsheet").FieldMatching} FieldMatching
  */
 
-export default class OdooChartCorePlugin extends CorePlugin {
+const CHART_PLACEHOLDER_DISPLAY_NAME = {
+    bar: _t("Odoo Bar Chart"),
+    line: _t("Odoo Line Chart"),
+    pie: _t("Odoo Pie Chart"),
+    radar: _t("Odoo Radar Chart"),
+    geo: _t("Odoo Geo Chart"),
+    treemap: _t("Odoo Treemap Chart"),
+    sunburst: _t("Odoo Sunburst Chart"),
+    waterfall: _t("Odoo Waterfall Chart"),
+    pyramid: _t("Odoo Pyramid Chart"),
+    scatter: _t("Odoo Scatter Chart"),
+    combo: _t("Odoo Combo Chart"),
+    funnel: _t("Odoo Funnel Chart"),
+};
+
+export class OdooChartCorePlugin extends OdooCorePlugin {
+    static getters = /** @type {const} */ ([
+        "getOdooChartIds",
+        "getChartFieldMatch",
+        "getOdooChartName",
+        "getOdooChartDisplayName",
+        "getOdooChartFieldMatching",
+        "getChartGranularity",
+    ]);
+
     constructor(config) {
         super(config);
 
         /** @type {Object.<string, Chart>} */
         this.charts = {};
-
-        globalFiltersFieldMatchers["chart"] = {
-            geIds: () => this.getters.getOdooChartIds(),
-            getDisplayName: (chartId) => this.getters.getOdooChartDisplayName(chartId),
-            getFieldMatching: (chartId, filterId) =>
-                this.getOdooChartFieldMatching(chartId, filterId),
-            getModel: (chartId) =>
-                this.getters.getChart(chartId).getDefinitionForDataSource().metaData.resModel,
-        };
     }
 
     allowDispatch(cmd) {
@@ -49,18 +62,14 @@ export default class OdooChartCorePlugin extends CorePlugin {
     handle(cmd) {
         switch (cmd.type) {
             case "CREATE_CHART": {
-                switch (cmd.definition.type) {
-                    case "odoo_pie":
-                    case "odoo_bar":
-                    case "odoo_line":
-                        this._addOdooChart(cmd.id);
-                        break;
+                if (cmd.definition.dataSource?.type === "odoo") {
+                    this._addOdooChart(cmd.chartId);
                 }
                 break;
             }
-            case "DELETE_FIGURE": {
+            case "DELETE_CHART": {
                 const charts = { ...this.charts };
-                delete charts[cmd.id];
+                delete charts[cmd.chartId];
                 this.history.update("charts", charts);
                 break;
             }
@@ -85,15 +94,7 @@ export default class OdooChartCorePlugin extends CorePlugin {
      * @returns {Array<string>}
      */
     getOdooChartIds() {
-        const ids = [];
-        for (const sheetId of this.getters.getSheetIds()) {
-            ids.push(
-                ...this.getters
-                    .getChartIds(sheetId)
-                    .filter((id) => this.getters.getChartType(id).startsWith("odoo_"))
-            );
-        }
-        return ids;
+        return Object.keys(this.charts);
     }
 
     /**
@@ -109,12 +110,34 @@ export default class OdooChartCorePlugin extends CorePlugin {
      * @param {string} chartId
      * @returns {string}
      */
-    getOdooChartDisplayName(chartId) {
-        return this.getters.getChart(chartId).title;
+    getOdooChartName(chartId) {
+        const { title, type } = this.getters.getChartDefinition(chartId);
+        return title.text || CHART_PLACEHOLDER_DISPLAY_NAME[type];
     }
 
     /**
-     * Import the pivots
+     *
+     * @param {string} chartId
+     * @returns {string}
+     */
+    getOdooChartDisplayName(chartId) {
+        const name = this.getOdooChartName(chartId);
+        return `(#${this.getOdooChartIds().indexOf(chartId) + 1}) ${name}`;
+    }
+
+    getChartGranularity(chartId) {
+        const definition = this.getters.getChartDefinition(chartId);
+        const dataSource = definition.dataSource;
+        if (dataSource?.type === "odoo" && dataSource.metaData.groupBy.length) {
+            const horizontalAxis = dataSource.metaData.groupBy[0];
+            const [fieldName, granularity] = horizontalAxis.split(":");
+            return { fieldName, granularity };
+        }
+        return null;
+    }
+
+    /**
+     * Import the charts
      *
      * @param {Object} data
      */
@@ -122,15 +145,22 @@ export default class OdooChartCorePlugin extends CorePlugin {
         for (const sheet of data.sheets) {
             if (sheet.figures) {
                 for (const figure of sheet.figures) {
-                    if (figure.tag === "chart" && figure.data.type.startsWith("odoo_")) {
-                        this._addOdooChart(figure.id, figure.data.fieldMatching);
+                    if (figure.tag === "chart" && figure.data.dataSource?.type === "odoo") {
+                        this._addOdooChart(figure.data.chartId, figure.data.fieldMatching ?? {});
+                    } else if (figure.tag === "carousel") {
+                        for (const chartId in figure.data.chartDefinitions) {
+                            const fieldMatching = figure.data.fieldMatching ?? {};
+                            if (figure.data.chartDefinitions[chartId].dataSource?.type === "odoo") {
+                                this._addOdooChart(chartId, fieldMatching[chartId]);
+                            }
+                        }
                     }
                 }
             }
         }
     }
     /**
-     * Export the pivots
+     * Export the chart
      *
      * @param {Object} data
      */
@@ -138,8 +168,23 @@ export default class OdooChartCorePlugin extends CorePlugin {
         for (const sheet of data.sheets) {
             if (sheet.figures) {
                 for (const figure of sheet.figures) {
-                    if (figure.tag === "chart" && figure.data.type.startsWith("odoo_")) {
-                        figure.data.fieldMatching = this.getChartFieldMatch(figure.id);
+                    if (figure.tag === "chart" && figure.data.dataSource?.type === "odoo") {
+                        figure.data.fieldMatching = this.getChartFieldMatch(figure.data.chartId);
+                        figure.data.dataSource.searchParams.domain = new Domain(
+                            figure.data.dataSource.searchParams.domain
+                        ).toJson();
+                    } else if (figure.tag === "carousel") {
+                        figure.data.fieldMatching = {};
+                        for (const chartId in figure.data.chartDefinitions) {
+                            const chartDefinition = figure.data.chartDefinitions[chartId];
+                            if (chartDefinition.dataSource?.type === "odoo") {
+                                figure.data.fieldMatching[chartId] =
+                                    this.getChartFieldMatch(chartId);
+                                chartDefinition.dataSource.searchParams.domain = new Domain(
+                                    chartDefinition.dataSource.searchParams.domain
+                                ).toJson();
+                            }
+                        }
                     }
                 }
             }
@@ -150,7 +195,7 @@ export default class OdooChartCorePlugin extends CorePlugin {
     // -------------------------------------------------------------------------
 
     /**
-     * Get the current pivotFieldMatching of a chart
+     * Get the current odooChartFieldMatching of a chart
      *
      * @param {string} chartId
      * @param {string} filterId
@@ -160,7 +205,7 @@ export default class OdooChartCorePlugin extends CorePlugin {
     }
 
     /**
-     * Sets the current pivotFieldMatching of a chart
+     * Sets the current odooChartFieldMatching of a chart
      *
      * @param {string} filterId
      * @param {Record<string,FieldMatching>} chartFieldMatches
@@ -184,18 +229,11 @@ export default class OdooChartCorePlugin extends CorePlugin {
      * @param {string} chartId
      * @param {Object} fieldMatching
      */
-    _addOdooChart(chartId, fieldMatching = {}) {
-        const charts = { ...this.charts };
-        charts[chartId] = {
-            fieldMatching,
-        };
-        this.history.update("charts", charts);
+    _addOdooChart(chartId, fieldMatching = undefined) {
+        const model = this.getters.getChartDefinition(chartId).dataSource.metaData.resModel;
+        this.history.update("charts", chartId, {
+            chartId,
+            fieldMatching: fieldMatching || this.getters.getFieldMatchingForModel(model),
+        });
     }
 }
-
-OdooChartCorePlugin.getters = [
-    "getOdooChartIds",
-    "getChartFieldMatch",
-    "getOdooChartDisplayName",
-    "getOdooChartFieldMatching",
-];

@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Part of Odoo. See LICENSE file for full copyright and licensing details.
 
 {
@@ -12,5 +11,6 @@ The module adds Microsoft user in res user.
     'data': [
         'data/microsoft_account_data.xml',
     ],
+    'author': 'Odoo S.A.',
     'license': 'LGPL-3',
 }

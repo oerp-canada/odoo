@@ -1,9 +1,9 @@
-# -*- coding: utf-8 -*-
 # Part of Odoo. See LICENSE file for full copyright and licensing details.
 
-from odoo.tests import common
+from odoo.tests import tagged, common
 
 
+@tagged('at_install', '-post_install')  # LEGACY at_install
 class TestRecurrentEvent(common.TransactionCase):
 
     def setUp(self):
@@ -15,13 +15,14 @@ class TestRecurrentEvent(common.TransactionCase):
         # In order to test recurrent meetings in Odoo, I create meetings with different recurrence using different test cases.
         # I create a recurrent meeting with daily recurrence and fixed amount of time.
         self.CalendarEvent.create({
+            'end_type': 'count',
             'count': 5,
             'start': '2011-04-13 11:04:00',
             'stop': '2011-04-13 12:04:00',
             'duration': 1.0,
             'name': 'Test Meeting',
             'recurrency': True,
-            'rrule_type': 'daily'
+            'rrule_type': 'daily',
         })
         # I search for all the recurrent meetings
         meetings_count = self.CalendarEvent.with_context({'virtual_id': True}).search_count([
@@ -45,7 +46,7 @@ class TestRecurrentEvent(common.TransactionCase):
             'wed': True,
             'name': 'Review code with programmer',
             'recurrency': True,
-            'rrule_type': 'weekly'
+            'rrule_type': 'weekly',
         })
 
         # I search for all the recurrent weekly meetings.

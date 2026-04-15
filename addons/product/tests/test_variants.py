@@ -1,53 +1,80 @@
-# -*- coding: utf-8 -*-
 # Part of Odoo. See LICENSE file for full copyright and licensing details.
 
-import base64
-from collections import OrderedDict
-from datetime import timedelta
 import io
 import unittest.mock
 
+from collections import OrderedDict
+from datetime import timedelta
+from unittest.mock import patch
+
 from PIL import Image
 
-from odoo.fields import Command
 from odoo.exceptions import UserError
-from odoo.tests import tagged, TransactionCase, Form
-from odoo.tools import mute_logger
+from odoo.fields import Command
+from odoo.tests import Form, TransactionCase, tagged
+from odoo.tools import BinaryBytes, mute_logger
 
-from odoo.addons.product.tests.common import ProductVariantsCommon, ProductAttributesCommon
+from odoo.addons.product.tests.common import ProductVariantsCommon
 
 
 @tagged('post_install', '-at_install')
 class TestVariantsSearch(ProductVariantsCommon):
 
     def test_attribute_line_search(self):
+        product_template_shirt = self.env['product.template'].create({
+            'name': 'Shirt',
+            'categ_id': self.product_category.id,
+            'attribute_line_ids': [
+                Command.create({
+                    'attribute_id': self.size_attribute.id,
+                    'value_ids': [Command.set([self.size_attribute_l.id])],
+                }),
+            ],
+        })
         search_not_to_be_found = self.env['product.template'].search(
             [('attribute_line_ids', '=', 'M')]
         )
-        self.assertNotIn(self.product_template_shirt, search_not_to_be_found,
+        self.assertNotIn(product_template_shirt, search_not_to_be_found,
                          'Shirt should not be found searching M')
 
         search_attribute = self.env['product.template'].search(
             [('attribute_line_ids', '=', 'Size')]
         )
-        self.assertIn(self.product_template_shirt, search_attribute,
+        self.assertIn(product_template_shirt, search_attribute,
                       'Shirt should be found searching Size')
 
         search_value = self.env['product.template'].search(
             [('attribute_line_ids', '=', 'L')]
         )
-        self.assertIn(self.product_template_shirt, search_value,
+        self.assertIn(product_template_shirt, search_value,
                       'Shirt should be found searching L')
 
     def test_name_search(self):
         self.product_slip_template = self.env['product.template'].create({
             'name': 'Slip',
+            'default_code': 'ABC',
         })
         res = self.env['product.product'].name_search('Shirt', [], 'not ilike', None)
         res_ids = [r[0] for r in res]
         self.assertIn(self.product_slip_template.product_variant_ids.id, res_ids,
                       'Slip should be found searching \'not ilike\'')
 
+        templates = self.product_slip_template.name_search(
+            "ABC",
+            [['id', '!=', -1]],
+        )
+        self.assertFalse(templates, "Should not return template when searching on code")
+        templates = self.product_slip_template.with_context(search_product_product=True).name_search(
+            "ABC",
+            [['id', '!=', -1]],
+        )
+        self.assertTrue(templates, "Should return template when searching on code")
+
+        templates = self.product_slip_template.with_context(search_product_product=True).name_search(
+            "ABC",
+            [['id', '!=', self.product_slip_template.id]],
+        )
+        self.assertFalse(templates, "Should not return template.")
 
 @tagged('post_install', '-at_install')
 class TestVariants(ProductVariantsCommon):
@@ -60,11 +87,24 @@ class TestVariants(ProductVariantsCommon):
         self.assertEqual({True}, set(v.is_product_variant for v in variants),
                          'Product variants are variants')
 
+    def test_variants_pricelist_code(self):
+        vendor = self.env['res.partner'].create({'name': 'Bidou', 'email': 'bidou@odoo.com'})
+        codes = ['bidou-red', 'bidou-green', 'bidou-blue']
+        self.env['product.supplierinfo'].create([{
+            'partner_id': vendor.id,
+            'product_tmpl_id': self.product_template_sofa.id,
+            'product_id': product.id,
+            'product_code': code,
+        } for product, code in zip(self.product_template_sofa.product_variant_ids, codes)])
+        variants = self.product_template_sofa.product_variant_ids.with_context(partner_id=vendor.id)
+        self.assertEqual(variants[0].code, codes[0], "sofa red should have code bidou-red")
+        self.assertEqual(variants[1].code, codes[1], "sofa green should have code bidou-green")
+        self.assertEqual(variants[2].code, codes[2], "sofa blue should have code bidou-blue")
+
     def test_variants_creation_mono(self):
         test_template = self.env['product.template'].create({
             'name': 'Sofa',
             'uom_id': self.uom_unit.id,
-            'uom_po_id': self.uom_unit.id,
             'attribute_line_ids': [Command.create({
                 'attribute_id': self.size_attribute.id,
                 'value_ids': [Command.link(self.size_attribute_s.id)],
@@ -79,7 +119,6 @@ class TestVariants(ProductVariantsCommon):
         test_template = self.env['product.template'].create({
             'name': 'Sofa',
             'uom_id': self.uom_unit.id,
-            'uom_po_id': self.uom_unit.id,
             'attribute_line_ids': [Command.create({
                 'attribute_id': self.color_attribute.id,
                 'value_ids': [Command.link(self.color_attribute_blue.id)],
@@ -97,7 +136,6 @@ class TestVariants(ProductVariantsCommon):
         test_template = self.env['product.template'].create({
             'name': 'Sofa',
             'uom_id': self.uom_unit.id,
-            'uom_po_id': self.uom_unit.id,
             'attribute_line_ids': [
                 Command.create({
                     'attribute_id': self.color_attribute.id,
@@ -132,7 +170,6 @@ class TestVariants(ProductVariantsCommon):
         test_template = self.env['product.template'].create({
             'name': 'Sofa',
             'uom_id': self.uom_unit.id,
-            'uom_po_id': self.uom_unit.id,
             'attribute_line_ids': [
                 Command.create({
                     'attribute_id': self.color_attribute.id,
@@ -171,7 +208,6 @@ class TestVariants(ProductVariantsCommon):
         test_template = self.env['product.template'].create({
             'name': 'Sofa',
             'uom_id': self.uom_unit.id,
-            'uom_po_id': self.uom_unit.id,
             'attribute_line_ids': [Command.create({
                 'attribute_id': self.color_attribute.id,
                 'value_ids': [Command.link(self.color_attribute_red.id), Command.link(self.color_attribute_blue.id)],
@@ -210,6 +246,12 @@ class TestVariants(ProductVariantsCommon):
         self.assertEqual(template_copy.name, 'Test Copy (copy)')
         self.assertEqual(variant_copy.name, 'Test Copy (copy) (copy)')
         self.assertEqual(len(variant_copy.product_variant_ids), 2)
+
+        # test copy of variant from variant
+        variant = self.env['product.product'].create({'name': 'Test Copy Variant'})
+        variant_copy = variant.copy()
+        self.assertTrue(variant_copy.exists())
+        self.assertEqual(variant_copy.name, 'Test Copy Variant (copy)')
 
     def test_dynamic_variants_copy(self):
         self.color_attr = self.env['product.attribute'].create({'name': 'Color', 'create_variant': 'dynamic'})
@@ -259,6 +301,12 @@ class TestVariants(ProductVariantsCommon):
             one_variant_template.with_company(company_b).standard_price
         )
 
+    def test_variant_extra_price_when_lst_price_set_manually(self):
+        variant = self.product
+        self.assertEqual(variant._get_attributes_extra_price(), 0)
+        variant.lst_price = 500
+        self.assertEqual(variant._get_attributes_extra_price(), 480)
+
     @mute_logger('odoo.models.unlink')
     def test_archive_variant(self):
         template = self.env['product.template'].create({
@@ -277,12 +325,12 @@ class TestVariants(ProductVariantsCommon):
         })
         self.assertEqual(len(template.product_variant_ids), 2)
         variant_1 = template.product_variant_ids[0]
-        variant_1.toggle_active()
+        variant_1.action_archive()
         self.assertFalse(variant_1.active)
         self.assertEqual(len(template.product_variant_ids), 1)
         self.assertEqual(len(template.with_context(
             active_test=False).product_variant_ids), 2)
-        variant_1.toggle_active()
+        variant_1.action_unarchive()
         self.assertTrue(variant_1.active)
         self.assertTrue(template.active)
 
@@ -346,16 +394,147 @@ class TestVariants(ProductVariantsCommon):
         self.assertEqual(len(template.product_variant_ids), 2)
         variant_1 = template.product_variant_ids[0]
         variant_2 = template.product_variant_ids[1]
-        template.product_variant_ids.toggle_active()
+        template.product_variant_ids.action_archive()
         self.assertFalse(variant_1.active, 'Should archive all variants')
         self.assertFalse(template.active, 'Should archive related template')
-        variant_1.toggle_active()
+        variant_1.action_unarchive()
         self.assertTrue(variant_1.active, 'Should activate variant')
         self.assertFalse(variant_2.active, 'Should not re-activate other variant')
         self.assertTrue(template.active, 'Should re-activate template')
 
+    def test_open_product_form_with_default_uom_id_is_false(self):
+        """ Test default UoM is False when creating a product. """
+        uom_unit = self.env.ref('uom.product_uom_unit')
+        product_form = Form(self.env['product.product'].with_context(
+            default_uom_id=False,
+        ))
+        product_form.name = 'Test Product'
+        product = product_form.save()
+        self.assertEqual(uom_unit, product.uom_id)
+
+    def test_single_variant_template_computed_values_after_creation(self):
+        """Check that variant-related fields on templates are correctly set."""
+        product_template = self.env['product.template'].create({
+            'name': "one variant template",
+            'attribute_line_ids': [Command.create({
+                'attribute_id': self.size_attribute.id,
+                'value_ids': [Command.set(self.size_attribute_s.ids)],
+            })],
+            'barcode': 'THIS IS A TEST',
+        })
+        self.assertEqual(
+            product_template.barcode,
+            product_template.product_variant_id.barcode,
+        )
+        self.assertEqual(
+            product_template.barcode,
+            'THIS IS A TEST',
+        )
+        product_template = self.env['product.template'].create({
+            'name': "one variant template without attribute lines",
+            'barcode': 'THIS IS A BARCODE',
+        })
+        self.assertEqual(
+            product_template.barcode,
+            product_template.product_variant_id.barcode,
+        )
+        self.assertEqual(
+            product_template.barcode,
+            'THIS IS A BARCODE',
+        )
+
+    def test_extra_uom_ids_propagation_on_variant_recreation(self):
+        """When adding a new attribute to a template, existing extra_uom_ids
+        should propagate to new variants based on PTAV subset matching."""
+        template = self.env['product.template'].create({
+            'name': 'Test Extra UoM Propagation',
+            'attribute_line_ids': [
+                Command.create({
+                    'attribute_id': self.size_attribute.id,
+                    'value_ids': [Command.set([
+                        self.size_attribute_s.id,
+                        self.size_attribute_m.id,
+                        self.size_attribute_l.id,
+                    ])],
+                }),
+            ],
+        })
+        self.assertEqual(len(template.product_variant_ids), 3)
+
+        # Assign extra_uom_ids per variant
+        variants = template.product_variant_ids.sorted('id')
+        variant_s, variant_m, variant_l = variants
+        variant_s.extra_uom_ids = self.uom_gram
+        variant_m.extra_uom_ids = self.uom_kgm
+        variant_l.extra_uom_ids = self.uom_ton
+
+        # Add Color attribute → triggers variant recreation → 6 variants
+        template.write({
+            'attribute_line_ids': [
+                Command.create({
+                    'attribute_id': self.color_attribute.id,
+                    'value_ids': [Command.set([
+                        self.color_attribute_red.id,
+                        self.color_attribute_blue.id,
+                    ])],
+                }),
+            ],
+        })
+        self.assertEqual(len(template.product_variant_ids), 6)
+
+        # Check propagation by PTAV subset matching
+        for variant in template.product_variant_ids:
+            ptav_names = variant.product_template_attribute_value_ids.mapped(
+                'product_attribute_value_id.name'
+            )
+            if 'S' in ptav_names:
+                self.assertEqual(variant.extra_uom_ids, self.uom_gram,
+                    f"Variant {ptav_names} should inherit gram from S")
+            elif 'M' in ptav_names:
+                self.assertEqual(variant.extra_uom_ids, self.uom_kgm,
+                    f"Variant {ptav_names} should inherit kgm from M")
+            elif 'L' in ptav_names:
+                self.assertEqual(variant.extra_uom_ids, self.uom_ton,
+                    f"Variant {ptav_names} should inherit ton from L")
+
+    def test_extra_uom_ids_not_propagated_without_match(self):
+        """When old variants have no PTAV overlap with new ones,
+        extra_uom_ids should not propagate."""
+        template = self.env['product.template'].create({
+            'name': 'Test No Propagation',
+            'attribute_line_ids': [
+                Command.create({
+                    'attribute_id': self.size_attribute.id,
+                    'value_ids': [Command.set([
+                        self.size_attribute_s.id,
+                        self.size_attribute_m.id,
+                    ])],
+                }),
+            ],
+        })
+        variants = template.product_variant_ids.sorted('id')
+        variants[0].extra_uom_ids = self.uom_gram  # S only
+
+        # Remove Size, add Color → completely new variants with no PTAV overlap
+        template.write({
+            'attribute_line_ids': [
+                Command.create({
+                    'attribute_id': self.color_attribute.id,
+                    'value_ids': [Command.set([
+                        self.color_attribute_red.id,
+                        self.color_attribute_blue.id,
+                    ])],
+                }),
+                Command.unlink(template.attribute_line_ids[0].id),
+            ],
+        })
+
+        self.assertFalse(template.product_variant_ids.extra_uom_ids,
+            "New variants with no PTAV overlap should have empty extra_uom_ids")
+
+
 @tagged('post_install', '-at_install')
-class TestVariantsNoCreate(ProductAttributesCommon):
+class TestVariantsNoCreate(ProductVariantsCommon):
 
     @classmethod
     def setUpClass(cls):
@@ -368,7 +547,6 @@ class TestVariantsNoCreate(ProductAttributesCommon):
         template = self.env['product.template'].create({
             'name': 'Sofa',
             'uom_id': self.uom_unit.id,
-            'uom_po_id': self.uom_unit.id,
             'attribute_line_ids': [Command.create({
                 'attribute_id': self.size_attribute.id,
                 'value_ids': [Command.link(self.size_attribute_s.id)],
@@ -382,7 +560,6 @@ class TestVariantsNoCreate(ProductAttributesCommon):
         template = self.env['product.template'].create({
             'name': 'Sofa',
             'uom_id': self.uom_unit.id,
-            'uom_po_id': self.uom_unit.id,
         })
         self.assertEqual(len(template.product_variant_ids), 1)
 
@@ -400,7 +577,6 @@ class TestVariantsNoCreate(ProductAttributesCommon):
         template = self.env['product.template'].create({
             'name': 'Sofa',
             'uom_id': self.uom_unit.id,
-            'uom_po_id': self.uom_unit.id,
             'attribute_line_ids': [Command.create({
                 'attribute_id': self.size_attribute.id,
                 'value_ids': [Command.set(self.size_attribute.value_ids.ids)],
@@ -414,7 +590,6 @@ class TestVariantsNoCreate(ProductAttributesCommon):
         template = self.env['product.template'].create({
             'name': 'Sofa',
             'uom_id': self.uom_unit.id,
-            'uom_po_id': self.uom_unit.id,
         })
         self.assertEqual(len(template.product_variant_ids), 1)
 
@@ -432,7 +607,6 @@ class TestVariantsNoCreate(ProductAttributesCommon):
         template = self.env['product.template'].create({
             'name': 'Sofa',
             'uom_id': self.uom_unit.id,
-            'uom_po_id': self.uom_unit.id,
             'attribute_line_ids': [
                 Command.create({ # no variants for this one
                     'attribute_id': self.size_attribute.id,
@@ -456,7 +630,6 @@ class TestVariantsNoCreate(ProductAttributesCommon):
         template = self.env['product.template'].create({
             'name': 'Sofa',
             'uom_id': self.uom_unit.id,
-            'uom_po_id': self.uom_unit.id,
         })
         self.assertEqual(len(template.product_variant_ids), 1)
 
@@ -483,7 +656,6 @@ class TestVariantsNoCreate(ProductAttributesCommon):
         template = self.env['product.template'].create({
             'name': 'Sofa',
             'uom_id': self.uom_unit.id,
-            'uom_po_id': self.uom_unit.id,
             'attribute_line_ids': [
                 Command.create({ # no variants for this one
                     'attribute_id': self.size_attribute.id,
@@ -507,7 +679,6 @@ class TestVariantsNoCreate(ProductAttributesCommon):
         template = self.env['product.template'].create({
             'name': 'Sofa',
             'uom_id': self.uom_unit.id,
-            'uom_po_id': self.uom_unit.id,
         })
         self.assertEqual(len(template.product_variant_ids), 1)
 
@@ -534,7 +705,6 @@ class TestVariantsNoCreate(ProductAttributesCommon):
         template = self.env['product.template'].create({
             'name': 'Sofax',
             'uom_id': self.uom_unit.id,
-            'uom_po_id': self.uom_unit.id,
             'attribute_line_ids': [
                 Command.create({ # one variant for this one
                     'attribute_id': self.color_attribute.id,
@@ -551,6 +721,40 @@ class TestVariantsNoCreate(ProductAttributesCommon):
         # no_variant attribute should not appear on the variant
         self.assertNotIn(self.size_attribute_s, template.product_variant_ids.product_template_attribute_value_ids.product_attribute_value_id)
 
+    def test_unarchive_multiple_products_with_variants(self):
+        product_attribut = self.env['product.attribute'].create({
+            'name': 'Color',
+            'sequence': 1,
+            'create_variant': 'dynamic',
+        })
+        attr_value = self.env['product.attribute.value'].create({
+            'name': 'Blue',
+            'attribute_id': product_attribut.id,
+            'sequence': 1,
+        })
+        first_product = self.env['product.template'].create({
+            'name': 'Sofa',
+            'attribute_line_ids': [(0, 0, {
+                'attribute_id': product_attribut.id,
+                'value_ids': [(6, 0, [attr_value.id])],
+            })]
+        })
+        second_product = first_product.copy({
+            'product_variant_ids': [(0, 0, {
+            'name': 'Sofa',
+            })]
+        })
+
+        products = first_product + second_product
+        products.action_archive()
+        self.assertFalse(first_product.active)
+        self.assertFalse(second_product.active)
+        self.assertFalse(second_product.product_variant_ids)
+        products.action_unarchive()
+        # check products should be unarchived successfully.
+        self.assertTrue(first_product.active)
+        self.assertTrue(second_product.active)
+        self.assertTrue(second_product.product_variant_ids)
 
 @tagged('post_install', '-at_install')
 class TestVariantsManyAttributes(TransactionCase):
@@ -696,7 +900,7 @@ class TestVariantsImages(ProductVariantsCommon):
             f = io.BytesIO()
             Image.new('RGB', (800, 500), cls.colors[color_value.name]).save(f, 'PNG')
             f.seek(0)
-            cls.images.update({color_value.name: base64.b64encode(f.read())})
+            cls.images.update({color_value.name: BinaryBytes(f.read())})
 
             cls.template._get_variant_for_combination(color_value).write({
                 'image_variant_1920': cls.images[color_value.name],
@@ -727,7 +931,7 @@ class TestVariantsImages(ProductVariantsCommon):
         f = io.BytesIO()
         Image.new('RGB', (800, 500), '#000000').save(f, 'PNG')
         f.seek(0)
-        image_black = base64.b64encode(f.read())
+        image_black = BinaryBytes(f.read())
 
         images = self.variants.mapped('image_1920')
         self.assertEqual(len(set(images)), 4)
@@ -743,9 +947,9 @@ class TestVariantsImages(ProductVariantsCommon):
         self.assertTrue(all(images[1:]))
 
         # template image is the same as this one, since it has no image variant
-        self.assertEqual(variant_no_image.image_1920, self.template.image_1920)
+        self.assertEqual(variant_no_image.image_1920.content, self.template.image_1920.content)
         # having changed the template image should not have changed these
-        self.assertEqual(images[1:], self.variants.mapped('image_1920')[1:])
+        self.assertEqual([img.content for img in images[1:]], [var.image_1920.content for var in self.variants[1:]])
 
         # last update changed for the variant without image
         self.assertLess(old_last_update, new_last_update)
@@ -754,9 +958,9 @@ class TestVariantsImages(ProductVariantsCommon):
         """Update images after variants have been archived"""
         self.variants[1:].write({'active': False})
         self.variants[0].image_1920 = self.images['red']
-        self.assertEqual(self.template.image_1920, self.images['red'])
-        self.assertEqual(self.variants[0].image_variant_1920, False)
-        self.assertEqual(self.variants[0].image_1920, self.images['red'])
+        self.assertEqual(self.template.image_1920.content, self.images['red'].content)
+        self.assertFalse(self.variants[0].image_variant_1920)
+        self.assertEqual(self.variants[0].image_1920.content, self.images['red'].content)
 
 
 @tagged('post_install', '-at_install')
@@ -1022,6 +1226,8 @@ class TestVariantsArchive(ProductVariantsCommon):
         self.assertEqual(archived_variants, variants_2x0)
 
     def test_name_search_dynamic_attributes(self):
+        # To be able to test dynamic variant "variants" feature must be set up
+        self._enable_variants()
         dynamic_attr = self.env['product.attribute'].create({
             'name': 'Dynamic',
             'create_variant': 'dynamic',
@@ -1047,20 +1253,16 @@ class TestVariantsArchive(ProductVariantsCommon):
         self._enable_uom()
 
         units = self.uom_unit
-        cm = self.env.ref('uom.product_uom_cm')
+        mm = self.env.ref('uom.product_uom_millimeter')
         template = self.product.product_tmpl_id
 
         template_form = Form(template)
-        template_form.uom_id = cm
-        self.assertEqual(template_form.uom_po_id, cm)
+        template_form.uom_id = mm
         template = template_form.save()
 
         variant_form = Form(template.product_variant_ids)
         variant_form.uom_id = units
-        self.assertEqual(variant_form.uom_po_id, units)
-        variant = variant_form.save()
-        self.assertEqual(variant.uom_po_id, units)
-        self.assertEqual(template.uom_po_id, units)
+        variant_form.save()
 
     @mute_logger('odoo.models.unlink')
     def test_dynamic_attributes_archiving(self):
@@ -1182,7 +1384,7 @@ class TestVariantsArchive(ProductVariantsCommon):
         self.assertEqual(tmpl.barcode, '123')
         self.assertEqual(self.product.barcode, '123')
 
-        tmpl.toggle_active()
+        tmpl.action_archive()
 
         tmpl.barcode = '456'
         tmpl.invalidate_recordset(fnames=['barcode'])
@@ -1307,27 +1509,92 @@ class TestVariantsArchive(ProductVariantsCommon):
         self.assertEqual(len(variants), 1)
         self.assertFalse(variants[0].product_template_attribute_value_ids)
 
+    @mute_logger('odoo.models.unlink')
+    def test_unlink_and_archive_multiple_variants(self):
+        """
+        Test unlinking multiple variants in various scenarios
+        - Unlink one archived variant
+        - Unlink one archived and one active variant
+        - Unlink multiple archived variants and multiple active variants at once
+        """
+        products = self.env['product.product'].create([
+            {'name': 'variant 1', 'description': 'var 1'},
+            {'name': 'variant 2', 'description': 'var 2'},
+            {'name': 'variant 3', 'description': 'var 3'},
+            {'name': 'variant 4', 'description': 'var 4'},
+            {'name': 'variant 5', 'description': 'var 5'},
+            {'name': 'variant 6', 'description': 'var 6'},
+            {'name': 'variant 7', 'description': 'var 7'},
+        ])
+        # Unlink one archived variant
+        products[0].action_archive()
+        products[0].unlink()
+        self.assertFalse(products[0].exists())
+
+        # Unlink one archived and one active variant
+        products[1].action_archive()
+        active_and_archived = products[1] + products[2]
+        active_and_archived.unlink()
+        self.assertFalse(active_and_archived.exists())
+
+        # Unlink multiple archived variants and multiple active variants at once
+        multiple_archived = products[3] + products[4]
+        multiple_active = products[5] + products[6]
+        multiple_archived.action_archive()
+        (multiple_archived + multiple_active).unlink()
+        self.assertFalse(products.exists())
+
+    @mute_logger('odoo.models.unlink')
+    def test_add_attribute_to_archived_template(self):
+        template = self.env['product.template'].create({
+            'name': 'Test Product',
+            'attribute_line_ids': [Command.create({
+                'attribute_id': self.size_attribute.id,
+                'value_ids': [Command.link(self.size_attribute_s.id)],
+            })]
+        })
+        self.assertEqual(len(template.product_variant_ids), 1)
+        template_id = template.id
+        template.action_archive()
+        self.assertFalse(template.active)
+        template.write({
+            'attribute_line_ids': [Command.create({
+                'attribute_id': self.color_attribute.id,
+                'value_ids': [
+                    Command.link(self.color_attribute_red.id),
+                    Command.link(self.color_attribute_blue.id),
+                ],
+            })]
+        })
+        template = self.env['product.template'].browse(template_id).with_context(active_test=False)
+        self.assertTrue(template.exists(), "Template should not be deleted when adding attributes to archived template")
+        self.assertFalse(template.active, "Template should remain archived")
+        # Verify new variants are created but remain archived
+        all_variants = template.product_variant_ids
+        self.assertEqual(len(all_variants), 2, "Should create 2 variants: S+Red and S+Blue")
+        for variant in all_variants:
+            self.assertFalse(variant.active, "Variants should remain archived when template is archived")
+
+    def test_active_one2many(self):
+        template = self.template
+
+        # check the consistency of one2many field product_variant_ids w.r.t. active variants
+        variant1, variant2 = template.product_variant_ids[:2]
+        other = template.product_variant_ids[2:]
+        self.assertEqual(template.product_variant_ids, variant1 + variant2 + other)
+
+        variant2.active = False
+        self.assertEqual(template.product_variant_ids, variant1 + other)
+
+        variant2.active = True
+        self.assertEqual(template.product_variant_ids, variant1 + variant2 + other)
+
+        variant1.active = False
+        self.assertEqual(template.product_variant_ids, variant2 + other)
+
 
 @tagged('post_install', '-at_install')
 class TestVariantWrite(TransactionCase):
-
-    def test_active_one2many(self):
-        template = self.env['product.template'].create({'name': 'Foo', 'description': 'Foo'})
-        self.assertEqual(len(template.product_variant_ids), 1)
-
-        # check the consistency of one2many field product_variant_ids w.r.t. active variants
-        variant1 = template.product_variant_ids
-        variant2 = self.env['product.product'].create({'product_tmpl_id': template.id})
-        self.assertEqual(template.product_variant_ids, variant1 + variant2)
-
-        variant2.active = False
-        self.assertEqual(template.product_variant_ids, variant1)
-
-        variant2.active = True
-        self.assertEqual(template.product_variant_ids, variant1 + variant2)
-
-        variant1.active = False
-        self.assertEqual(template.product_variant_ids, variant2)
 
     def test_write_inherited_field(self):
         product = self.env['product.product'].create({'name': 'Foo', 'sequence': 1})
@@ -1359,7 +1626,7 @@ class TestVariantWrite(TransactionCase):
 
 
 @tagged('post_install', '-at_install')
-class TestVariantsExclusion(ProductAttributesCommon):
+class TestVariantsExclusion(ProductVariantsCommon):
 
     @classmethod
     def setUpClass(cls):
@@ -1391,6 +1658,7 @@ class TestVariantsExclusion(ProductAttributesCommon):
             )
 
         cls.smartphone_s = get_ptav(cls.smartphone, cls.size_attribute_s)
+        cls.smartphone_l = get_ptav(cls.smartphone, cls.size_attribute_l)
         cls.smartphone_256 = get_ptav(cls.smartphone, cls.storage_attr_value_256)
         cls.smartphone_128 = get_ptav(cls.smartphone, cls.storage_attr_value_128)
 
@@ -1398,16 +1666,13 @@ class TestVariantsExclusion(ProductAttributesCommon):
     def test_variants_1_exclusion(self):
         # Create one exclusion for Smartphone S
         self.smartphone_s.write({
-            'exclude_for': [Command.create({
-                'product_tmpl_id': self.smartphone.id,
-                'value_ids': [(6, 0, [self.smartphone_256.id])]
-            })]
+            'excluded_value_ids': [Command.link(self.smartphone_256.id)]
         })
         self.assertEqual(len(self.smartphone.product_variant_ids), 3, 'With exclusion {s: [256]}, the smartphone should have 3 active different variants')
 
         # Delete exclusion
         self.smartphone_s.write({
-            'exclude_for': [(2, self.smartphone_s.exclude_for.id, 0)]
+            'excluded_value_ids': [Command.clear()]
         })
         self.assertEqual(len(self.smartphone.product_variant_ids), 4, 'With no exclusion, the smartphone should have 4 active different variants')
 
@@ -1415,25 +1680,22 @@ class TestVariantsExclusion(ProductAttributesCommon):
     def test_variants_2_exclusions_same_line(self):
         # Create two exclusions for Smartphone S on the same line
         self.smartphone_s.write({
-            'exclude_for': [Command.create({
-                'product_tmpl_id': self.smartphone.id,
-                'value_ids': [(6, 0, [self.smartphone_128.id, self.smartphone_256.id])]
-            })]
+            'excluded_value_ids': [
+                Command.link(self.smartphone_128.id),
+                Command.link(self.smartphone_256.id),
+            ]
         })
         self.assertEqual(len(self.smartphone.product_variant_ids), 2, 'With exclusion {s: [128, 256]}, the smartphone should have 2 active different variants')
 
         # Delete one exclusion of the line
         self.smartphone_s.write({
-            'exclude_for': [(1, self.smartphone_s.exclude_for.id, {
-                'product_tmpl_id': self.smartphone.id,
-                'value_ids': [(6, 0, [self.smartphone_128.id])]
-            })]
+            'excluded_value_ids': [Command.set([self.smartphone_128.id])]
         })
         self.assertEqual(len(self.smartphone.product_variant_ids), 3, 'With exclusion {s: [128]}, the smartphone should have 3 active different variants')
 
         # Delete exclusion
         self.smartphone_s.write({
-            'exclude_for': [(2, self.smartphone_s.exclude_for.id, 0)]
+            'excluded_value_ids': [Command.clear()]
         })
         self.assertEqual(len(self.smartphone.product_variant_ids), 4, 'With no exclusion, the smartphone should have 4 active different variants')
 
@@ -1441,23 +1703,104 @@ class TestVariantsExclusion(ProductAttributesCommon):
     def test_variants_2_exclusions_different_lines(self):
         # add 1 exclusion
         self.smartphone_s.write({
-            'exclude_for': [Command.create({
-                'product_tmpl_id': self.smartphone.id,
-                'value_ids': [(6, 0, [self.smartphone_128.id])]
-            })]
+            'excluded_value_ids': [Command.link(self.smartphone_128.id)]
         })
 
         # add 1 exclusion on a different line
         self.smartphone_s.write({
-            'exclude_for': [Command.create({
-                'product_tmpl_id': self.smartphone.id,
-                'value_ids': [(6, 0, [self.smartphone_256.id])]
-            })]
+            'excluded_value_ids': [Command.link(self.smartphone_256.id)]
         })
         self.assertEqual(len(self.smartphone.product_variant_ids), 2, 'With exclusion {s: [128, 256]}, the smartphone should have 2 active different variants')
 
         # delete one exclusion line
         self.smartphone_s.write({
-            'exclude_for': [(2, self.smartphone_s.exclude_for.ids[0], 0)]
+            'excluded_value_ids': [Command.set([self.smartphone_s.excluded_value_ids.ids[0]])]
         })
         self.assertEqual(len(self.smartphone.product_variant_ids), 3, 'With one exclusion, the smartphone should have 3 active different variants')
+
+    @mute_logger('odoo.models.unlink')
+    def test_dynamic_variants_unarchive(self):
+        """ Make sure that exclusions creation, update & delete are correctly handled.
+
+        Exclusions updates are not necessarily done from a specific template.
+        """
+        product_template = self.env['product.template'].create({
+            'name': 'Test dynamic',
+            'attribute_line_ids': [
+                Command.create({
+                    'attribute_id': self.dynamic_attribute.id,
+                    'value_ids': [Command.set(self.dynamic_attribute.value_ids.ids)],
+                }),
+                Command.create({
+                    'attribute_id': self.dynamic_attribute.id,
+                    'value_ids': [Command.set(self.dynamic_attribute.value_ids.ids)],
+                })
+            ]
+        })
+        self.assertFalse(product_template.product_variant_ids)
+        first_line_ptavs = product_template.attribute_line_ids[0].product_template_value_ids
+        second_line_ptavs = product_template.attribute_line_ids[1].product_template_value_ids
+        for ptav1, ptav2 in zip(first_line_ptavs, second_line_ptavs, strict=True):
+            product_template._create_product_variant(ptav1 + ptav2)
+
+        self.assertEqual(len(product_template.product_variant_ids), 2)
+
+        pav_to_remove = self.dynamic_attribute.value_ids[:1]
+        variant_to_archive = product_template.product_variant_ids.filtered(
+            lambda pp:
+                pav_to_remove in pp.product_template_attribute_value_ids.product_attribute_value_id
+        )
+
+        # Removing one option will archive one variant
+        with patch(
+            'odoo.addons.product.models.product_product.ProductProduct._filter_to_unlink',
+            lambda products: products.filtered(
+                lambda pp: pp.product_tmpl_id.id != product_template.id
+            ),
+        ):
+            product_template.attribute_line_ids[1].value_ids = [
+                Command.unlink(self.dynamic_attribute.value_ids[:1].id)
+            ]
+        self.assertEqual(len(product_template.product_variant_ids), 1)
+        self.assertFalse(variant_to_archive.active)
+
+        # Putting it back should unarchive the archived variant
+        product_template.attribute_line_ids[1].value_ids = [
+            Command.link(self.dynamic_attribute.value_ids[:1].id)
+        ]
+        self.assertEqual(len(product_template.product_variant_ids), 2)
+        self.assertTrue(variant_to_archive.active)
+
+    def test_supplierinfo_with_dynamic_attribute(self):
+        """
+        Ensure that supplierinfo.product_id is never automatically set when
+        variants are created dynamically.
+
+        The supplierinfo should remain template-level (product_id = False)
+        unless the user explicitly assigns a specific variant manually,
+        even if only one variant exists initially.
+        """
+        product_template = self.env['product.template'].create({
+            'name': 'Test dynamic',
+            'attribute_line_ids': [
+                Command.create({
+                    'attribute_id': self.dynamic_attribute.id,
+                    'value_ids': [Command.set(self.dynamic_attribute.value_ids.ids)],
+                }),
+            ]
+        })
+        self.assertFalse(product_template.product_variant_ids)
+
+        supplierinfo = self.env['product.supplierinfo'].create({
+            'partner_id': self.partner.id,
+            'product_tmpl_id': product_template.id,
+        })
+        self.assertFalse(product_template.product_variant_ids)
+
+        product_template._create_product_variant(product_template.attribute_line_ids.product_template_value_ids[0])
+        self.assertEqual(len(product_template.product_variant_ids), 1)
+        self.assertFalse(supplierinfo.product_id)
+
+        product_template._create_product_variant(product_template.attribute_line_ids.product_template_value_ids[1])
+        self.assertEqual(len(product_template.product_variant_ids), 2)
+        self.assertFalse(supplierinfo.product_id)

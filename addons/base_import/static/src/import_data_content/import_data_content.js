@@ -1,5 +1,3 @@
-/** @odoo-module **/
-
 import { Component } from "@odoo/owl";
 import { SelectMenu } from "@web/core/select_menu/select_menu";
 import { ImportDataColumnError } from "../import_data_column_error/import_data_column_error";
@@ -23,13 +21,10 @@ export class ImportDataContent extends Component {
         previewError: { type: String, optional: true },
     };
 
-    setup() {
-        this.searchPlaceholder = _t("Search a field...");
-    }
-
     getGroups(column) {
         const groups = [
             { choices: this.makeChoices(column.fields.basic) },
+            { choices: this.makeChoices(column.fields.required), label: _t("Required Fields") },
             { choices: this.makeChoices(column.fields.suggested), label: _t("Suggested Fields") },
             {
                 choices: this.makeChoices(column.fields.additional),
@@ -46,7 +41,8 @@ export class ImportDataContent extends Component {
     makeChoices(fields) {
         return fields.map((field) => ({
             label: field.label,
-            value: field.id,
+            value: field.fieldPath,
+            iconClass: `o_import_field_icon_${field.type}`,
         }));
     }
 
@@ -82,5 +78,17 @@ export class ImportDataContent extends Component {
 
     getCommentClass(column, comment, index) {
         return `alert-${comment.type} ${index < column.comments.length - 1 ? "mb-2" : "mb-0"}`;
+    }
+
+    onFieldChanged(column, fieldPath) {
+        const fields = [
+            ...column.fields.basic,
+            ...column.fields.required,
+            ...column.fields.suggested,
+            ...column.fields.additional,
+            ...column.fields.relational,
+        ];
+        const fieldInfo = fields.find((f) => f.fieldPath === fieldPath);
+        this.props.onFieldChanged(column, fieldInfo);
     }
 }

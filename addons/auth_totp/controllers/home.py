@@ -1,13 +1,16 @@
 # -*- coding: utf-8 -*-
 import re
 
+from datetime import datetime, timedelta
+
 from odoo import http, _
 from odoo.exceptions import AccessDenied
 from odoo.http import request
+from odoo.http.session import finalize, touch
 from odoo.addons.web.controllers import home as web_home
 
 TRUSTED_DEVICE_COOKIE = 'td_id'
-TRUSTED_DEVICE_AGE = 90*86400 # 90 days expiration
+TRUSTED_DEVICE_AGE_DAYS = 90
 
 
 class Home(web_home.Home):
@@ -20,32 +23,38 @@ class Home(web_home.Home):
         if request.session.uid:
             return request.redirect(self._login_redirect(request.session.uid, redirect=redirect))
 
-        if not request.session.pre_uid:
+        if not request.session.get('pre_uid'):
             return request.redirect('/web/login')
 
         error = None
 
-        user = request.env['res.users'].browse(request.session.pre_uid)
+        user = request.env['res.users'].browse(request.session['pre_uid'])
         if user and request.httprequest.method == 'GET':
-            cookies = request.httprequest.cookies
+            cookies = request.cookies
             key = cookies.get(TRUSTED_DEVICE_COOKIE)
             if key:
                 user_match = request.env['auth_totp.device']._check_credentials_for_uid(
                     scope="browser", key=key, uid=user.id)
                 if user_match:
-                    request.session.finalize(request.env)
+                    finalize(request.session, request.env)
+                    request.update_env(user=request.session.uid)
+                    request.update_context(**request.session.context)
                     return request.redirect(self._login_redirect(request.session.uid, redirect=redirect))
 
         elif user and request.httprequest.method == 'POST' and kwargs.get('totp_token'):
             try:
                 with user._assert_can_auth(user=user.id):
-                    user._totp_check(int(re.sub(r'\s', '', kwargs['totp_token'])))
+                    credentials = {
+                        'type': user._mfa_type(),
+                        'token': int(re.sub(r'\s', '', kwargs['totp_token'])),
+                    }
+                    user._check_credentials(credentials, {'interactive': True})
             except AccessDenied as e:
                 error = str(e)
             except ValueError:
                 error = _("Invalid authentication code format.")
             else:
-                request.session.finalize(request.env)
+                finalize(request.session, request.env)
                 request.update_env(user=request.session.uid)
                 request.update_context(**request.session.context)
                 response = request.redirect(self._login_redirect(request.session.uid, redirect=redirect))
@@ -58,20 +67,25 @@ class Home(web_home.Home):
                     if request.geoip.city.name:
                         name += f" ({request.geoip.city.name}, {request.geoip.country_name})"
 
-                    key = request.env['auth_totp.device']._generate("browser", name)
+                    trusted_device_age = request.env['auth_totp.device']._get_trusted_device_age()
+                    key = request.env['auth_totp.device'].sudo()._generate(
+                        "browser",
+                        name,
+                        datetime.now() + timedelta(seconds=trusted_device_age)
+                    )
                     response.set_cookie(
                         key=TRUSTED_DEVICE_COOKIE,
                         value=key,
-                        max_age=TRUSTED_DEVICE_AGE,
+                        max_age=trusted_device_age,
                         httponly=True,
                         samesite='Lax'
                     )
                 # Crapy workaround for unupdatable Odoo Mobile App iOS (Thanks Apple :@)
-                request.session.touch()
+                touch(request.session)
                 return response
 
         # Crapy workaround for unupdatable Odoo Mobile App iOS (Thanks Apple :@)
-        request.session.touch()
+        touch(request.session)
         return request.render('auth_totp.auth_totp_form', {
             'user': user,
             'error': error,

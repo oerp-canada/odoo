@@ -1,5 +1,5 @@
 # Part of Odoo. See LICENSE file for full copyright and licensing details.
-from odoo import fields, models
+from odoo import models
 from odoo.addons.account.models.chart_template import template
 
 
@@ -10,22 +10,13 @@ class AccountChartTemplate(models.AbstractModel):
     def _get_au_template_data(self):
         return {
             'code_digits': '5',
-            'use_anglo_saxon': True,
-            'property_account_receivable_id': 'au_11200',
-            'property_account_payable_id': 'au_21200',
-            'property_account_expense_categ_id': 'au_51110',
-            'property_account_income_categ_id': 'au_41110',
-            'property_stock_account_input_categ_id': 'au_21210',
-            'property_stock_account_output_categ_id': 'au_11340',
-            'property_stock_valuation_account_id': 'au_11330',
-            'property_tax_payable_account_id': 'au_21320',
-            'property_tax_receivable_account_id': 'au_21320',
         }
 
     @template('au', 'res.company')
     def _get_au_res_company(self):
         return {
             self.env.company.id: {
+                'anglo_saxon_accounting': True,
                 'account_fiscal_country_id': 'base.au',
                 'bank_account_code_prefix': '1111',
                 'cash_account_code_prefix': '1113',
@@ -37,8 +28,30 @@ class AccountChartTemplate(models.AbstractModel):
                 'account_journal_early_pay_discount_gain_account_id': 'au_61620',
                 'fiscalyear_last_month': '6',
                 'fiscalyear_last_day': 30,
-                # Changing the opening date to the first day of the fiscal year.
-                # This way the opening entries will be set to the 30th of June.
-                'account_opening_date': fields.Date.context_today(self).replace(month=7, day=1),
+                'account_sale_tax_id': 'au_tax_sale_10',
+                'account_purchase_tax_id': 'au_tax_purchase_10_service',
+                'income_account_id': 'au_41110',
+                'expense_account_id': 'au_51110',
+                'receivable_account_id': 'au_11200',
+                'payable_account_id': 'au_21200',
+                'account_stock_valuation_id': 'au_11310',
+                'stock_account_production_cost_id': 'au_11350',
             },
+        }
+
+    @template('au', 'account.account')
+    def _get_au_account_account(self):
+        return {
+            'au_11310': {
+                'account_stock_variation_id': 'au_51110',
+            },
+            'au_13120': {'asset_depreciation_account_id': 'au_13130', 'asset_expense_account_id': 'au_61500'},
+            'au_13140': {'asset_depreciation_account_id': 'au_13150', 'asset_expense_account_id': 'au_61500'},
+            'au_13160': {'asset_depreciation_account_id': 'au_13170', 'asset_expense_account_id': 'au_61500'},
+            'au_13210': {'asset_depreciation_account_id': 'au_13220', 'asset_expense_account_id': 'au_61500'},
+            'au_13310': {'asset_depreciation_account_id': 'au_13320', 'asset_expense_account_id': 'au_61500'},
+            'au_13410': {'asset_depreciation_account_id': 'au_13420', 'asset_expense_account_id': 'au_61500'},
+            'au_13430': {'asset_depreciation_account_id': 'au_13440', 'asset_expense_account_id': 'au_61500'},
+            'au_13450': {'asset_depreciation_account_id': 'au_13460', 'asset_expense_account_id': 'au_61500'},
+            'au_13470': {'asset_depreciation_account_id': 'au_13480', 'asset_expense_account_id': 'au_61500'},
         }

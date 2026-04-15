@@ -1,9 +1,12 @@
 # -*- coding: utf-8 -*-
 # Part of Odoo. See LICENSE file for full copyright and licensing details.
 
+import re
+
 from odoo import Command
 from .common import TestCommonSaleTimesheet
-from odoo.tests import tagged
+from odoo.tests import tagged, Form
+from odoo.tools.safe_eval import expr_eval
 
 
 @tagged('post_install', '-at_install')
@@ -144,7 +147,6 @@ class TestProject(TestCommonSaleTimesheet):
             'name': self.product_delivery_timesheet1.name,
             'product_id': self.product_delivery_timesheet1.id,
             'product_uom_qty': 1,
-            'product_uom': self.product_delivery_timesheet1.uom_id.id,
             'price_unit': self.product_delivery_timesheet1.list_price,
             'order_id': sale_order.id,
         })
@@ -165,7 +167,7 @@ class TestProject(TestCommonSaleTimesheet):
         self.env['project.task'].create({
             'name': 'task A',
             'project_id': self.project_global.id,
-            'planned_hours': 10,
+            'allocated_hours': 10,
             'timesheet_ids': [
                 Command.create({
                     'name': '/',
@@ -175,4 +177,109 @@ class TestProject(TestCommonSaleTimesheet):
             ],
         })
 
+        self.project_global.invalidate_recordset()
+        self.project_global.account_id.invalidate_recordset()
         self.assertEqual(self.project_global.analytic_account_balance, expected_analytic_account_balance)
+
+    def test_open_product_form_with_default_service_policy(self):
+        form = Form(self.env['product.product'].with_context(
+            default_type='service',
+            default_service_policy='delivered_timesheet',
+        ))
+        self.assertEqual('delivered_timesheet', form.service_policy)
+
+    def test_open_product_form_with_default_uom_id(self):
+        """ Test default product uom fallback when product is not service type """
+        uom_dozen = self.env.ref('uom.product_uom_dozen')
+        product_form = Form(self.env['product.product'].with_context(
+            default_uom_id=uom_dozen.id,
+        ))
+        self.assertEqual(uom_dozen, product_form.uom_id, "Default uom should be Dozen")
+        product_form.type = 'service'
+        product_form.service_policy = 'delivered_timesheet'
+        uom_hour = self.env.ref('uom.product_uom_hour')
+        self.assertEqual(
+            uom_hour,
+            product_form.uom_id,
+            "Uom should be updated to Hour for service_type=`timesheet` product"
+        )
+        product_form.type = 'consu'
+        self.assertEqual(
+            uom_dozen,
+            product_form.uom_id,
+            "Uom should be updated to Dozen for `Goods` type product"
+        )
+
+    def test_duplicate_project_allocated_hours(self):
+        self.project_global.allocated_hours = 10
+        self.assertEqual(self.project_global.copy().allocated_hours, 10)
+
+    def test_project_creation_timesheet_account_companies(self):
+        project_template = self.env['project.project'].create({
+            'name': 'Project template',
+            'is_template': True,
+            'company_id': False,
+            'allow_timesheets': True,
+            'allow_billable': True,
+        })
+
+        self.partner_b.company_id = self.company
+
+        wizard = self.env['project.template.create.wizard'].create({
+            'template_id': project_template.id,
+            'name': 'New Project from Template',
+            'partner_id': self.partner_b.id,
+        })
+        new_project = wizard._create_project_from_template()
+
+        self.assertEqual(new_project.company_id, self.partner_b.company_id)
+
+    def test_sale_lines_returned_for_parent_and_child_partner(self):
+        """
+        Test that sale order lines are correctly retrieved when the parent or child partner is set on the project.
+        Steps:
+        1. Set a child partner as a delivery contact under a parent partner
+        2. Create a sale order for each partner with a service product.
+        3. Confirm both sale orders.
+        4. Assign the parent partner to the project.
+        5. Verify that child partner's sale order lines are returned.
+        6. Assign the child partner to the project.
+        7. Verify parent partner's sale order lines are returned.
+        """
+        self.partner.write({
+            'type': 'delivery',
+            'parent_id': self.partner_b.id
+        })
+        sale_orders = sale_order_1, sale_order_2 = self.env['sale.order'].create([
+            {
+                'partner_id': self.partner_b.id,
+                'order_line': [
+                    Command.create({
+                        'product_id': self.product_order_timesheet1.id,
+                        'product_uom_qty': 10,
+                    })
+                ]
+            },
+            {
+                'partner_id': self.partner.id,
+                'order_line': [
+                    Command.create({
+                        'product_id': self.product_order_timesheet2.id,
+                        'product_uom_qty': 5,
+                    })
+                ]
+            }
+        ])
+        sale_orders.action_confirm()
+
+        self.project_global.partner_id = self.partner_b.id
+        domain = self.project_global.sale_line_employee_ids._domain_sale_line_id()
+        evaluated_domain = expr_eval(re.sub(r'\bpartner_id\b', str(self.project_global.partner_id.id), repr(domain)))
+        sale_order_lines = self.env['sale.order.line'].search(evaluated_domain)
+        self.assertIn(sale_order_2.order_line, sale_order_lines, "Expected sale order lines of child partner")
+
+        self.project_global.partner_id = self.partner.id
+        domain = self.project_global.sale_line_employee_ids._domain_sale_line_id()
+        evaluated_domain = expr_eval(re.sub(r'\bpartner_id\b', str(self.project_global.partner_id.id), repr(domain)))
+        sale_order_lines = self.env['sale.order.line'].search(evaluated_domain)
+        self.assertIn(sale_order_1.order_line, sale_order_lines, "Expected sale order lines of parent partner")

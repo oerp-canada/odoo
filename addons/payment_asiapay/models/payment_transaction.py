@@ -1,26 +1,23 @@
 # Part of Odoo. See LICENSE file for full copyright and licensing details.
 
-import logging
-
-from werkzeug import urls
-
 from odoo import _, api, models
 from odoo.exceptions import ValidationError
+from odoo.tools import urls
 
 from odoo.addons.payment import utils as payment_utils
+from odoo.addons.payment.logging import get_payment_logger
 from odoo.addons.payment_asiapay import const
 from odoo.addons.payment_asiapay.controllers.main import AsiaPayController
 
-
-_logger = logging.getLogger(__name__)
+_logger = get_payment_logger(__name__)
 
 
 class PaymentTransaction(models.Model):
-    _inherit = 'payment.transaction'
+    _inherit = "payment.transaction"
 
     @api.model
-    def _compute_reference(self, provider_code, prefix=None, separator='-', **kwargs):
-        """ Override of `payment` to ensure that AsiaPay requirements for references are satisfied.
+    def _compute_reference(self, provider_code, prefix=None, separator="-", **kwargs):
+        """Override of `payment` to ensure that AsiaPay requirements for references are satisfied.
 
         AsiaPay requirements for references are as follows:
         - References must be unique at provider level for a given merchant account.
@@ -35,7 +32,7 @@ class PaymentTransaction(models.Model):
         :return: The unique reference for the transaction.
         :rtype: str
         """
-        if provider_code != 'asiapay':
+        if provider_code != "asiapay":
             return super()._compute_reference(provider_code, prefix=prefix, **kwargs)
 
         if not prefix:
@@ -44,12 +41,12 @@ class PaymentTransaction(models.Model):
             # We call it manually here because singularizing the prefix would generate a default
             # value if it was empty, hence preventing the method from ever being called and the
             # transaction from received a reference named after the related document.
-            prefix = self.sudo()._compute_reference_prefix(provider_code, separator, **kwargs) or None
+            prefix = self.sudo()._compute_reference_prefix(separator, **kwargs) or None
         prefix = payment_utils.singularize_reference_prefix(prefix=prefix, max_length=35)
         return super()._compute_reference(provider_code, prefix=prefix, **kwargs)
 
     def _get_specific_rendering_values(self, processing_values):
-        """ Override of `payment` to return AsiaPay-specific rendering values.
+        """Override of `payment` to return AsiaPay-specific rendering values.
 
         Note: self.ensure_one() from `_get_processing_values`.
 
@@ -58,8 +55,9 @@ class PaymentTransaction(models.Model):
         :return: The dict of provider-specific processing values.
         :rtype: dict
         """
+
         def get_language_code(lang_):
-            """ Return the language code corresponding to the provided lang.
+            """Return the language code corresponding to the provided lang.
 
             If the lang is not mapped to any language code, the country code is used instead. In
             case the country code has no match either, we fall back to English.
@@ -70,97 +68,93 @@ class PaymentTransaction(models.Model):
             """
             language_code_ = const.LANGUAGE_CODES_MAPPING.get(lang_)
             if not language_code_:
-                country_code_ = lang_.split('_')[0]
+                country_code_ = lang_.split("_")[0]
                 language_code_ = const.LANGUAGE_CODES_MAPPING.get(country_code_)
             if not language_code_:
-                language_code_ = const.LANGUAGE_CODES_MAPPING['en']
+                language_code_ = const.LANGUAGE_CODES_MAPPING["en"]
             return language_code_
 
-        res = super()._get_specific_rendering_values(processing_values)
-        if self.provider_code != 'asiapay':
-            return res
+        if self.provider_code != "asiapay":
+            return super()._get_specific_rendering_values(processing_values)
 
         base_url = self.provider_id.get_base_url()
         # The lang is taken from the context rather than from the partner because it is not required
         # to be logged in to make a payment, and because the lang is not always set on the partner.
-        lang = self._context.get('lang') or 'en_US'
-        rendering_values = {
-            'merchant_id': self.provider_id.asiapay_merchant_id,
-            'amount': self.amount,
-            'reference': self.reference,
-            'currency_code': const.CURRENCY_MAPPING[self.provider_id.available_currency_ids[0].name],
-            'mps_mode': 'SCP',
-            'return_url': urls.url_join(base_url, AsiaPayController._return_url),
-            'payment_type': 'N',
-            'language': get_language_code(lang),
-            'payment_method': 'ALL',
+        lang = self.env.context.get("lang") or "en_US"
+        return_url = urls.urljoin(base_url, AsiaPayController._return_url)
+        url_params = {
+            "merchantId": self.provider_id.asiapay_merchant_id,
+            "amount": self.amount,
+            "orderRef": self.reference,
+            "currCode": const.CURRENCY_MAPPING[self.provider_id.available_currency_ids[0].name],
+            "mpsMode": "SCP",
+            "successUrl": return_url,
+            "failUrl": return_url,
+            "cancelUrl": return_url,
+            "payType": "N",
+            "lang": get_language_code(lang),
+            "payMethod": const.PAYMENT_METHODS_MAPPING.get(self.payment_method_id.code, "ALL"),
         }
-        rendering_values.update({
-            'secure_hash': self.provider_id._asiapay_calculate_signature(
-                rendering_values, incoming=False
-            ),
-            'api_url': self.provider_id._asiapay_get_api_url()
-        })
-        return rendering_values
+        url_params["secureHash"] = self.provider_id._asiapay_calculate_signature(
+            url_params, incoming=False
+        )
+        return {"api_url": self.provider_id._asiapay_get_api_url(), "url_params": url_params}
 
-    def _get_tx_from_notification_data(self, provider_code, notification_data):
-        """ Override of `payment` to find the transaction based on AsiaPay data.
+    @api.model
+    def _extract_reference(self, provider_code, payment_data):
+        """Override of `payment` to extract the reference from the payment data."""
+        if provider_code != "asiapay":
+            return super()._extract_reference(provider_code, payment_data)
+        return payment_data.get("Ref")
 
-        :param str provider_code: The code of the provider that handled the transaction.
-        :param dict notification_data: The notification data sent by the provider.
-        :return: The transaction if found.
-        :rtype: recordset of `payment.transaction`
-        :raise ValidationError: If inconsistent data are received.
-        :raise ValidationError: If the data match no transaction.
-        """
-        tx = super()._get_tx_from_notification_data(provider_code, notification_data)
-        if provider_code != 'asiapay' or len(tx) == 1:
-            return tx
+    def _extract_amount_data(self, payment_data):
+        """Override of `payment` to extract the amount and currency from the payment data."""
+        if self.provider_code != "asiapay":
+            return super()._extract_amount_data(payment_data)
 
-        reference = notification_data.get('Ref')
-        if not reference:
-            raise ValidationError(
-                "AsiaPay: " + _("Received data with missing reference %(ref)s.", ref=reference)
-            )
+        amount = payment_data.get("Amt")
+        # AsiaPay supports only one currency per account.
+        currency = self.provider_id.available_currency_ids  # The currency is still linked.
+        return {"amount": float(amount), "currency_code": currency.name}
 
-        tx = self.search([('reference', '=', reference), ('provider_code', '=', 'asiapay')])
-        if not tx:
-            raise ValidationError(
-                "AsiaPay: " + _("No transaction found matching reference %s.", reference)
-            )
+    def _apply_updates(self, payment_data):
+        """Override of `payment' to update the transaction based on the payment data."""
+        if self.provider_code != "asiapay":
+            return super()._apply_updates(payment_data)
 
-        return tx
+        # Update the provider reference.
+        self.provider_reference = payment_data.get("PayRef")
 
-    def _process_notification_data(self, notification_data):
-        """ Override of `payment' to process the transaction based on AsiaPay data.
+        # Update the payment method.
+        payment_method_code = payment_data.get("payMethod")
+        payment_method = self.env["payment.method"]._get_from_code(
+            payment_method_code, mapping=const.PAYMENT_METHODS_MAPPING
+        )
+        self.payment_method_id = payment_method or self.payment_method_id
 
-        Note: self.ensure_one()
-
-        :param dict notification_data: The notification data sent by the provider.
-        :return: None
-        :raise ValidationError: If inconsistent data are received.
-        """
-        super()._process_notification_data(notification_data)
-        if self.provider_code != 'asiapay':
-            return
-
-        self.provider_reference = notification_data.get('PayRef')
-
-        success_code = notification_data.get('successcode')
-        primary_response_code = notification_data.get('prc')
+        # Update the payment state.
+        success_code = payment_data.get("successcode")
+        primary_response_code = payment_data.get("prc")
         if not success_code:
-            raise ValidationError("AsiaPay: " + _("Received data with missing success code."))
-
-        if success_code in const.SUCCESS_CODE_MAPPING['done']:
+            raise ValidationError(_("Received data with missing success code."))
+        if success_code in const.SUCCESS_CODE_MAPPING["done"]:
             self._set_done()
-        elif success_code in const.SUCCESS_CODE_MAPPING['error']:
-            self._set_error(_(
-                "An error occurred during the processing of your payment (success code %s; primary "
-                "response code %s). Please try again.", success_code, primary_response_code
-            ))
+        elif success_code in const.SUCCESS_CODE_MAPPING["error"]:
+            self._set_error(
+                _(
+                    "An error occurred during the processing of your payment (success code"
+                    " %(success_code)s; primary response code %(response_code)s). Please try"
+                    " again.",
+                    success_code=success_code,
+                    response_code=primary_response_code,
+                )
+            )
         else:
             _logger.warning(
-                "Received data with invalid success code (%s) for transaction with primary response "
-                "code %s and reference %s.", success_code, primary_response_code, self.reference
+                "Received data with invalid success code (%s) for transaction with primary response"
+                " code %s and reference %s.",
+                success_code,
+                primary_response_code,
+                self.reference,
             )
-            self._set_error("AsiaPay: " + _("Unknown success code: %s", success_code))
+            self._set_error(_("Unknown success code: %s", success_code))

@@ -1,12 +1,15 @@
-/** @odoo-module **/
-
 import { registry } from "@web/core/registry";
-import { _lt } from "@web/core/l10n/translation";
+import { _t } from "@web/core/l10n/translation";
 import { standardFieldProps } from "@web/views/fields/standard_field_props";
-
-const { Component } = owl;
+import { Component } from "@odoo/owl";
 
 export class IconSelectionField extends Component {
+    static template = "event.IconSelectionField";
+    static props = {
+        ...standardFieldProps,
+        icons: Object,
+    };
+
     get icon() {
         return this.props.icons[this.props.record.data[this.props.name]];
     }
@@ -17,16 +20,12 @@ export class IconSelectionField extends Component {
         );
     }
 }
-IconSelectionField.template = "event.IconSelectionField";
-IconSelectionField.props = {
-    ...standardFieldProps,
-    icons: Object,
-};
 
 export const iconSelectionField = {
     component: IconSelectionField,
-    displayName: _lt("Icon Selection"),
+    displayName: _t("Icon Selection"),
     supportedTypes: ["char", "text", "selection"],
+    listViewWidth: ({ hasLabel }) => (!hasLabel ? 20 : false),
     extractProps: ({ options }) => ({
         icons: options,
     }),

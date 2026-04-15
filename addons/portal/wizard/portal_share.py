@@ -10,8 +10,8 @@ class PortalShare(models.TransientModel):
     @api.model
     def default_get(self, fields):
         result = super(PortalShare, self).default_get(fields)
-        result['res_model'] = self._context.get('active_model', False)
-        result['res_id'] = self._context.get('active_id', False)
+        result['res_model'] = self.env.context.get('active_model', False)
+        result['res_id'] = self.env.context.get('active_id', False)
         if result['res_model'] and result['res_id']:
             record = self.env[result['res_model']].browse(result['res_id'])
             result['share_link'] = record.get_base_url() + record._get_share_url(redirect=True)
@@ -67,8 +67,9 @@ class PortalShare(models.TransientModel):
             self.resource_ref.message_post_with_source(
                 'portal.portal_share_template',
                 render_values={'partner': partner, 'note': self.note, 'record': self.resource_ref,
-                        'share_link': share_link},
-                subject=_("You are invited to access %s", self.resource_ref.display_name),
+                        'share_link': share_link,
+                        'model_description': self.env['ir.model']._get(self.resource_ref._name).display_name.lower()},
+                subject=_("Invitation to access %s", self.resource_ref.display_name),
                 subtype_xmlid='mail.mt_note',
                 email_layout_xmlid='mail.mail_notification_light',
                 partner_ids=partner.ids)
@@ -86,15 +87,16 @@ class PortalShare(models.TransientModel):
             self.resource_ref.message_post_with_source(
                 'portal.portal_share_template',
                 render_values={'partner': partner, 'note': self.note, 'record': self.resource_ref,
-                        'share_link': share_link},
-                subject=_("You are invited to access %s", self.resource_ref.display_name),
+                        'share_link': share_link,
+                        'model_description': self.env['ir.model']._get(self.resource_ref._name).display_name.lower()},
+                subject=_("Invitation to access %s", self.resource_ref.display_name),
                 subtype_xmlid='mail.mt_note',
                 email_layout_xmlid='mail.mail_notification_light',
                 partner_ids=partner.ids)
             self = self.with_context(lang=saved_lang)
 
     def action_send_mail(self):
-        signup_enabled = self.env['ir.config_parameter'].sudo().get_param('auth_signup.invitation_scope') == 'b2c'
+        signup_enabled = self.env['ir.config_parameter'].sudo().get_str('auth_signup.invitation_scope') or 'b2c' == 'b2c'
 
         if getattr(self.resource_ref, 'access_token', False) or not signup_enabled:
             partner_ids = self.partner_ids
@@ -104,9 +106,5 @@ class PortalShare(models.TransientModel):
         self._send_public_link(partner_ids)
         # when partner not user send individual mail with signup token
         self._send_signup_link(self.partner_ids - partner_ids)
-
-        # subscribe all recipients so that they receive future communication (better than
-        # using autofollow as more precise)
-        self.resource_ref.message_subscribe(partner_ids=self.partner_ids.ids)
 
         return {'type': 'ir.actions.act_window_close'}

@@ -1,19 +1,38 @@
-# -*- coding: utf-8 -*-
 # Part of Odoo. See LICENSE file for full copyright and licensing details.
 # pylint: disable=sql-injection
+from __future__ import annotations
 
 import enum
 import json
 import logging
 import re
+import typing
 from binascii import crc32
 from collections import defaultdict
-from typing import Union
+
+if typing.TYPE_CHECKING:
+    from odoo.fields import Field
+    from collections.abc import Iterable
 
 import psycopg2
-from psycopg2.sql import SQL, Identifier
+from psycopg2.extensions import quote_ident
+
+from .misc import named_to_positional_printf
+
+__all__ = [
+    "SQL",
+    "create_index",
+    "drop_view_if_exists",
+    "escape_psql",
+    "index_exists",
+    "make_identifier",
+    "make_index_name",
+    "reverse_order",
+]
 
 _schema = logging.getLogger('odoo.schema')
+
+IDENT_RE = re.compile(r'^[a-z0-9_][a-z0-9_$\-]*$', re.IGNORECASE)
 
 _CONFDELTYPES = {
     'RESTRICT': 'r',
@@ -23,22 +42,175 @@ _CONFDELTYPES = {
     'SET DEFAULT': 'd',
 }
 
+
+class _SQLMeta(type):
+    @staticmethod
+    def identifier(name: str, subname: str | None = None, to_flush: Field | None = None) -> SQL:
+        """ Return an SQL object that represents an identifier. """
+        assert name.isidentifier() or IDENT_RE.match(name), f"{name!r} invalid for SQL.identifier()"
+        if subname is None:
+            return SQL(f'"{name}"', to_flush=to_flush)
+        assert subname.isidentifier() or IDENT_RE.match(subname), f"{subname!r} invalid for SQL.identifier()"
+        return SQL(f'"{name}"."{subname}"', to_flush=to_flush)
+
+
+class SQL(metaclass=_SQLMeta):
+    """ An object that wraps SQL code with its parameters, like::
+
+        sql = SQL("UPDATE TABLE foo SET a = %s, b = %s", 'hello', 42)
+        cr.execute(sql)
+
+    The code is given as a ``%``-format string, and supports either positional
+    arguments (with `%s`) or named arguments (with `%(name)s`). The arguments
+    are meant to be merged into the code using the `%` formatting operator.
+    Note that the character ``%`` must always be escaped (as ``%%``), even if
+    the code does not have parameters, like in ``SQL("foo LIKE 'a%%'")``.
+
+    The SQL wrapper is designed to be composable: the arguments can be either
+    actual parameters, or SQL objects themselves::
+
+        sql = SQL(
+            "UPDATE TABLE %s SET %s",
+            SQL.identifier(tablename),
+            SQL("%s = %s", SQL.identifier(columnname), value),
+        )
+
+    The combined result is available in ``_sql_tuple`` which contains ``code``,
+    ``params``, ``to_flush``. This allows to combine any number of SQL terms
+    without having to separately combine their parameters, which can be tedious,
+    bug-prone, and is the main downside of `psycopg2.sql
+    <https://www.psycopg.org/docs/sql.html>`.
+    The metadata ``to_flush`` contains fields on which the SQL code depends on.
+
+    The second purpose of the wrapper is to discourage SQL injections. Indeed,
+    if ``code`` is a string literal (not a dynamic string), then the SQL object
+    made with ``code`` is guaranteed to be safe, provided the SQL objects
+    within its parameters are themselves safe.
+    """
+    __slots__ = ()
+
+    @typing.overload
+    def __new__[T: SQL](cls: type[T], *a, **kw) -> T:
+        ...
+
+    @typing.overload
+    def __new__(cls: type[SQL], code: typing.LiteralString | SQL, /, *args, to_flush: Field | Iterable[Field] | None = None, **kw) -> LiteralSQL:
+        ...
+
+    def __new__(cls, *a, **kw):
+        if cls is SQL:
+            cls = LiteralSQL  # noqa: PLW0642
+        return object.__new__(cls)
+
+    _sql_tuple: tuple[str, tuple, tuple[Field, ...]]
+    """ The tuple used to execute the query: (code, params, to_flush) """
+
+    def __eq__(self, other):
+        if not isinstance(other, SQL):
+            return False
+        return self._sql_tuple[:2] == other._sql_tuple[:2]
+
+    def __hash__(self):
+        return hash(self._sql_tuple[:2])
+
+    def __bool__(self):
+        return bool(self._sql_tuple[0])
+
+
+class LiteralSQL(SQL):
+    __slots__ = ('__sql_tuple',)
+    __sql_tuple: tuple[str, tuple, tuple[Field, ...]]
+
+    def __init__(self, code: typing.LiteralString | SQL = "", /, *args, to_flush: Field | Iterable[Field] | None = None, **kwargs):
+        if isinstance(code, SQL):
+            if args or kwargs or to_flush:
+                raise TypeError("SQL() unexpected arguments when code has type SQL")
+            self.__sql_tuple = code._sql_tuple
+            return
+
+        # validate the format of code and parameters
+        if args and kwargs:
+            raise TypeError("SQL() takes either positional arguments, or named arguments")
+
+        if kwargs:
+            code, args = named_to_positional_printf(code, kwargs)
+        elif not args:
+            code % ()  # check that code does not contain %s
+            if to_flush is None:
+                to_flush = ()
+            elif hasattr(to_flush, '__iter__'):
+                to_flush = tuple(to_flush)
+            else:
+                to_flush = (to_flush,)
+            self.__sql_tuple = (code, (), to_flush)
+            return
+
+        code_list = []
+        params_list = []
+        to_flush_list = []
+        for arg in args:
+            if isinstance(arg, SQL):
+                arg_code, arg_params, arg_to_flush = arg._sql_tuple
+                code_list.append(arg_code)
+                params_list.extend(arg_params)
+                to_flush_list.extend(arg_to_flush)
+            else:
+                code_list.append("%s")
+                params_list.append(arg)
+        if to_flush is not None:
+            if hasattr(to_flush, '__iter__'):
+                to_flush_list.extend(to_flush)
+            else:
+                to_flush_list.append(to_flush)
+
+        code = code.replace('%%', '%%%%') % tuple(code_list)
+        params = tuple(params_list)
+        to_flush = tuple(to_flush_list)
+        self.__sql_tuple = (code, params, to_flush)
+
+    @property
+    def _sql_tuple(self):
+        # property makes the attribute read-only
+        return self.__sql_tuple
+
+    def __repr__(self):
+        code, params, _ = self.__sql_tuple
+        return f"SQL({', '.join(map(repr, [code, *params]))})"
+
+    def join(self, args: Iterable) -> SQL:
+        """ Join SQL objects or parameters with ``self`` as a separator. """
+        args = list(args)
+        # optimizations for special cases
+        if len(args) == 0:
+            return SQL()
+        if len(args) == 1 and isinstance(args[0], SQL):
+            return args[0]
+        code, params, to_flush = self.__sql_tuple
+        if not params:
+            return SQL(code.join(("%s",) * len(args)), *args, to_flush=to_flush)
+        # general case: alternate args with self
+        items = [self] * (len(args) * 2 - 1)
+        for index, arg in enumerate(args):
+            items[index * 2] = arg
+        return SQL("%s" * len(items), *items)
+
+
 def existing_tables(cr, tablenames):
     """ Return the names of existing tables among ``tablenames``. """
-    query = """
+    cr.execute(SQL("""
         SELECT c.relname
           FROM pg_class c
-          JOIN pg_namespace n ON (n.oid = c.relnamespace)
          WHERE c.relname IN %s
            AND c.relkind IN ('r', 'v', 'm')
-           AND n.nspname = current_schema
-    """
-    cr.execute(query, [tuple(tablenames)])
+           AND c.relnamespace = current_schema::regnamespace
+    """, tuple(tablenames)))
     return [row[0] for row in cr.fetchall()]
+
 
 def table_exists(cr, tablename):
     """ Return whether the given table exists. """
     return len(existing_tables(cr, {tablename})) == 1
+
 
 class TableKind(enum.Enum):
     Regular = 'r'
@@ -48,19 +220,18 @@ class TableKind(enum.Enum):
     Foreign = 'f'
     Other = None
 
-def table_kind(cr, tablename: str) -> Union[TableKind, None]:
+
+def table_kind(cr, tablename: str) -> TableKind | None:
     """ Return the kind of a table, if ``tablename`` is a regular or foreign
     table, or a view (ignores indexes, sequences, toast tables, and partitioned
     tables; unlogged tables are considered regular)
     """
-    query = """
+    cr.execute(SQL("""
         SELECT c.relkind, c.relpersistence
           FROM pg_class c
-          JOIN pg_namespace n ON (n.oid = c.relnamespace)
          WHERE c.relname = %s
-           AND n.nspname = current_schema
-    """
-    cr.execute(query, (tablename,))
+           AND c.relnamespace = current_schema::regnamespace
+    """, tablename))
     if not cr.rowcount:
         return None
 
@@ -77,6 +248,7 @@ def table_kind(cr, tablename: str) -> Union[TableKind, None]:
         #     "work" with something like an index or sequence
         return TableKind.Other
 
+
 # prescribed column order by type: columns aligned on 4 bytes, columns aligned
 # on 1 byte, columns aligned on 8 bytes(values have been chosen to minimize
 # padding in rows; unknown column types are put last)
@@ -92,25 +264,31 @@ SQL_ORDER_BY_TYPE = defaultdict(lambda: 16, {
     'float8': 9,        # 8 bytes aligned on 8 bytes
 })
 
+
 def create_model_table(cr, tablename, comment=None, columns=()):
     """ Create the table for a model. """
-    colspecs = ['id SERIAL NOT NULL'] + [
-        '"{}" {}'.format(columnname, columntype)
-        for columnname, columntype, columncomment in columns
+    colspecs = [
+        SQL('id SERIAL NOT NULL'),
+        *(SQL("%s %s", SQL.identifier(colname), SQL(coltype)) for colname, coltype, _ in columns),
+        SQL('PRIMARY KEY(id)'),
     ]
-    cr.execute('CREATE TABLE "{}" ({}, PRIMARY KEY(id))'.format(tablename, ", ".join(colspecs)))
-
-    queries, params = [], []
+    queries = [
+        SQL("CREATE TABLE %s (%s)", SQL.identifier(tablename), SQL(", ").join(colspecs)),
+    ]
     if comment:
-        queries.append('COMMENT ON TABLE "{}" IS %s'.format(tablename))
-        params.append(comment)
-    for columnname, columntype, columncomment in columns:
-        queries.append('COMMENT ON COLUMN "{}"."{}" IS %s'.format(tablename, columnname))
-        params.append(columncomment)
-    if queries:
-        cr.execute("; ".join(queries), params)
+        queries.append(SQL(
+            "COMMENT ON TABLE %s IS %s",
+            SQL.identifier(tablename), comment,
+        ))
+    for colname, _, colcomment in columns:
+        queries.append(SQL(
+            "COMMENT ON COLUMN %s IS %s",
+            SQL.identifier(tablename, colname), colcomment,
+        ))
+    cr.execute(SQL("; ").join(queries))
 
     _schema.debug("Table %r: created", tablename)
+
 
 def table_columns(cr, tablename):
     """ Return a dict mapping column names to their configuration. The latter is
@@ -119,51 +297,80 @@ def table_columns(cr, tablename):
     # Do not select the field `character_octet_length` from `information_schema.columns`
     # because specific access right restriction in the context of shared hosting (Heroku, OVH, ...)
     # might prevent a postgres user to read this field.
-    query = '''SELECT column_name, udt_name, character_maximum_length, is_nullable
-               FROM information_schema.columns WHERE table_name=%s'''
-    cr.execute(query, (tablename,))
+    cr.execute(SQL(
+        ''' SELECT column_name, udt_name, character_maximum_length, is_nullable
+            FROM information_schema.columns WHERE table_name=%s
+            AND table_schema = current_schema ''',
+        tablename,
+    ))
     return {row['column_name']: row for row in cr.dictfetchall()}
+
 
 def column_exists(cr, tablename, columnname):
     """ Return whether the given column exists. """
-    query = """ SELECT 1 FROM information_schema.columns
-                WHERE table_name=%s AND column_name=%s """
-    cr.execute(query, (tablename, columnname))
+    cr.execute(SQL(
+        """ SELECT 1 FROM information_schema.columns
+            WHERE table_name=%s AND column_name=%s
+            AND table_schema = current_schema """,
+        tablename, columnname,
+    ))
     return cr.rowcount
+
 
 def create_column(cr, tablename, columnname, columntype, comment=None):
     """ Create a column with the given type. """
-    coldefault = (columntype.upper()=='BOOLEAN') and 'DEFAULT false' or ''
-    cr.execute('ALTER TABLE "{}" ADD COLUMN "{}" {} {}'.format(tablename, columnname, columntype, coldefault))
+    sql = SQL(
+        "ALTER TABLE %s ADD COLUMN %s %s %s",
+        SQL.identifier(tablename),
+        SQL.identifier(columnname),
+        SQL(columntype),
+        SQL("DEFAULT false" if columntype.upper() == 'BOOLEAN' else ""),
+    )
     if comment:
-        cr.execute('COMMENT ON COLUMN "{}"."{}" IS %s'.format(tablename, columnname), (comment,))
+        sql = SQL("%s; %s", sql, SQL(
+            "COMMENT ON COLUMN %s IS %s",
+            SQL.identifier(tablename, columnname), comment,
+        ))
+    cr.execute(sql)
     _schema.debug("Table %r: added column %r of type %s", tablename, columnname, columntype)
+
 
 def rename_column(cr, tablename, columnname1, columnname2):
     """ Rename the given column. """
-    cr.execute('ALTER TABLE "{}" RENAME COLUMN "{}" TO "{}"'.format(tablename, columnname1, columnname2))
+    cr.execute(SQL(
+        "ALTER TABLE %s RENAME COLUMN %s TO %s",
+        SQL.identifier(tablename),
+        SQL.identifier(columnname1),
+        SQL.identifier(columnname2),
+    ))
     _schema.debug("Table %r: renamed column %r to %r", tablename, columnname1, columnname2)
+
 
 def convert_column(cr, tablename, columnname, columntype):
     """ Convert the column to the given type. """
-    using = f'"{columnname}"::{columntype}'
+    using = SQL("%s::%s", SQL.identifier(columnname), SQL(columntype))
     _convert_column(cr, tablename, columnname, columntype, using)
+
 
 def convert_column_translatable(cr, tablename, columnname, columntype):
     """ Convert the column from/to a 'jsonb' translated field column. """
     drop_index(cr, make_index_name(tablename, columnname), tablename)
     if columntype == "jsonb":
-        using = f"""CASE WHEN "{columnname}" IS NOT NULL THEN jsonb_build_object('en_US', "{columnname}"::varchar) END"""
+        using = SQL(
+            "CASE WHEN %s IS NOT NULL THEN jsonb_build_object('en_US', %s::varchar) END",
+            SQL.identifier(columnname), SQL.identifier(columnname),
+        )
     else:
-        using = f""""{columnname}"->>'en_US'"""
+        using = SQL("%s->>'en_US'", SQL.identifier(columnname))
     _convert_column(cr, tablename, columnname, columntype, using)
 
-def _convert_column(cr, tablename, columnname, columntype, using):
-    query = f'''
-        ALTER TABLE "{tablename}"
-        ALTER COLUMN "{columnname}" DROP DEFAULT,
-        ALTER COLUMN "{columnname}" TYPE {columntype} USING {using}
-    '''
+
+def _convert_column(cr, tablename, columnname, columntype, using: SQL):
+    query = SQL(
+        "ALTER TABLE %s ALTER COLUMN %s DROP DEFAULT, ALTER COLUMN %s TYPE %s USING %s",
+        SQL.identifier(tablename), SQL.identifier(columnname),
+        SQL.identifier(columnname), SQL(columntype), using,
+    )
     try:
         with cr.savepoint(flush=False):
             cr.execute(query, log_exceptions=False)
@@ -172,15 +379,21 @@ def _convert_column(cr, tablename, columnname, columntype, using):
         cr.execute(query)
     _schema.debug("Table %r: column %r changed to type %s", tablename, columnname, columntype)
 
+
 def drop_depending_views(cr, table, column):
     """drop views depending on a field to allow the ORM to resize it in-place"""
     for v, k in get_depending_views(cr, table, column):
-        cr.execute("DROP {0} VIEW IF EXISTS {1} CASCADE".format("MATERIALIZED" if k == "m" else "", v))
+        cr.execute(SQL(
+            "DROP %s IF EXISTS %s CASCADE",
+            SQL("MATERIALIZED VIEW" if k == "m" else "VIEW"),
+            SQL.identifier(v),
+        ))
         _schema.debug("Drop view %r", v)
+
 
 def get_depending_views(cr, table, column):
     # http://stackoverflow.com/a/11773226/75349
-    q = """
+    cr.execute(SQL("""
         SELECT distinct quote_ident(dependee.relname), dependee.relkind
         FROM pg_depend
         JOIN pg_rewrite ON pg_depend.objid = pg_rewrite.oid
@@ -189,70 +402,85 @@ def get_depending_views(cr, table, column):
         JOIN pg_attribute ON pg_depend.refobjid = pg_attribute.attrelid
             AND pg_depend.refobjsubid = pg_attribute.attnum
         WHERE dependent.relname = %s
+        AND dependent.relnamespace = current_schema::regnamespace
         AND pg_attribute.attnum > 0
         AND pg_attribute.attname = %s
         AND dependee.relkind in ('v', 'm')
-    """
-    cr.execute(q, [table, column])
+    """, table, column))
     return cr.fetchall()
+
 
 def set_not_null(cr, tablename, columnname):
     """ Add a NOT NULL constraint on the given column. """
-    query = 'ALTER TABLE "{}" ALTER COLUMN "{}" SET NOT NULL'.format(tablename, columnname)
-    try:
-        with cr.savepoint(flush=False):
-            cr.execute(query, log_exceptions=False)
-            _schema.debug("Table %r: column %r: added constraint NOT NULL", tablename, columnname)
-    except Exception:
-        raise Exception("Table %r: unable to set NOT NULL on column %r", tablename, columnname)
+    query = SQL(
+        "ALTER TABLE %s ALTER COLUMN %s SET NOT NULL",
+        SQL.identifier(tablename), SQL.identifier(columnname),
+    )
+    cr.execute(query, log_exceptions=False)
+    _schema.debug("Table %r: column %r: added constraint NOT NULL", tablename, columnname)
+
 
 def drop_not_null(cr, tablename, columnname):
     """ Drop the NOT NULL constraint on the given column. """
-    cr.execute('ALTER TABLE "{}" ALTER COLUMN "{}" DROP NOT NULL'.format(tablename, columnname))
+    cr.execute(SQL(
+        "ALTER TABLE %s ALTER COLUMN %s DROP NOT NULL",
+        SQL.identifier(tablename), SQL.identifier(columnname),
+    ))
     _schema.debug("Table %r: column %r: dropped constraint NOT NULL", tablename, columnname)
+
 
 def constraint_definition(cr, tablename, constraintname):
     """ Return the given constraint's definition. """
-    query = """
+    cr.execute(SQL("""
         SELECT COALESCE(d.description, pg_get_constraintdef(c.oid))
         FROM pg_constraint c
         JOIN pg_class t ON t.oid = c.conrelid
         LEFT JOIN pg_description d ON c.oid = d.objoid
-        WHERE t.relname = %s AND conname = %s;"""
-    cr.execute(query, (tablename, constraintname))
+        WHERE t.relname = %s AND conname = %s
+        AND t.relnamespace = current_schema::regnamespace
+    """, tablename, constraintname))
     return cr.fetchone()[0] if cr.rowcount else None
+
 
 def add_constraint(cr, tablename, constraintname, definition):
     """ Add a constraint on the given table. """
-    query1 = 'ALTER TABLE "{}" ADD CONSTRAINT "{}" {}'.format(tablename, constraintname, definition)
-    query2 = 'COMMENT ON CONSTRAINT "{}" ON "{}" IS %s'.format(constraintname, tablename)
-    try:
-        with cr.savepoint(flush=False):
-            cr.execute(query1, log_exceptions=False)
-            cr.execute(query2, (definition,), log_exceptions=False)
-            _schema.debug("Table %r: added constraint %r as %s", tablename, constraintname, definition)
-    except Exception:
-        raise Exception("Table %r: unable to add constraint %r as %s", tablename, constraintname, definition)
+    query1 = SQL(
+        "ALTER TABLE %s ADD CONSTRAINT %s %s",
+        SQL.identifier(tablename), SQL.identifier(constraintname), SQL(definition.replace('%', '%%')),
+    )
+    query2 = SQL(
+        "COMMENT ON CONSTRAINT %s ON %s IS %s",
+        SQL.identifier(constraintname), SQL.identifier(tablename), definition,
+    )
+    cr.execute(query1, log_exceptions=False)
+    cr.execute(query2, log_exceptions=False)
+    _schema.debug("Table %r: added constraint %r as %s", tablename, constraintname, definition)
+
 
 def drop_constraint(cr, tablename, constraintname):
-    """ drop the given constraint. """
-    try:
-        with cr.savepoint(flush=False):
-            cr.execute('ALTER TABLE "{}" DROP CONSTRAINT "{}"'.format(tablename, constraintname))
-            _schema.debug("Table %r: dropped constraint %r", tablename, constraintname)
-    except Exception:
-        _schema.warning("Table %r: unable to drop constraint %r!", tablename, constraintname)
+    """ Drop the given constraint. """
+    cr.execute(SQL(
+        "ALTER TABLE %s DROP CONSTRAINT %s",
+        SQL.identifier(tablename), SQL.identifier(constraintname),
+    ))
+    _schema.debug("Table %r: dropped constraint %r", tablename, constraintname)
+
 
 def add_foreign_key(cr, tablename1, columnname1, tablename2, columnname2, ondelete):
     """ Create the given foreign key, and return ``True``. """
-    query = 'ALTER TABLE "{}" ADD FOREIGN KEY ("{}") REFERENCES "{}"("{}") ON DELETE {}'
-    cr.execute(query.format(tablename1, columnname1, tablename2, columnname2, ondelete))
+    cr.execute(SQL(
+        "ALTER TABLE %s ADD FOREIGN KEY (%s) REFERENCES %s(%s) ON DELETE %s",
+        SQL.identifier(tablename1), SQL.identifier(columnname1),
+        SQL.identifier(tablename2), SQL.identifier(columnname2),
+        SQL(ondelete),
+    ))
     _schema.debug("Table %r: added foreign key %r references %r(%r) ON DELETE %s",
                   tablename1, columnname1, tablename2, columnname2, ondelete)
-    return True
+
 
 def get_foreign_keys(cr, tablename1, columnname1, tablename2, columnname2, ondelete):
-    cr.execute(
+    deltype = _CONFDELTYPES[ondelete.upper()]
+    cr.execute(SQL(
         """
             SELECT fk.conname as name
             FROM pg_constraint AS fk
@@ -265,10 +493,13 @@ def get_foreign_keys(cr, tablename1, columnname1, tablename2, columnname2, ondel
             AND a1.attname = %s
             AND c2.relname = %s
             AND a2.attname = %s
+            AND c1.relnamespace = current_schema::regnamespace
             AND fk.confdeltype = %s
-        """, [tablename1, columnname1, tablename2, columnname2, _CONFDELTYPES[ondelete.upper()]]
-    )
+        """,
+        tablename1, columnname1, tablename2, columnname2, deltype,
+    ))
     return [r[0] for r in cr.fetchall()]
+
 
 def fix_foreign_key(cr, tablename1, columnname1, tablename2, columnname2, ondelete):
     """ Update the foreign keys between tables to match the given one, and
@@ -276,64 +507,127 @@ def fix_foreign_key(cr, tablename1, columnname1, tablename2, columnname2, ondele
     """
     # Do not use 'information_schema' here, as those views are awfully slow!
     deltype = _CONFDELTYPES.get(ondelete.upper(), 'a')
-    query = """ SELECT con.conname, c2.relname, a2.attname, con.confdeltype as deltype
-                  FROM pg_constraint as con, pg_class as c1, pg_class as c2,
-                       pg_attribute as a1, pg_attribute as a2
-                 WHERE con.contype='f' AND con.conrelid=c1.oid AND con.confrelid=c2.oid
-                   AND array_lower(con.conkey, 1)=1 AND con.conkey[1]=a1.attnum
-                   AND array_lower(con.confkey, 1)=1 AND con.confkey[1]=a2.attnum
-                   AND a1.attrelid=c1.oid AND a2.attrelid=c2.oid
-                   AND c1.relname=%s AND a1.attname=%s """
-    cr.execute(query, (tablename1, columnname1))
+    cr.execute(SQL(
+        """ SELECT con.conname, c2.relname, a2.attname, con.confdeltype as deltype
+              FROM pg_constraint as con, pg_class as c1, pg_class as c2,
+                   pg_attribute as a1, pg_attribute as a2
+             WHERE con.contype='f' AND con.conrelid=c1.oid AND con.confrelid=c2.oid
+               AND array_lower(con.conkey, 1)=1 AND con.conkey[1]=a1.attnum
+               AND array_lower(con.confkey, 1)=1 AND con.confkey[1]=a2.attnum
+               AND a1.attrelid=c1.oid AND a2.attrelid=c2.oid
+               AND c1.relname=%s AND a1.attname=%s
+               AND c1.relnamespace = current_schema::regnamespace """,
+        tablename1, columnname1,
+    ))
     found = False
     for fk in cr.fetchall():
         if not found and fk[1:] == (tablename2, columnname2, deltype):
             found = True
         else:
             drop_constraint(cr, tablename1, fk[0])
-    if not found:
-        return add_foreign_key(cr, tablename1, columnname1, tablename2, columnname2, ondelete)
+    if found:
+        return False
+    add_foreign_key(cr, tablename1, columnname1, tablename2, columnname2, ondelete)
+    return True
+
 
 def index_exists(cr, indexname):
     """ Return whether the given index exists. """
-    cr.execute("SELECT 1 FROM pg_indexes WHERE indexname=%s", (indexname,))
+    cr.execute(SQL("SELECT 1 FROM pg_indexes WHERE indexname=%s"
+                   " AND schemaname = current_schema", indexname))
     return cr.rowcount
+
 
 def check_index_exist(cr, indexname):
     assert index_exists(cr, indexname), f"{indexname} does not exist"
 
-def create_index(cr, indexname, tablename, expressions, method='btree', where=''):
-    """ Create the given index unless it exists. """
-    if index_exists(cr, indexname):
-        return
-    args = ', '.join(expressions)
-    if where:
-        where = f' WHERE {where}'
-    cr.execute(f'CREATE INDEX "{indexname}" ON "{tablename}" USING {method} ({args}){where}')
-    _schema.debug("Table %r: created index %r (%s)", tablename, indexname, args)
 
-def create_unique_index(cr, indexname, tablename, expressions):
-    """ Create the given index unless it exists. """
+def index_definition(cr, indexname):
+    """ Read the index definition from the database """
+    cr.execute(SQL("""
+        SELECT idx.indexdef, d.description
+        FROM pg_class c
+        JOIN pg_indexes idx ON c.relname = idx.indexname
+        LEFT JOIN pg_description d ON c.oid = d.objoid
+        WHERE c.relname = %s AND c.relkind = 'i'
+          AND c.relnamespace = current_schema::regnamespace
+    """, indexname))
+    return cr.fetchone() if cr.rowcount else (None, None)
+
+
+def create_index(
+    cr,
+    indexname,
+    tablename,
+    expressions,
+    method='btree',
+    where='',
+    *,
+    comment=None,
+    unique=False
+):
+    """ Create the given index unless it exists.
+
+    :param cr: The cursor
+    :param indexname: The name of the index
+    :param tablename: The name of the table
+    :param method: The type of the index (default: btree)
+    :param where: WHERE clause for the index (default: '')
+    :param comment: The comment to set on the index
+    :param unique: Whether the index is unique or not (default: False)
+    """
+    assert expressions, "Missing expressions"
     if index_exists(cr, indexname):
         return
-    args = ', '.join(expressions)
-    cr.execute('CREATE UNIQUE INDEX "{}" ON "{}" ({})'.format(indexname, tablename, args))
-    _schema.debug("Table %r: created index %r (%s)", tablename, indexname, args)
+    definition = SQL(
+        "USING %s (%s)%s",
+        SQL(method),
+        SQL(", ").join(SQL(expression) for expression in expressions),
+        SQL(" WHERE %s", SQL(where)) if where else SQL(),
+    )
+    add_index(cr, indexname, tablename, definition, unique=unique, comment=comment)
+
+
+def add_index(cr, indexname, tablename, definition, *, unique: bool, comment=''):
+    """ Create an index. """
+    if isinstance(definition, str):
+        definition = SQL(definition.replace('%', '%%'))
+    else:
+        definition = SQL(definition)
+    query = SQL(
+        "CREATE %sINDEX %s ON %s %s",
+        SQL("UNIQUE ") if unique else SQL(),
+        SQL.identifier(indexname),
+        SQL.identifier(tablename),
+        definition,
+    )
+    query_comment = SQL(
+        "COMMENT ON INDEX %s IS %s",
+        SQL.identifier(indexname), comment,
+    ) if comment else None
+    cr.execute(query, log_exceptions=False)
+    if query_comment:
+        cr.execute(query_comment, log_exceptions=False)
+    _schema.debug("Table %r: created index %r (%s)", tablename, indexname, definition)
+
 
 def drop_index(cr, indexname, tablename):
     """ Drop the given index if it exists. """
-    cr.execute('DROP INDEX IF EXISTS "{}"'.format(indexname))
+    cr.execute(SQL("DROP INDEX IF EXISTS %s", SQL.identifier(indexname)))
     _schema.debug("Table %r: dropped index %r", tablename, indexname)
+
 
 def drop_view_if_exists(cr, viewname):
     kind = table_kind(cr, viewname)
     if kind == TableKind.View:
-        cr.execute("DROP VIEW {} CASCADE".format(viewname))
+        cr.execute(SQL("DROP VIEW %s CASCADE", SQL.identifier(viewname)))
     elif kind == TableKind.Materialized:
-        cr.execute("DROP MATERIALIZED VIEW {} CASCADE".format(viewname))
+        cr.execute(SQL("DROP MATERIALIZED VIEW %s CASCADE", SQL.identifier(viewname)))
+
 
 def escape_psql(to_escape):
-    return to_escape.replace('\\', r'\\').replace('%', '\%').replace('_', '\_')
+    return to_escape.replace('\\', r'\\').replace('%', r'\%').replace('_', r'\_')
+
 
 def pg_varchar(size=0):
     """ Returns the VARCHAR declaration for the provided size:
@@ -351,6 +645,7 @@ def pg_varchar(size=0):
         if size > 0:
             return 'VARCHAR(%d)' % size
     return 'VARCHAR'
+
 
 def reverse_order(order):
     """ Reverse an ORDER BY clause """
@@ -379,20 +674,22 @@ def increment_fields_skiplock(records, *fields):
     for field in fields:
         assert records._fields[field].type == 'integer'
 
-    query = SQL("""
-        UPDATE {table}
-           SET {sets}
-         WHERE id IN (SELECT id FROM {table} WHERE id = ANY(%(ids)s) FOR UPDATE SKIP LOCKED)
-    """).format(
-        table=Identifier(records._table),
-        sets=SQL(', ').join(map(
-            SQL('{0} = COALESCE({0}, 0) + 1').format,
-            map(Identifier, fields)
-        ))
-    )
-
-    cr = records._cr
-    cr.execute(query, {'ids': records.ids})
+    cr = records.env.cr
+    tablename = records._table
+    cr.execute(SQL(
+        """
+        UPDATE %s
+           SET %s
+         WHERE id IN (SELECT id FROM %s WHERE id = ANY(%s) FOR UPDATE SKIP LOCKED)
+        """,
+        SQL.identifier(tablename),
+        SQL(', ').join(
+            SQL("%s = COALESCE(%s, 0) + 1", SQL.identifier(field), SQL.identifier(field))
+            for field in fields
+        ),
+        SQL.identifier(tablename),
+        records.ids,
+    ))
     return bool(cr.rowcount)
 
 
@@ -470,3 +767,12 @@ def make_identifier(identifier: str) -> str:
 def make_index_name(table_name: str, column_name: str) -> str:
     """ Return an index name according to conventions for the given table and column. """
     return make_identifier(f"{table_name}__{column_name}_index")
+
+
+def quoted_identifier(cr, name: str) -> SQL:
+    """Quote a database identifier.
+
+    Use instead of `SQL.identifier` to accept all kinds of identifiers.
+    """
+    name = quote_ident(name, cr._cnx)
+    return SQL(name)

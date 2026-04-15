@@ -1,16 +1,15 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <templates xml:space="preserve">
 
-    <t t-name="web.Layout" owl="1">
-        <t t-if="env.inDialog" t-portal="'#' + env.dialogId + ' .modal-footer'">
-            <t t-slot="layout-buttons"/>
+    <t t-name="web.Layout">
+        <t t-if="this.env.inDialog" t-custom-portal="'#' + this.env.dialogId + ' .modal-footer'">
+            <t t-slot="control-panel-buttons"/>
         </t>
-        <t t-component="components.ControlPanel" slots="controlPanelSlots" t-if="display.controlPanel" display="display.controlPanel"/>
-        <t t-component="components.Banner" t-if="display.banner"/>
-        <div t-ref="content" class="o_content" t-attf-class="{{props.className}}" t-att-class="{ 'o_component_with_search_panel': display.searchPanel }">
-            <t t-component="components.SearchPanel" t-if="display.searchPanel"/>
-            <t t-slot="default" contentRef="contentRef" />
-        </div>
+        <t t-component="this.components.ControlPanel" slots="this.controlPanelSlots" t-if="this.props.display.controlPanel" display="this.props.display.controlPanel"/>
+        <main t-custom-ref="content" class="o_content" t-attf-class="{{this.props.className}}" t-att-class="{ 'o_component_with_search_panel': this.props.display.searchPanel }">
+            <t t-component="this.components.SearchPanel" t-if="this.props.display.searchPanel"/>
+            <t t-slot="default" contentRef="this.contentRef" />
+        </main>
     </t>
 
 </templates>

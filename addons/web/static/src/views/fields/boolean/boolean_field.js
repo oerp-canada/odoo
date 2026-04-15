@@ -1,11 +1,11 @@
-/** @odoo-module **/
-
-import { registry } from "@web/core/registry";
-import { _lt } from "@web/core/l10n/translation";
-import { standardFieldProps } from "../standard_field_props";
-import { CheckBox } from "@web/core/checkbox/checkbox";
-
+import { useState } from "@web/owl2/utils";
 import { Component } from "@odoo/owl";
+import { CheckBox } from "@web/core/checkbox/checkbox";
+import { _t } from "@web/core/l10n/translation";
+import { registry } from "@web/core/registry";
+import { useRecordObserver } from "@web/model/relational_model/utils";
+import { standardFieldProps } from "../standard_field_props";
+import { useService } from "@web/core/utils/hooks";
 
 export class BooleanField extends Component {
     static template = "web.BooleanField";
@@ -14,17 +14,30 @@ export class BooleanField extends Component {
         ...standardFieldProps,
     };
 
+    setup() {
+        this.ui = useService("ui");
+        this.state = useState({});
+        useRecordObserver((record) => {
+            this.state.value = record.data[this.props.name];
+        });
+    }
+
+    get displayAsToggle() {
+        return this.ui.isSmall;
+    }
+
     /**
      * @param {boolean} newValue
      */
     onChange(newValue) {
+        this.state.value = newValue;
         this.props.record.update({ [this.props.name]: newValue });
     }
 }
 
 export const booleanField = {
     component: BooleanField,
-    displayName: _lt("Checkbox"),
+    displayName: _t("Checkbox"),
     supportedTypes: ["boolean"],
     isEmpty: () => false,
 };

@@ -38,7 +38,6 @@ class TestMassMailPerformance(TestMassMailPerformanceBase):
     @mute_logger('odoo.addons.mail.models.mail_mail', 'odoo.models.unlink', 'odoo.tests')
     def test_send_mailing(self):
         mailing = self.env['mailing.mailing'].create({
-            'name': 'Test',
             'subject': 'Test',
             'body_html': '<p>Hello <a role="button" href="https://www.example.com/foo/bar?baz=qux">quux</a><a role="button" href="/unsubscribe_from_list">Unsubscribe</a></p>',
             'reply_to_mode': 'new',
@@ -46,8 +45,12 @@ class TestMassMailPerformance(TestMassMailPerformanceBase):
             'mailing_domain': [('id', 'in', self.mm_recs.ids)],
         })
 
-        # runbot needs +51 compared to local
-        with self.assertQueryCount(__system__=1524, marketing=1525):
+        # runbot needs +101 compared to local
+        with (
+            self.mock_mail_gateway(mail_unlink_sent=True),
+            # contains notably 1 query / record for unlink in mail
+            self.assertQueryCount(__system__=1383, marketing=1387),  # 1233, 1234
+        ):
             mailing.action_send_mail()
 
         self.assertEqual(mailing.sent, 50)
@@ -81,7 +84,6 @@ class TestMassMailBlPerformance(TestMassMailPerformanceBase):
     @mute_logger('odoo.addons.mail.models.mail_mail', 'odoo.models.unlink', 'odoo.tests')
     def test_send_mailing_w_bl(self):
         mailing = self.env['mailing.mailing'].create({
-            'name': 'Test',
             'subject': 'Test',
             'body_html': '<p>Hello <a role="button" href="https://www.example.com/foo/bar?baz=qux">quux</a><a role="button" href="/unsubscribe_from_list">Unsubscribe</a></p>',
             'reply_to_mode': 'new',
@@ -89,12 +91,15 @@ class TestMassMailBlPerformance(TestMassMailPerformanceBase):
             'mailing_domain': [('id', 'in', self.mm_recs.ids)],
         })
 
-        # runbot needs +51 compared to local
-        with self.assertQueryCount(__system__=1597, marketing=1598):
+        # runbot needs +153 compared to local
+        # contains notably 1 query / record for unlink in mail
+        with self.assertQueryCount(__system__=1414, marketing=1421):  # 1260, 1262
             mailing.action_send_mail()
 
         self.assertEqual(mailing.sent, 50)
         self.assertEqual(mailing.delivered, 50)
+        self.assertEqual(mailing.canceled, 12)
 
-        cancelled_mail_count = self.env['mail.mail'].sudo().search([('mailing_id', '=', mailing.id)])
-        self.assertEqual(len(cancelled_mail_count), 12, 'Should not have auto deleted the blacklisted emails')
+        mail_mail_count = len(self.env['mail.mail'].sudo().search([('mailing_id', '=', mailing.id)]))
+        self.assertEqual(mail_mail_count, 0,
+                         "Mail_mail for blacklisted emails mustn't have been created and others must have been deleted")

@@ -14,9 +14,10 @@ class UtmMedium(models.Model):
     name = fields.Char(string='Medium Name', required=True, translate=False)
     active = fields.Boolean(default=True)
 
-    _sql_constraints = [
-        ('unique_name', 'UNIQUE(name)', 'The name must be unique'),
-    ]
+    _unique_name = models.Constraint(
+        'UNIQUE(name)',
+        'The name must be unique',
+    )
 
     @api.model_create_multi
     def create(self, vals_list):
@@ -26,11 +27,19 @@ class UtmMedium(models.Model):
         return super().create(vals_list)
 
     @api.ondelete(at_uninstall=False)
-    def _unlink_except_utm_medium_email(self):
-        utm_medium_email = self.env.ref('utm.utm_medium_email', raise_if_not_found=False)
-        if utm_medium_email and utm_medium_email in self:
-            raise UserError(_(
-                "The UTM medium '%s' cannot be deleted as it is used in some main "
-                "functional flows, such as the recruitment and the mass mailing.",
-                utm_medium_email.name
-            ))
+    def _unlink_except_utm_medium_record(self):
+        utm_medium_xml_ids = [
+            key
+            for key, (_label, model)
+            in self.env['utm.mixin'].SELF_REQUIRED_UTM_REF.items()
+            if model == 'utm.medium'
+        ]
+
+        for xml_id in utm_medium_xml_ids:
+            utm_medium = self.env.ref(xml_id, raise_if_not_found=False)
+            if utm_medium and utm_medium in self:
+                raise UserError(_(
+                    "Oops, you can't delete the Medium '%s'.\n"
+                    "Doing so would be like tearing down a load-bearing wall \u2014 not the best idea.",
+                    utm_medium.name
+                ))

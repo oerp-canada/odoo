@@ -2,9 +2,10 @@
 # Part of Odoo. See LICENSE file for full copyright and licensing details.
 
 from odoo import _, api, fields, models
+from odoo.tools import SQL
 
 
-class Users(models.Model):
+class ResUsers(models.Model):
     _inherit = 'res.users'
 
     karma = fields.Integer('Karma', compute='_compute_karma', store=True, readonly=False)
@@ -13,7 +14,7 @@ class Users(models.Model):
     gold_badge = fields.Integer('Gold badges count', compute="_get_user_badge_level")
     silver_badge = fields.Integer('Silver badges count', compute="_get_user_badge_level")
     bronze_badge = fields.Integer('Bronze badges count', compute="_get_user_badge_level")
-    rank_id = fields.Many2one('gamification.karma.rank', 'Rank')
+    rank_id = fields.Many2one('gamification.karma.rank', 'Rank', index='btree_not_null')
     next_rank_id = fields.Many2one('gamification.karma.rank', 'Next Rank')
 
     @api.depends('karma_tracking_ids.new_value')
@@ -67,8 +68,8 @@ class Users(models.Model):
             self.browse(user_id)['{}_badge'.format(level)] = count
 
     @api.model_create_multi
-    def create(self, values_list):
-        res = super(Users, self).create(values_list)
+    def create(self, vals_list):
+        res = super().create(vals_list)
 
         self._add_karma_batch({
             user: {
@@ -77,23 +78,23 @@ class Users(models.Model):
                 'origin_ref': f'res.users,{self.env.uid}',
                 'reason': _('User Creation'),
             }
-            for user, vals in zip(res, values_list)
+            for user, vals in zip(res, vals_list)
             if vals.get('karma')
         })
 
         return res
 
-    def write(self, values):
-        if 'karma' in values:
+    def write(self, vals):
+        if 'karma' in vals:
             self._add_karma_batch({
                 user: {
-                    'gain': int(values['karma']) - user.karma,
+                    'gain': int(vals['karma']) - user.karma,
                     'origin_ref': f'res.users,{self.env.uid}',
                 }
                 for user in self
-                if int(values['karma']) != user.karma
+                if int(vals['karma']) != user.karma
             })
-        return super().write(values)
+        return super().write(vals)
 
     def _add_karma(self, gain, source=None, reason=None):
         self.ensure_one()
@@ -122,6 +123,39 @@ class Users(models.Model):
         self.env['gamification.karma.tracking'].sudo().create(create_values)
         return True
 
+    @api.model
+    def _get_user_ids_ranked_by_karma(self, user_domain, from_date=None, to_date=None, limit=30, offset=0):
+        """ Return the list of user_ids satisfying the domain, sorted by their
+        karma gain during the specified period.
+
+        This method is designed for the website leaderboard pagination. It
+        computes the ranking based on the sum of gamification.karma.tracking
+        values within the given dates."""
+
+        where_query = self.env['res.users']._search(user_domain, bypass_access=True)
+
+        sql = SQL("""
+            SELECT "res_users".id as user_id
+            FROM %s
+            LEFT JOIN "gamification_karma_tracking" as "tracking"
+                ON "res_users".id = "tracking".user_id
+            WHERE %s %s %s
+            GROUP BY "res_users".id
+            ORDER BY COALESCE(SUM("tracking".new_value - "tracking".old_value), 0) DESC, "res_users".id DESC
+            LIMIT %s OFFSET %s
+        """,
+            where_query.from_clause,
+            where_query.where_clause or SQL("TRUE"),
+            SQL("AND tracking.tracking_date >= %s::DATE", from_date) if from_date else SQL(),
+            SQL("AND tracking.tracking_date < %s::DATE + interval '1' day", to_date) if to_date else SQL(),
+            limit,
+            offset,
+        )
+
+        self.env.cr.execute(sql)
+        res = self.env.cr.fetchall()
+        return [r[0] for r in res]
+
     def _get_tracking_karma_gain_position(self, user_domain, from_date=None, to_date=None):
         """ Get absolute position in term of gained karma for users. First a ranking
         of all users is done given a user_domain; then the position of each user
@@ -139,49 +173,46 @@ class Users(models.Model):
         :param to_date: compute karma gained before this date (included) or until
           end of time;
 
-        :return list: [{
-            'user_id': user_id (belonging to current record set),
-            'karma_gain_total': integer, karma gained in the given timeframe,
-            'karma_position': integer, ranking position
-        }, {..}] ordered by karma_position desc
+        :rtype: list[dict]
+        :return:
+          ::
+
+            [{
+                'user_id': user_id (belonging to current record set),
+                'karma_gain_total': integer, karma gained in the given timeframe,
+                'karma_position': integer, ranking position
+            }, {..}]
+
+          ordered by descending karma position
         """
         if not self:
             return []
 
-        where_query = self.env['res.users']._where_calc(user_domain)
-        user_from_clause, user_where_clause, where_clause_params = where_query.get_sql()
+        where_query = self.env['res.users']._search(user_domain, bypass_access=True)
 
-        params = []
-        if from_date:
-            date_from_condition = 'AND tracking.tracking_date::DATE >= %s::DATE'
-            params.append(from_date)
-        if to_date:
-            date_to_condition = 'AND tracking.tracking_date::DATE <= %s::DATE'
-            params.append(to_date)
-        params.append(tuple(self.ids))
-
-        query = """
+        sql = SQL("""
 SELECT final.user_id, final.karma_gain_total, final.karma_position
 FROM (
     SELECT intermediate.user_id, intermediate.karma_gain_total, row_number() OVER (ORDER BY intermediate.karma_gain_total DESC) AS karma_position
     FROM (
         SELECT "res_users".id as user_id, COALESCE(SUM("tracking".new_value - "tracking".old_value), 0) as karma_gain_total
-        FROM %(user_from_clause)s
+        FROM %s
         LEFT JOIN "gamification_karma_tracking" as "tracking"
-        ON "res_users".id = "tracking".user_id AND "res_users"."active" = TRUE
-        WHERE %(user_where_clause)s %(date_from_condition)s %(date_to_condition)s
+        ON "res_users".id = "tracking".user_id AND "res_users"."active" IS TRUE
+        WHERE %s %s %s
         GROUP BY "res_users".id
         ORDER BY karma_gain_total DESC
     ) intermediate
 ) final
-WHERE final.user_id IN %%s""" % {
-            'user_from_clause': user_from_clause,
-            'user_where_clause': user_where_clause or (not from_date and not to_date and 'TRUE') or '',
-            'date_from_condition': date_from_condition if from_date else '',
-            'date_to_condition': date_to_condition if to_date else ''
-        }
+WHERE final.user_id IN %s""",
+            where_query.from_clause,
+            where_query.where_clause or SQL("TRUE"),
+            SQL("AND tracking.tracking_date::DATE >= %s::DATE", from_date) if from_date else SQL(),
+            SQL("AND tracking.tracking_date::DATE <= %s::DATE", to_date) if to_date else SQL(),
+            tuple(self.ids),
+        )
 
-        self.env.cr.execute(query, tuple(where_clause_params + params))
+        self.env.cr.execute(sql)
         return self.env.cr.dictfetchall()
 
     def _get_karma_position(self, user_domain):
@@ -197,33 +228,34 @@ WHERE final.user_id IN %%s""" % {
         :param user_domain: general domain (i.e. active, karma > 1, website, ...)
           to compute the absolute position of the current record set
 
-        :return list: [{
-            'user_id': user_id (belonging to current record set),
-            'karma_position': integer, ranking position
-        }, {..}] ordered by karma_position desc
+        :rtype: list[dict]
+        :return:
+
+            ::
+
+                [{
+                    'user_id': user_id (belonging to current record set),
+                    'karma_position': integer, ranking position
+                }, {..}] ordered by karma_position desc
         """
         if not self:
             return {}
 
-        where_query = self.env['res.users']._where_calc(user_domain)
-        user_from_clause, user_where_clause, where_clause_params = where_query.get_sql()
+        where_query = self.env['res.users']._search(user_domain, bypass_access=True)
 
         # we search on every user in the DB to get the real positioning (not the one inside the subset)
         # then, we filter to get only the subset.
-        query = """
+        sql = SQL("""
 SELECT sub.user_id, sub.karma_position
-FROM (
-    SELECT "res_users"."id" as user_id, row_number() OVER (ORDER BY res_users.karma DESC) AS karma_position
-    FROM %(user_from_clause)s
-    WHERE %(user_where_clause)s
-) sub
-WHERE sub.user_id IN %%s""" % {
-            'user_from_clause': user_from_clause,
-            'user_where_clause': user_where_clause or 'TRUE',
-        }
-
-        self.env.cr.execute(query, tuple(where_clause_params + [tuple(self.ids)]))
-        return self.env.cr.dictfetchall()
+FROM %s AS sub
+WHERE sub.user_id IN %s""",
+            where_query.subselect(
+                SQL("%s as user_id", where_query.table.id),
+                SQL("row_number() OVER (ORDER BY res_users.karma DESC) AS karma_position"),
+            ),
+            tuple(self.ids),
+        )
+        return self.env.execute_query_dict(sql)
 
     def _rank_changed(self):
         """
@@ -339,10 +371,9 @@ WHERE sub.user_id IN %%s""" % {
 
         if self.next_rank_id:
             return self.next_rank_id
-        elif not self.rank_id:
-            return self.env['gamification.karma.rank'].search([], order="karma_min ASC", limit=1)
         else:
-            return self.env['gamification.karma.rank']
+            domain = [('karma_min', '>', self.rank_id.karma_min)] if self.rank_id else []
+            return self.env['gamification.karma.rank'].search(domain, order="karma_min ASC", limit=1)
 
     def get_gamification_redirection_data(self):
         """
@@ -361,7 +392,7 @@ WHERE sub.user_id IN %%s""" % {
             'res_model': 'gamification.karma.tracking',
             'target': 'current',
             'type': 'ir.actions.act_window',
-            'view_mode': 'tree',
+            'view_mode': 'list',
             'context': {
                 'default_user_id': self.id,
                 'search_default_user_id': self.id,

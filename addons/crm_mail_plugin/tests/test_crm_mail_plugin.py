@@ -1,11 +1,10 @@
-# -*- coding: utf-8 -*-
 # Part of Odoo. See LICENSE file for full copyright and licensing details.
 
-import json
-
+from odoo.tests import tagged
 from odoo.addons.mail_plugin.tests.common import TestMailPluginControllerCommon, mock_auth_method_outlook
 
 
+@tagged('at_install', '-post_install')  # LEGACY at_install
 class TestCrmMailPlugin(TestMailPluginControllerCommon):
     @mock_auth_method_outlook('employee')
     def test_get_contact_data(self):
@@ -15,19 +14,19 @@ class TestCrmMailPlugin(TestMailPluginControllerCommon):
             {"name": "Partner 2"},
         ])
 
-        result = self._make_rpc_call("/mail_plugin/partner/get", {"partner_id": partner.id})
+        result = self.make_jsonrpc_request("/mail_plugin/partner/get", {"partner_id": partner.id})
 
         self.assertNotIn("leads", result,
             msg="The user has no access to crm.lead, the leads section should not be visible")
 
-        self.user_test.groups_id |= self.env.ref("sales_team.group_sale_salesman_all_leads")
+        self.user_test.group_ids |= self.env.ref("sales_team.group_sale_salesman_all_leads")
 
         lead_1, lead_2 = self.env["crm.lead"].create([
             {"name": "Lead Partner 1", "partner_id": partner.id},
             {"name": "Lead Partner 2", "partner_id": partner_2.id},
         ])
 
-        result = self._make_rpc_call("/mail_plugin/partner/get", {"partner_id": partner.id})
+        result = self.make_jsonrpc_request("/mail_plugin/partner/get", {"partner_id": partner.id})
 
         self.assertIn(
             "leads",
@@ -35,9 +34,9 @@ class TestCrmMailPlugin(TestMailPluginControllerCommon):
             msg="The user has access to crm.lead, the leads section should be visible",
         )
 
-        self.assertTrue([lead for lead in result["leads"] if lead["lead_id"] == lead_1.id],
+        self.assertTrue([lead for lead in result["leads"] if lead["id"] == lead_1.id],
             msg="The first lead belongs to the first partner, it should be returned")
-        self.assertFalse([lead for lead in result["leads"] if lead["lead_id"] == lead_2.id],
+        self.assertFalse([lead for lead in result["leads"] if lead["id"] == lead_2.id],
             msg="The second lead does not belong to the first partner, it should not be returned")
 
     @mock_auth_method_outlook('employee')
@@ -60,54 +59,32 @@ class TestCrmMailPlugin(TestMailPluginControllerCommon):
         # set default company to Company_A
         self.env.user.company_id = company_a.id
 
-        self.user_test.groups_id |= self.env.ref('sales_team.group_sale_salesman_all_leads')
+        self.user_test.group_ids |= self.env.ref('sales_team.group_sale_salesman_all_leads')
 
         # Add company_B to user_test to have access to records related to company_B
         self.user_test.write({'company_ids': [(4, company_b.id)]})
 
         params = {
             'partner_id': contact.id,
+            'partner_email': contact.email,
+            'partner_name': contact.name,
             'email_body': 'test body',
             'email_subject': 'test subject',
         }
 
-        result = self._make_rpc_call('/mail_plugin/lead/create', params)
+        result = self.make_jsonrpc_request('/mail_plugin/lead/create', params)
 
         # Check that the created lead record has the correct company and return the lead_id
         self.assertIn(
-            'lead_id',
+            'id',
             result,
             msg='The lead_id should be returned in the response',
         )
 
-        created_lead = self.env['crm.lead'].browse(result['lead_id'])
+        created_lead = self.env['crm.lead'].browse(result['id'])
 
         self.assertEqual(
             created_lead.company_id,
             company_b,
             msg='The created record should belong to company_B',
         )
-
-    def _make_rpc_call(self, url, params):
-        """
-        Makes an RPC call to the specified URL with the given parameters, and returns the 'result' key from the response.
-
-        :param params (dict): A dictionary containing the parameters to send in the RPC call.
-        :param url (str): The URL to send the RPC call to.
-        :return (dict): The 'result' key from the response.
-        """
-
-        data = {
-            'id': 0,
-            'jsonrpc': '2.0',
-            'method': 'call',
-            'params': params,
-        }
-
-        response = self.url_open(
-            url,
-            data=json.dumps(data).encode(),
-            headers={'Content-Type': 'application/json'}
-        ).json()
-
-        return response['result']

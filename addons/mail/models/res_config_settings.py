@@ -12,9 +12,13 @@ class ResConfigSettings(models.TransientModel):
     the alias domain. """
     _inherit = 'res.config.settings'
 
+    external_email_server_default = fields.Boolean(
+        "Use Custom Email Servers",
+        config_parameter='base_setup.default_external_email_server')
     fail_counter = fields.Integer('Fail Mail', compute="_compute_fail_counter")
-    alias_domain = fields.Char(
-        'Alias Domain', config_parameter='mail.catchall.domain',
+    alias_domain_id = fields.Many2one(
+        'mail.alias.domain', 'Alias Domain',
+        readonly=False, related='company_id.alias_domain_id',
         help="If you have setup a catch-all email domain redirected to the Odoo server, enter the domain name here.")
     module_google_gmail = fields.Boolean('Support Gmail Authentication')
     module_microsoft_outlook = fields.Boolean('Support Outlook Authentication')
@@ -23,41 +27,53 @@ class ResConfigSettings(models.TransientModel):
         config_parameter='mail.restrict.template.rendering',
         help='Users will still be able to render templates.\n'
         'However only Mail Template Editors will be able to create new dynamic templates or modify existing ones.')
+    use_call_server = fields.Boolean(
+        "Use Call Server",
+        help="If you want to use your own SFU or ICE servers for video calls.",
+        config_parameter="mail.use_call_server",
+    )
     use_twilio_rtc_servers = fields.Boolean(
         'Use Twilio ICE servers',
         help="If you want to use twilio as TURN/STUN server provider",
         config_parameter='mail.use_twilio_rtc_servers',
     )
     twilio_account_sid = fields.Char(
-        'Twilio Account SID',
+        'Account SID',
         config_parameter='mail.twilio_account_sid',
     )
     twilio_account_token = fields.Char(
-        'Twilio Account Auth Token',
+        'Account Auth Token',
         config_parameter='mail.twilio_account_token',
     )
-    primary_color = fields.Char(related='company_id.primary_color', string="Header Color", readonly=False)
-    secondary_color = fields.Char(related='company_id.secondary_color', string="Button Color", readonly=False)
+    use_sfu_server = fields.Boolean(
+        'Use SFU server',
+        help="If you want to setup SFU server for large group calls.",
+        config_parameter="mail.use_sfu_server",
+    )
+    sfu_server_url = fields.Char("SFU Server URL", config_parameter="mail.sfu_server_url")
+    sfu_server_key = fields.Char("SFU Server key", config_parameter="mail.sfu_server_key", help="Base64 encoded key")
+    email_primary_color = fields.Char(related='company_id.email_primary_color', readonly=False)
+    email_secondary_color = fields.Char(related='company_id.email_secondary_color', readonly=False)
 
+    use_tenor_api = fields.Boolean(
+        "Use Tenor API",
+        help="If you want to use Tenor API to share GIFs in conversations.",
+        config_parameter='discuss.use_tenor_api',
+    )
     tenor_api_key = fields.Char(
         'Tenor API key',
         config_parameter='discuss.tenor_api_key',
         help="Add a Tenor GIF API key to enable GIFs support. https://developers.google.com/tenor/guides/quickstart#setup",
     )
-    tenor_content_filter = fields.Selection(
-        [('high', 'High'),
-        ('medium', 'Medium'),
-        ('low', 'Low'),
-        ('off', 'Off')],
-        string='Tenor content filter',
-        help="https://developers.google.com/tenor/guides/content-filtering",
-        config_parameter='discuss.tenor_content_filter',
-        default='low',
+    use_google_translate_api = fields.Boolean(
+        "Use Google Translate API",
+        help="If you want to use Google Translate API to enable message translation.",
+        config_parameter='mail.use_google_translate_api',
     )
-    tenor_gif_limit = fields.Integer(
-        default=8,
-        config_parameter='discuss.tenor_gif_limit',
-        help="Fetch up to the specified number of GIF.",
+    google_translate_api_key = fields.Char(
+        "Message Translation API Key",
+        help="A valid Google API key is required to enable message translation. https://cloud.google.com/translate/docs/setup",
+        config_parameter="mail.google_translate_api_key",
     )
 
     def _compute_fail_counter(self):

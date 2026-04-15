@@ -27,14 +27,16 @@ class SaleOrder(models.Model):
         if carrier.invoice_policy == 'real':
             sol.update({
                 'price_unit': 0,
-                'name': sol['name']+ _(
-                    ' (Estimated Cost: %s )',
-                    self._format_currency_amount(price_unit)
+                'name': _(
+                    "%(name)s (Estimated Cost: %(cost)s)",
+                    name=sol["name"],
+                    cost=self.currency_id.format(price_unit),
                 ),
             })
         del context
         return sol
 
+    # to remove in master
     def _format_currency_amount(self, amount):
         pre = post = u''
         if self.currency_id.position == 'before':
@@ -47,8 +49,8 @@ class SaleOrder(models.Model):
 class SaleOrderLine(models.Model):
     _inherit = 'sale.order.line'
 
-    def _prepare_procurement_values(self, group_id):
-        values = super(SaleOrderLine, self)._prepare_procurement_values(group_id)
+    def _prepare_procurement_values(self):
+        values = super()._prepare_procurement_values()
         if not values.get("route_ids") and self.order_id.carrier_id.route_ids:
             values['route_ids'] = self.order_id.carrier_id.route_ids
         return values

@@ -9,12 +9,6 @@ class AccountChartTemplate(models.AbstractModel):
     @template('hu')
     def _get_hu_template_data(self):
         return {
-            'property_account_receivable_id': 'l10n_hu_311',
-            'property_account_payable_id': 'l10n_hu_454',
-            'property_account_expense_categ_id': 'l10n_hu_811',
-            'property_account_income_categ_id': 'l10n_hu_911',
-            'property_tax_payable_account_id': 'l10n_hu_468',
-            'property_tax_receivable_account_id': 'l10n_hu_468',
             'code_digits': '6',
         }
 
@@ -28,5 +22,21 @@ class AccountChartTemplate(models.AbstractModel):
                 'transfer_account_code_prefix': '389',
                 'income_currency_exchange_account_id': 'l10n_hu_976',
                 'expense_currency_exchange_account_id': 'l10n_hu_876',
+                'account_sale_tax_id': 'F27',
+                'account_purchase_tax_id': 'V27',
+                'expense_account_id': 'l10n_hu_811',
+                'income_account_id': 'l10n_hu_911',
+                'receivable_account_id': 'l10n_hu_311',
+                'payable_account_id': 'l10n_hu_454',
+                'account_stock_valuation_id': 'l10n_hu_211',
+            },
+        }
+
+    @template('hu', 'account.account')
+    def _get_hu_account_account(self):
+        return {
+            'l10n_hu_211': {
+                'account_stock_expense_id': 'l10n_hu_5111',
+                'account_stock_variation_id': 'l10n_hu_581',
             },
         }

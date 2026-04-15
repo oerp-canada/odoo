@@ -1,13 +1,13 @@
-# -*- coding: utf-8 -*-
 # Part of Odoo. See LICENSE file for full copyright and licensing details.
 
 from odoo import api, fields, models, _, exceptions
+from odoo.fields import Domain
 from odoo.tools.safe_eval import safe_eval
 
 DOMAIN_TEMPLATE = "[('store', '=', True), '|', ('model_id', '=', model_id), ('model_id', 'in', model_inherited_ids)%s]"
 
 
-class GoalDefinition(models.Model):
+class GamificationGoalDefinition(models.Model):
     """Goal definition
 
     A goal definition contains the way to evaluate an objective
@@ -33,11 +33,11 @@ class GoalDefinition(models.Model):
         ('progress', "Progressive (using numerical values)"),
         ('boolean', "Exclusive (done or not-done)"),
     ], default='progress', string="Displayed as", required=True)
-    model_id = fields.Many2one('ir.model', string='Model')
+    model_id = fields.Many2one('ir.model', string='Model', ondelete='cascade')
     model_inherited_ids = fields.Many2many('ir.model', related='model_id.inherited_model_ids')
     field_id = fields.Many2one(
         'ir.model.fields', string='Field to Sum',
-        domain=DOMAIN_TEMPLATE % ''
+        domain=DOMAIN_TEMPLATE % ", ('ttype', 'in', ('integer', 'float', 'monetary'))"
     )
     field_date_id = fields.Many2one(
         'ir.model.fields', string='Date Field', help='The date to use for the time period evaluated',
@@ -62,6 +62,24 @@ class GoalDefinition(models.Model):
     action_id = fields.Many2one('ir.actions.act_window', string="Action", help="The action that will be called to update the goal value.")
     res_id_field = fields.Char("ID Field of user", help="The field name on the user profile (res.users) containing the value for res_id for action.")
 
+    @api.constrains("computation_mode", "model_id", "field_id")
+    def _check_computation_mode(self):
+        errors = []
+        for definition in self:
+            if definition.computation_mode != "sum":
+                continue
+
+            if not definition.field_id:
+                errors.append(_("A field is required to compute the sum for '%s'.", definition.name))
+                continue
+
+            if definition.field_id.ttype not in {"integer", "float", "monetary"}:
+                errors.append(_("The sum cannot be computed for '%(definition)s' on '%(field)s'.",
+                    definition=definition.name, field=definition.field_id.name))
+
+        if errors:
+            raise exceptions.ValidationError(' '.join(errors))
+
     @api.depends('suffix', 'monetary')  # also depends of user...
     def _compute_full_suffix(self):
         for goal in self:
@@ -80,18 +98,21 @@ class GoalDefinition(models.Model):
             if definition.computation_mode not in ('count', 'sum'):
                 continue
 
-            Obj = self.env[definition.model_id.model]
+            Model = self.env[definition.model_id.model]
             try:
                 domain = safe_eval(definition.domain, {
                     'user': self.env.user.with_user(self.env.user)
                 })
-                # dummy search to make sure the domain is valid
-                Obj.search_count(domain)
+                Domain(domain).validate(Model)
             except (ValueError, SyntaxError) as e:
                 msg = e
                 if isinstance(e, SyntaxError):
                     msg = (e.msg + '\n' + e.text)
-                raise exceptions.UserError(_("The domain for the definition %s seems incorrect, please check it.\n\n%s") % (definition.name, msg))
+                raise exceptions.UserError(_(
+                    "The domain for the definition %(definition)s seems incorrect, please check it.\n\n%(error_message)s",
+                    definition=definition.name,
+                    error_message=msg,
+                ))
         return True
 
     def _check_model_validity(self):
@@ -118,7 +139,7 @@ class GoalDefinition(models.Model):
 
     @api.model_create_multi
     def create(self, vals_list):
-        definitions = super(GoalDefinition, self).create(vals_list)
+        definitions = super().create(vals_list)
         definitions.filtered_domain([
             ('computation_mode', 'in', ['count', 'sum']),
         ])._check_domain_validity()
@@ -128,7 +149,7 @@ class GoalDefinition(models.Model):
         return definitions
 
     def write(self, vals):
-        res = super(GoalDefinition, self).write(vals)
+        res = super().write(vals)
         if vals.get('computation_mode', 'count') in ('count', 'sum') and (vals.get('domain') or vals.get('model_id')):
             self._check_domain_validity()
         if vals.get('field_id') or vals.get('model_id') or vals.get('batch_mode'):

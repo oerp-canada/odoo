@@ -1,8 +1,12 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <templates xml:space="preserve">
 
-    <t t-name="web.BooleanField" owl="1">
-        <CheckBox id="props.id" value="props.record.data[props.name] or false" className="'d-inline-block'" disabled="props.readonly" onChange.bind="onChange" />
+    <t t-name="web.BooleanField">
+        <CheckBox id="this.props.id" value="this.state.value" disabled="this.props.readonly" onChange.bind="this.onChange"
+           className="this.displayAsToggle ? 'o_field_boolean o_boolean_toggle form-switch' : 'd-inline-block'"
+        ><t t-if="this.displayAsToggle">
+            &#8203; <!-- Zero width space needed to set height -->
+        </t></CheckBox>
     </t>
 
 </templates>

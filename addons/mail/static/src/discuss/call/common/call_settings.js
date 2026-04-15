@@ -1,26 +1,35 @@
-/* @odoo-module */
+import { useExternalListener, useState } from "@web/owl2/utils";
+import { Component, onWillStart, xml } from "@odoo/owl";
 
-import { useRtc } from "@mail/discuss/call/common/rtc_hook";
-
-import { Component, onWillStart, useExternalListener, useState } from "@odoo/owl";
-
-import { browser } from "@web/core/browser/browser";
 import { _t } from "@web/core/l10n/translation";
+import { browser } from "@web/core/browser/browser";
+import { isMobileOS } from "@web/core/browser/feature_detection";
 import { useService } from "@web/core/utils/hooks";
+import { useMicrophoneVolume } from "@mail/utils/common/hooks";
+import { ActionPanel } from "@mail/discuss/core/common/action_panel";
+import { DeviceSelect } from "@mail/discuss/call/common/device_select";
+import { Dialog } from "@web/core/dialog/dialog";
 
 export class CallSettings extends Component {
     static template = "discuss.CallSettings";
-    static props = ["thread", "className?"];
+    static props = ["close?", "withActionPanel?", "isCompact?"];
+    static defaultProps = {
+        withActionPanel: true,
+    };
+    static components = { ActionPanel, DeviceSelect };
 
     setup() {
+        super.setup();
         this.notification = useService("notification");
-        this.userSettings = useState(useService("mail.user_settings"));
-        this.rtc = useRtc();
+        this.store = useService("mail.store");
+        this.rtc = useService("discuss.rtc");
+        this.microphoneVolume = useMicrophoneVolume();
         this.state = useState({
             userDevices: [],
         });
-        useExternalListener(browser, "keydown", this._onKeyDown);
-        useExternalListener(browser, "keyup", this._onKeyUp);
+        this.pttExtService = useService("discuss.ptt_extension");
+        useExternalListener(browser, "keydown", this._onKeyDown, { capture: true });
+        useExternalListener(browser, "keyup", this._onKeyUp, { capture: true });
         onWillStart(async () => {
             if (!browser.navigator.mediaDevices) {
                 // zxing-js: isMediaDevicesSuported or canEnumerateDevices is false.
@@ -35,89 +44,92 @@ export class CallSettings extends Component {
         });
     }
 
-    get pushToTalkKeyText() {
-        const { shiftKey, ctrlKey, altKey, key } = this.userSettings.pushToTalkKeyFormat();
-        const f = (k, name) => (k ? name : "");
-        return `${f(ctrlKey, "Ctrl + ")}${f(altKey, "Alt + ")}${f(shiftKey, "Shift + ")}${key}`;
+    get stopText() {
+        return _t("Stop");
+    }
+
+    get testText() {
+        return _t("Test");
+    }
+
+    get isMobileOS() {
+        return isMobileOS();
     }
 
     _onKeyDown(ev) {
-        if (!this.userSettings.isRegisteringKey) {
+        if (!this.store.settings.isRegisteringKey) {
             return;
         }
         ev.stopPropagation();
         ev.preventDefault();
-        this.userSettings.setPushToTalkKey(ev);
+        this.store.settings.setPushToTalkKey(ev);
     }
 
     _onKeyUp(ev) {
-        if (!this.userSettings.isRegisteringKey) {
+        if (!this.store.settings.isRegisteringKey) {
             return;
         }
         ev.stopPropagation();
         ev.preventDefault();
-        this.userSettings.isRegisteringKey = false;
+        this.store.settings.isRegisteringKey = false;
     }
 
-    onChangeLogRtcCheckbox(ev) {
-        this.userSettings.logRtc = ev.target.checked;
+    onChangeLogRtc(ev) {
+        this.store.settings.logRtc = ev.target.checked;
     }
 
     onChangeSelectAudioInput(ev) {
-        this.userSettings.setAudioInputDevice(ev.target.value);
-    }
-
-    onChangePushToTalk() {
-        if (this.userSettings.usePushToTalk) {
-            this.userSettings.isRegisteringKey = false;
-        }
-        this.userSettings.togglePushToTalk();
+        this.store.settings.audioInputDeviceId = ev.target.value;
     }
 
     onClickDownloadLogs() {
-        const data = JSON.stringify(Object.fromEntries(this.rtc.state.logs));
-        const blob = new Blob([data], { type: "application/json" });
-        const downloadLink = document.createElement("a");
-        const channelId = this.rtc.state.logs.get("channelId");
-        const sessionId = this.rtc.state.logs.get("selfSessionId");
-        const now = luxon.DateTime.now().toFormat("yyyy-ll-dd_HH-mm");
-        downloadLink.download = `RtcLogs_Channel_${channelId}_Session_${sessionId}_${now}.json`;
-        const url = URL.createObjectURL(blob);
-        downloadLink.href = url;
-        downloadLink.click();
-        URL.revokeObjectURL(url);
+        this.rtc.dumpLogs({ download: true });
     }
 
     onClickRegisterKeyButton() {
-        this.userSettings.isRegisteringKey = !this.userSettings.isRegisteringKey;
+        this.store.settings.isRegisteringKey = !this.store.settings.isRegisteringKey;
     }
 
     onChangeDelay(ev) {
-        this.userSettings.setDelayValue(ev.target.value);
-    }
-
-    onChangeThreshold(ev) {
-        this.userSettings.setThresholdValue(parseFloat(ev.target.value));
+        this.store.settings.setDelayValue(ev.target.value);
     }
 
     onChangeBlur(ev) {
-        this.userSettings.useBlur = ev.target.checked;
+        this.store.settings.useBlur = ev.target.checked;
     }
 
-    onChangeVideoFilterCheckbox(ev) {
+    onChangeCallAutoFocus() {
+        this.store.settings.useCallAutoFocus = !this.store.settings.useCallAutoFocus;
+    }
+
+    onChangeShowOnlyVideo(ev) {
         const showOnlyVideo = ev.target.checked;
-        this.props.thread.showOnlyVideo = showOnlyVideo;
-        const activeRtcSession = this.props.thread.activeRtcSession;
-        if (showOnlyVideo && activeRtcSession && !activeRtcSession.videoStream) {
-            this.props.thread.activeRtcSession = undefined;
+        this.store.settings.showOnlyVideo = Boolean(showOnlyVideo);
+        const activeRtcSessions = this.store.allActiveRtcSessions;
+        if (showOnlyVideo && activeRtcSessions) {
+            activeRtcSessions
+                .filter((rtcSession) => !rtcSession.videoStream)
+                .forEach((rtcSession) => {
+                    rtcSession.channel.activeRtcSession = undefined;
+                });
         }
     }
 
     onChangeBackgroundBlurAmount(ev) {
-        this.userSettings.backgroundBlurAmount = Number(ev.target.value);
+        this.store.settings.backgroundBlurAmount = Number(ev.target.value);
     }
 
     onChangeEdgeBlurAmount(ev) {
-        this.userSettings.edgeBlurAmount = Number(ev.target.value);
+        this.store.settings.edgeBlurAmount = Number(ev.target.value);
     }
+}
+
+export class CallSettingsDialog extends Component {
+    static template = xml`
+        <Dialog size="'small'" footer="false" title.translate="Voice &amp; Video Settings">
+            <CallSettings withActionPanel="false"/>
+        </Dialog>
+    `;
+    static props = [];
+    static components = { CallSettings, Dialog };
 }

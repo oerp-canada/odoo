@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Part of Odoo. See LICENSE file for full copyright and licensing details.
 
 {
@@ -33,22 +32,27 @@ If you need to manage your meetings, you should install the CRM module.
         'views/mail_activity_views.xml',
         'views/calendar_templates.xml',
         'views/calendar_views.xml',
+        'views/res_config_settings_views.xml',
         'views/res_partner_views.xml',
+        'views/res_users_views.xml',
         'wizard/calendar_provider_config.xml',
         'wizard/calendar_popover_delete_wizard.xml',
+        'wizard/mail_activity_schedule_views.xml',
     ],
-    'installable': True,
     'application': True,
     'assets': {
         'web.assets_backend': [
             'calendar/static/src/**/*',
         ],
-        'web.qunit_suite_tests': [
-            'calendar/static/tests/**/*',
+        # Unit test files
+        'web.assets_unit_tests': [
+            'calendar/static/tests/**/*.js',
+            ('remove', 'calendar/static/tests/tours/**/*'),
         ],
         'web.assets_tests': [
             'calendar/static/tests/tours/**/*',
         ],
     },
+    'author': 'Odoo S.A.',
     'license': 'LGPL-3',
 }

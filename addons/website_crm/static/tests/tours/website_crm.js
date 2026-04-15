@@ -1,83 +1,151 @@
-/** @odoo-module alias=website_crm.tour **/
-    
-    import { registry } from "@web/core/registry";
-    import wTourUtils from "website.tour_utils";
+import { registry } from "@web/core/registry";
+import {
+    clickOnSave,
+    registerWebsitePreviewTour,
+} from '@website/js/tours/tour_utils';
 
-    wTourUtils.registerWebsitePreviewTour('website_crm_pre_tour', {
-        test: true,
-        url: '/contactus',
+function setFormActionToCreateOpportunity() {
+    return [
+        {
+            content: "Select contact form",
+            trigger: ":iframe #wrap.o_savable section.s_website_form",
+            run: "click",
+        },
+        {
+            trigger: ".o-snippets-menu .o-snippets-tabs [data-name='customize'].active",
+        },
+        {
+            content: "Open action select",
+            trigger:
+                ".o-snippets-menu [data-container-title='Form'] [data-label='Action'] .dropdown-toggle",
+            run: "click",
+        },
+        {
+            content: "Select 'Create an Opportunity' as form action",
+            trigger: ".o_popover [data-action-id='selectAction']:contains('Create an Opportunity')",
+            run: "click",
+        },
+    ];
+}
+
+registerWebsitePreviewTour(
+    "website_crm_pre_tour",
+    {
         edition: true,
-    }, [{
-        content: "Select contact form",
-        trigger: "iframe #wrap.o_editable section.s_website_form",
-    }, {
-        content: "Open action select",
-        trigger: "we-select:has(we-button:contains('Create an Opportunity')) we-toggler",
-        extra_trigger: "#oe_snippets .o_we_customize_snippet_btn.active",
-    }, {
-        content: "Select 'Create an Opportunity' as form action",
-        trigger: "we-select we-button:contains('Create an Opportunity')",
-    }, {
-        content: "Save the settings",
-        trigger: "button[data-action=save]",
-    }, {
-        content: "Ensure form model has changed and page reload is done after save",
-        trigger: "iframe section.s_website_form form[data-model_name='crm.lead']",
-        extra_trigger: "iframe body:not(.editor_enable)",
-    }]);
+    },
+    () => [
+        ...setFormActionToCreateOpportunity(),
+        ...clickOnSave(),
+        {
+            content: "Ensure form model has changed and page reload is done after save",
+            trigger: ":iframe section.s_website_form form[data-model_name='crm.lead']",
+        },
+    ]
+);
 
-    registry.category("web_tour.tours").add('website_crm_tour', {
-        test: true,
-        url: '/contactus',
-        steps: [{
-        content: "Complete name",
-        trigger: "input[name=contact_name]",
-        run: "text John Smith",
-    }, {
-        content: "Complete phone number",
-        trigger: "input[name=phone]",
-        run: "text +32 485 118.218"
-    }, {
-        content: "Complete Email",
-        trigger: "input[name=email_from]",
-        run: "text john@smith.com"
-    }, {
-        content: "Complete Company",
-        trigger: "input[name=partner_name]",
-        run: "text Odoo S.A."
-    }, {
-        content: "Complete Subject",
-        trigger: "input[name=name]",
-        run: "text Useless message"
-    }, {
-        content: "Complete Subject",
-        trigger: "textarea[name=description]",
-        run: "text ### TOUR DATA ###"
-    }, {
-        content: "Send the form",
-        trigger: ".s_website_form_send"
-    }, {
-        content: "Check we were redirected to the success page",
-        trigger: "#wrap:has(h1:contains('Thank You!'))"
-    }]});
+registry.category("web_tour.tours").add('website_crm_tour', {
+    steps: () => [{
+    content: "Complete name",
+    trigger: "input[name=contact_name]",
+    run: "edit John Smith",
+}, {
+    content: "Complete phone number",
+    trigger: "input[name=phone]",
+    run: "edit +32 485 118.218",
+}, {
+    content: "Complete Email",
+    trigger: "input[name=email_from]",
+    run: "edit john@smith.com",
+}, {
+    content: "Complete Company",
+    trigger: "input[name=partner_name]",
+    run: "edit Odoo S.A.",
+}, {
+    content: "Complete Subject",
+    trigger: "input[name=name]",
+    run: "edit Useless message",
+}, {
+    content: "Complete Subject",
+    trigger: "textarea[name=description]",
+    run: "edit ### TOUR DATA ###",
+}, {
+    content: "Send the form",
+    trigger: ".s_website_form_send",
+    run: "click",
+    expectUnloadPage: true,
+}, {
+    content: "Check we were redirected to the success page",
+    trigger: "#wrap:has(h1:contains('Thank You!'))",
+}]});
 
-    registry.category("web_tour.tours").add('website_crm_catch_logged_partner_info_tour', {
-        test: true,
-        url: '/contactus',
-        steps: [{
-        content: "Complete Subject",
-        trigger: "input[name=name]",
-        run: "text Useless subject"
-    }, {
-        content: "Complete Subject",
-        trigger: "textarea[name=description]",
-        run: "text ### TOUR DATA PREFILL ###"
-    }, {
-        content: "Send the form",
-        trigger: ".s_website_form_send"
-    }, {
-        content: "Check we were redirected to the success page",
-        trigger: "#wrap:has(h1:contains('Thank You!'))"
-    }]});
+registry.category("web_tour.tours").add('website_crm_catch_logged_partner_info_tour', {
+    steps: () => [
+{
+    content: "Fill Company Name",
+    trigger: "form#contactus_form input[name=partner_name]",
+    run: "edit Useless Company"
+},
+{
+    content: "Complete Subject",
+    trigger: "input[name=name]",
+    run: "edit Useless subject",
+}, {
+    content: "Complete Subject",
+    trigger: "textarea[name=description]",
+    run: "edit ### TOUR DATA PREFILL ###",
+}, {
+    content: "Send the form",
+    trigger: ".s_website_form_send",
+    run: "click",
+    expectUnloadPage: true,
+}, {
+    content: "Check we were redirected to the success page",
+    trigger: "#wrap:has(h1:contains('Thank You!'))",
+}]});
 
-    export default {};
+
+registerWebsitePreviewTour(
+    "website_crm_form_properties",
+    {
+        edition: true,
+    },
+    () => [
+        ...setFormActionToCreateOpportunity(),
+        {
+            content: "Open Sales Team select",
+            trigger:
+                ".o-snippets-menu [data-container-title='Form'] [data-label='Sales Team'] .dropdown-toggle",
+            run: "click",
+        },
+        {
+            content: "Select 'Sales' as Sales Team",
+            trigger: ".o_popover [data-action-id='addActionField']:contains(Test Sales Team)",
+            run: "click",
+        },
+        {
+            content: "Wait the form is patched with values before continue to edit it",
+            trigger: ":iframe form#contactus_form input[name=team_id]:not(:visible)",
+        },
+        {
+            content: "Add a new field to the form",
+            trigger: "button:contains(+ Field)",
+            run: "click",
+        },
+        {
+            content: "Open field Type selector",
+            trigger: "[data-container-title=Field] button#type_opt",
+            run: "click",
+        },
+        {
+            content: "Select a property field",
+            trigger: ".o_popover [data-action-id=existingField]:contains(test property)",
+            run: "click",
+        },
+        ...clickOnSave(),
+        {
+            content: "Check that there is no traceback",
+            trigger: "body:not(:has(.o_error_dialog))",
+            run: "click",
+        },
+    ]
+);

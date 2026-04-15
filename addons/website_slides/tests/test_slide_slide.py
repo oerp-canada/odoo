@@ -4,17 +4,53 @@
 import psycopg2
 
 from odoo.addons.website_slides.tests import common as slides_common
-from odoo.tests.common import users
+from odoo.tests.common import tagged, users
 from odoo.tools import mute_logger
 
 
 class TestSlideInternals(slides_common.SlidesCase):
+    def test_compute_category_completion_time(self):
+        """
+            Check that we properly calculate the completion time of a course without error, after deleting a slide.
+        """
+        self.category2 = self.env['slide.slide'].with_user(self.user_officer).create({
+            'name': 'Cooking Tips For Dieting',
+            'channel_id': self.channel.id,
+            'is_category': True,
+            'is_published': True,
+            'sequence': 5,
+        })
+        self.slide_4 = self.env['slide.slide'].with_user(self.user_officer).create({
+            'name': 'Vegan Diet',
+            'channel_id': self.channel.id,
+            'slide_category': 'document',
+            'is_published': True,
+            'completion_time': 5.0,
+            'sequence': 6,
+        })
+        self.slide_5 = self.env['slide.slide'].with_user(self.user_officer).create({
+            'name': 'Normal Diet',
+            'channel_id': self.channel.id,
+            'slide_category': 'document',
+            'is_published': True,
+            'completion_time': 1.5,
+            'sequence': 7,
+        })
+
+        before_unlink = self.category2.completion_time
+        self.assertEqual(before_unlink, self.slide_4.completion_time + self.slide_5.completion_time)
+
+        self.channel.slide_ids[6].sudo().unlink()
+        self.category2._compute_category_completion_time()
+
+        after_unlink = self.category2.completion_time
+        self.assertEqual(after_unlink, self.slide_4.completion_time)
 
     @mute_logger('odoo.sql_db')
     @users('user_manager')
     def test_slide_create_vote_constraint(self):
         # test vote value must be 1, 0 and -1.
-        with self.assertRaises(psycopg2.errors.CheckViolation), self.cr.savepoint():
+        with self.assertRaises(psycopg2.errors.CheckViolation):
             self.env['slide.slide.partner'].create({
                 'slide_id': self.slide.id,
                 'channel_id': self.channel.id,
@@ -45,6 +81,24 @@ class TestSlideInternals(slides_common.SlidesCase):
             slide.user_has_completed = True
         self.assertTrue(category_slides[0].user_has_completed_category)
 
+    def test_change_content_type(self):
+        """ To prevent constraint violation when changing type from video to article and vice-versa """
+        slide = self.env['slide.slide'].with_context(website_slides_skip_fetch_metadata=True).create({
+            'name': 'dummy',
+            'channel_id': self.channel.id,
+            'slide_category': 'video',
+            'is_published': True,
+            'url': 'https://youtu.be/W0JQcpGLSFw',
+        })
+
+        slide.write({'slide_category': 'article', 'html_content': '<p>Hello</p>'})
+        self.assertTrue(slide.html_content)
+        self.assertFalse(slide.url)
+
+        slide.slide_category = 'document'
+        self.assertFalse(slide.html_content)
+
+
 class TestVideoFromURL(slides_common.SlidesCase):
     def test_video_youtube(self):
         youtube_urls = {
@@ -52,6 +106,8 @@ class TestVideoFromURL(slides_common.SlidesCase):
                 'https://youtu.be/W0JQcpGLSFw',
                 'https://www.youtube.com/watch?v=W0JQcpGLSFw',
                 'https://www.youtube.com/watch?v=W0JQcpGLSFw&list=PL1-aSABtP6ACZuppkBqXFgzpNb2nVctZx',
+                'https://www.youtube.com/live/W0JQcpGLSFw?feature=shared',
+                'https://youtube.com/shorts/W0JQcpGLSFw?si=N9xYS2w3f1BWuhU9',
             ],
             'vmhB-pt7EfA': [  # id starts with v, it is important
                 'https://youtu.be/vmhB-pt7EfA',

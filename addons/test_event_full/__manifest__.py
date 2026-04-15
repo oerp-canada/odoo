@@ -1,9 +1,7 @@
-# -*- coding: utf-8 -*-
 # Part of Odoo. See LICENSE file for full copyright and licensing details.
 
 {
     'name': 'Test Full Event Flow',
-    'version': '1.0',
     'category': 'Hidden/Tests',
     'description': """
 This module will test the main event flows of Odoo, both frontend and backend.
@@ -20,7 +18,6 @@ automatic lead generation, full Online support, ...
         'payment_demo',
         'website_event_booth_sale_exhibitor',
         'website_event_exhibitor',
-        'website_event_meet',
         'website_event_sale',
         'website_event_track',
         'website_event_track_live',
@@ -33,8 +30,12 @@ automatic lead generation, full Online support, ...
     ],
     'assets': {
         'web.assets_tests': [
-            'test_event_full/static/**/*',
+            'test_event_full/static/src/js/tours/*',
+        ],
+        'web.assets_unit_tests': [
+            'test_event_full/static/src/js/tests/*',
         ],
     },
+    'author': 'Odoo S.A.',
     'license': 'LGPL-3',
 }

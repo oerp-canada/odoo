@@ -3,15 +3,16 @@
 
 from odoo.addons.crm.tests.common import TestCrmCommon
 from odoo.addons.iap.tests.common import MockIAPEnrich
-from odoo.tests.common import users
+from odoo.tests.common import tagged, users
 
 
+@tagged('at_install', '-post_install')  # LEGACY at_install
 class TestLeadEnrich(TestCrmCommon, MockIAPEnrich):
 
     @classmethod
     def setUpClass(cls):
         super(TestLeadEnrich, cls).setUpClass()
-        cls.registry.enter_test_mode(cls.cr)
+        cls.registry_enter_test_mode_cls()
 
         cls.leads = cls.env['crm.lead']
         for x in range(0, 4):
@@ -19,11 +20,6 @@ class TestLeadEnrich(TestCrmCommon, MockIAPEnrich):
                 'name': 'Test %s' % x,
                 'email_from': 'test_mail_%s@megaexample.com' % x
             })
-
-    @classmethod
-    def tearDownClass(cls):
-        cls.registry.leave_test_mode()
-        super().tearDownClass()
 
     @users('user_sales_manager')
     def test_enrich_internals(self):
@@ -41,12 +37,6 @@ class TestLeadEnrich(TestCrmCommon, MockIAPEnrich):
             self.assertEqual(lead.partner_name, 'Simulator INC')
         for lead in leads:
             self.assertEqual(lead.street, 'Simulator Street')
-
-    # @users('sales_manager')
-    # def test_enrich_error_credit(self):
-    #     leads = self.env['crm.lead'].browse(self.leads.ids)
-    #     with self.mockIAPEnrichGateway(sim_error='credit'):
-    #         leads.iap_enrich()
 
     @users('user_sales_manager')
     def test_enrich_error_jsonrpc_exception(self):

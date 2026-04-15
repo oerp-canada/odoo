@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Part of Odoo. See LICENSE file for full copyright and licensing details.
 
 
@@ -6,7 +5,6 @@
     'name': 'Quizzes on Tracks',
     'category': 'Marketing/Events',
     'sequence': 1007,
-    'version': '1.0',
     'summary': 'Quizzes on tracks',
     'website': 'https://www.odoo.com/app/events',
     'depends': [
@@ -29,14 +27,13 @@
     'demo': [
         'data/quiz_demo.xml',
     ],
-    'installable': True,
     'assets': {
         'web.assets_frontend': [
             'website_event_track_quiz/static/src/scss/event_quiz.scss',
-            'website_event_track_quiz/static/src/js/event_quiz.js',
-            'website_event_track_quiz/static/src/js/event_quiz_leaderboard.js',
+            'website_event_track_quiz/static/src/interactions/**/*',
             'website_event_track_quiz/static/src/xml/quiz_templates.xml',
         ],
     },
+    'author': 'Odoo S.A.',
     'license': 'LGPL-3',
 }

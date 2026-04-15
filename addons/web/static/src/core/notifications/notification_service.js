@@ -1,12 +1,7 @@
-/** @odoo-module **/
-
-import { browser } from "../browser/browser";
+import { reactive } from "@web/owl2/utils";
 import { registry } from "../registry";
 import { NotificationContainer } from "./notification_container";
 
-import { reactive } from "@odoo/owl";
-
-const AUTOCLOSE_DELAY = 4000;
 
 /**
  * @typedef {Object} NotificationButton
@@ -17,6 +12,7 @@ const AUTOCLOSE_DELAY = 4000;
  *
  * @typedef {Object} NotificationOptions
  * @property {string} [title]
+ * @property {number} [autocloseDelay=4000]
  * @property {"warning" | "danger" | "success" | "info"} [type]
  * @property {boolean} [sticky=false]
  * @property {string} [className]
@@ -25,14 +21,16 @@ const AUTOCLOSE_DELAY = 4000;
  */
 
 export const notificationService = {
+    notificationContainer: NotificationContainer,
+
     start() {
         let notifId = 0;
         const notifications = reactive({});
 
         registry.category("main_components").add(
-            "NotificationContainer",
+            this.notificationContainer.name,
             {
-                Component: NotificationContainer,
+                Component: this.notificationContainer,
                 props: { notifications },
             },
             { sequence: 100 }
@@ -46,18 +44,18 @@ export const notificationService = {
             const id = ++notifId;
             const closeFn = () => close(id);
             const props = Object.assign({}, options, { message, close: closeFn });
-            const sticky = props.sticky;
-            delete props.sticky;
             delete props.onClose;
             const notification = {
                 id,
                 props,
                 onClose: options.onClose,
             };
-            notifications[id] = notification;
-            if (!sticky) {
-                browser.setTimeout(closeFn, AUTOCLOSE_DELAY);
+            for (const [notifId, notif] of Object.entries(notifications)) {
+                if (notif.props.message.toString() === notification.props.message.toString()) {
+                    close(notifId);
+                }
             }
+            notifications[id] = notification;
             return closeFn;
         }
 

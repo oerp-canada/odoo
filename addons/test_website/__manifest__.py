@@ -1,9 +1,7 @@
-# -*- encoding: utf-8 -*-
 # Part of Odoo. See LICENSE file for full copyright and licensing details.
 
 {
     'name': 'Website Test',
-    'version': '1.0',
     'category': 'Hidden',
     'sequence': 9876,
     'summary': 'Website Test, mainly for module install/uninstall tests',
@@ -17,31 +15,39 @@ models which only purpose is to run tests.""",
         'website',
         'theme_default',
     ],
-    'data': [
-        'views/templates.xml',
-        'data/test_website_data.xml',
-        'security/ir.model.access.csv',
+    'demo': [
+        'data/test_website_demo.xml',
     ],
-    'installable': True,
+    'data': [
+        'security/test_website_security.xml',
+        'security/ir.model.access.csv',
+        'views/templates.xml',
+        'views/test_model_multi_website_views.xml',
+        'views/test_model_views.xml',
+        'data/test_website_data.xml',
+    ],
     'assets': {
         'test_website.test_bundle': [
-            '/web/static/lib/qweb/qweb2.js',
             'http://test.external.link/javascript1.js',
-            '/web/static/lib/jquery.ui/jquery-ui.css',
+            ('include', 'web.icons_fonts'),
             'http://test.external.link/style1.css',
-            '/web/static/src/boot.js',
+            '/web/static/src/module_loader.js',
             'http://test.external.link/javascript2.js',
             'http://test.external.link/style2.css',
         ],
         'web.assets_frontend': [
-            'test_website/static/src/js/test_error.js',
+            'test_website/static/src/interactions/**/*',
+        ],
+        'website.website_builder_assets': [
+            'test_website/static/src/website_builder/**/*',
         ],
         'web.assets_tests': [
             'test_website/static/tests/tours/*',
         ],
-        'web.qunit_suite_tests': [
-            'test_website/static/tests/*.js',
+        'web.assets_unit_tests': [
+            'test_website/static/tests/builder/*',
         ],
     },
+    'author': 'Odoo S.A.',
     'license': 'LGPL-3',
 }

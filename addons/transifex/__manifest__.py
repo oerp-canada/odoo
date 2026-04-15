@@ -1,9 +1,7 @@
-# -*- coding: utf-8 -*-
 # Part of Odoo. See LICENSE file for full copyright and licensing details.
 
 {
     'name': 'Transifex integration',
-    'version': '1.0',
     'summary': 'Add a link to edit a translation in Transifex',
     'category': 'Hidden/Tools',
     'description':
@@ -33,5 +31,6 @@ project.
         ],
     },
     'depends': ['base', 'web'],
+    'author': 'Odoo S.A.',
     'license': 'LGPL-3',
 }

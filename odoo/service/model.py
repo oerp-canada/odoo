@@ -1,174 +1,115 @@
 # Part of Odoo. See LICENSE file for full copyright and licensing details.
 import logging
-import random
 import threading
-import time
 from collections.abc import Mapping, Sequence
 from functools import partial
 
-from psycopg2 import IntegrityError, OperationalError, errorcodes
-
-import odoo
-from odoo.exceptions import UserError, ValidationError
-from odoo.http import request
-from odoo.models import check_method_name
-from odoo.tools import DotDict
-from odoo.tools.translate import _, translate_sql_constraint
-from . import security
-from ..tools import lazy
+from odoo import api
+from odoo.exceptions import (
+    AccessDenied,
+    UserError,
+)
+from odoo.http.retrying import retrying
+from odoo.models import BaseModel, get_public_method
+from odoo.modules.registry import Registry
+from odoo.tools import lazy
 
 _logger = logging.getLogger(__name__)
 
-PG_CONCURRENCY_ERRORS_TO_RETRY = (errorcodes.LOCK_NOT_AVAILABLE, errorcodes.SERIALIZATION_FAILURE, errorcodes.DEADLOCK_DETECTED)
-MAX_TRIES_ON_CONCURRENCY_FAILURE = 5
+
+class Params:
+    """Representation of parameters to a function call that can be stringified for display/logging"""
+    def __init__(self, args, kwargs):
+        self.args = args
+        self.kwargs = kwargs
+
+    def __str__(self):
+        params = [repr(arg) for arg in self.args]
+        params.extend(f"{key}={value!r}" for key, value in sorted(self.kwargs.items()))
+        return ', '.join(params)
+
+
+def call_kw(model: BaseModel, name: str, args: list, kwargs: Mapping):
+    """ Invoke the given method ``name`` on the recordset ``model``.
+
+    Private methods cannot be called, only ones returned by `get_public_method`.
+    """
+    method = get_public_method(model, name)
+
+    # get the records and context
+    if getattr(method, '_api_model', False):
+        # @api.model -> no ids
+        recs = model
+    else:
+        ids, args = args[0], args[1:]
+        recs = model.browse(ids)
+
+    # altering kwargs is a cause of errors, for instance when retrying a request
+    # after a serialization error: the retry is done without context!
+    kwargs = dict(kwargs)
+    context = kwargs.pop('context', None) or {}
+    recs = recs.with_context(context)
+
+    # call
+    _logger.debug("call %s.%s(%s)", recs, method.__name__, Params(args, kwargs))
+    result = method(recs, *args, **kwargs)
+
+    # adapt the result
+    if name == "create":
+        # special case for method 'create'
+        result = result.id if isinstance(args[0], Mapping) else result.ids
+    elif isinstance(result, BaseModel):
+        result = result.ids
+
+    return result
 
 
 def dispatch(method, params):
-    db, uid, passwd = params[0], int(params[1]), params[2]
-    security.check(db, uid, passwd)
+    db, uid, passwd, model, method_, *args = params
+    uid = int(uid)
+    if not passwd:
+        raise AccessDenied
+    # access checked once we open a cursor
 
-    threading.current_thread().dbname = db
     threading.current_thread().uid = uid
-    registry = odoo.registry(db).check_signaling()
-    with registry.manage_changes():
+    registry = Registry(db).check_signaling()
+    try:
         if method == 'execute':
-            res = execute(db, uid, *params[3:])
+            kw = {}
         elif method == 'execute_kw':
-            res = execute_kw(db, uid, *params[3:])
+            # accept: (args, kw=None)
+            if len(args) == 1:
+                args += ({},)
+            args, kw = args
+            if kw is None:
+                kw = {}
         else:
-            raise NameError("Method not available %s" % method)
+            raise NameError(f"Method not available {method}")  # noqa: TRY301
+        with registry.cursor() as cr:
+            api.Environment(cr, api.SUPERUSER_ID, {})['res.users']._check_uid_passwd(uid, passwd)
+            res = execute_cr(cr, uid, model, method_, args, kw)
+        registry.signal_changes()
+    except Exception:
+        registry.reset_changes()
+        raise
     return res
 
 
-def execute_cr(cr, uid, obj, method, *args, **kw):
-    # clean cache etc if we retry the same transaction
-    cr.reset()
-    env = odoo.api.Environment(cr, uid, {})
+def execute_cr(cr, uid, obj, method, args, kw):
+    env = api.Environment(cr, uid, {})
+    env.transaction.reset()  # clean cache etc if we retry the same transaction
+    env.transaction.default_env = env  # ensure this is the default env for the call
     recs = env.get(obj)
     if recs is None:
-        raise UserError(_("Object %s doesn't exist", obj))
-    result = retrying(partial(odoo.api.call_kw, recs, method, args, kw), env)
+        raise UserError(f"Object {obj} doesn't exist")  # pylint: disable=missing-gettext
+    threading.current_thread().rpc_model_method = f'{obj}.{method}'
+    result = retrying(partial(call_kw, recs, method, args, kw), env)
     # force evaluation of lazy values before the cursor is closed, as it would
     # error afterwards if the lazy isn't already evaluated (and cached)
     for l in _traverse_containers(result, lazy):
         _0 = l._value
-    return result
-
-
-def execute_kw(db, uid, obj, method, args, kw=None):
-    return execute(db, uid, obj, method, *args, **kw or {})
-
-
-def execute(db, uid, obj, method, *args, **kw):
-    with odoo.registry(db).cursor() as cr:
-        check_method_name(method)
-        res = execute_cr(cr, uid, obj, method, *args, **kw)
-        if res is None:
-            _logger.info('The method %s of the object %s can not return `None`!', method, obj)
-        return res
-
-
-def _as_validation_error(env, exc):
-    """ Return the IntegrityError encapsuled in a nice ValidationError """
-
-    unknown = _('Unknown')
-    model = DotDict({'_name': unknown.lower(), '_description': unknown})
-    field = DotDict({'name': unknown.lower(), 'string': unknown})
-    for _name, rclass in env.registry.items():
-        if exc.diag.table_name == rclass._table:
-            model = rclass
-            field = model._fields.get(exc.diag.column_name) or field
-            break
-
-    if exc.pgcode == errorcodes.NOT_NULL_VIOLATION:
-        return ValidationError(_(
-            "The operation cannot be completed:\n"
-            "- Create/update: a mandatory field is not set.\n"
-            "- Delete: another model requires the record being deleted."
-            " If possible, archive it instead.\n\n"
-            "Model: %(model_name)s (%(model_tech_name)s)\n"
-            "Field: %(field_name)s (%(field_tech_name)s)\n",
-            model_name=model._description,
-            model_tech_name=model._name,
-            field_name=field.string,
-            field_tech_name=field.name,
-        ))
-
-    if exc.pgcode == errorcodes.FOREIGN_KEY_VIOLATION:
-        return ValidationError(_(
-            "The operation cannot be completed: another model requires "
-            "the record being deleted. If possible, archive it instead.\n\n"
-            "Model: %(model_name)s (%(model_tech_name)s)\n"
-            "Constraint: %(constraint)s\n",
-            model_name=model._description,
-            model_tech_name=model._name,
-            constraint=exc.diag.constraint_name,
-        ))
-
-    if exc.diag.constraint_name in env.registry._sql_constraints:
-        return ValidationError(_(
-            "The operation cannot be completed: %s",
-            translate_sql_constraint(env.cr, exc.diag.constraint_name, env.context.get('lang', 'en_US'))
-        ))
-
-    return ValidationError(_("The operation cannot be completed: %s", exc.args[0]))
-
-
-def retrying(func, env):
-    """
-    Call ``func`` until the function returns without serialisation
-    error. A serialisation error occurs when two requests in independent
-    cursors perform incompatible changes (such as writing different
-    values on a same record). By default, it retries up to 5 times.
-
-    :param callable func: The function to call, you can pass arguments
-        using :func:`functools.partial`:.
-    :param odoo.api.Environment env: The environment where the registry
-        and the cursor are taken.
-    """
-    try:
-        for tryno in range(1, MAX_TRIES_ON_CONCURRENCY_FAILURE + 1):
-            tryleft = MAX_TRIES_ON_CONCURRENCY_FAILURE - tryno
-            try:
-                result = func()
-                if not env.cr._closed:
-                    env.cr.flush()  # submit the changes to the database
-                break
-            except (IntegrityError, OperationalError) as exc:
-                if env.cr._closed:
-                    raise
-                env.cr.rollback()
-                env.registry.reset_changes()
-                if request:
-                    request.session = request._get_session_and_dbname()[0]
-                    # Rewind files in case of failure
-                    for filename, file in request.httprequest.files.items():
-                        if hasattr(file, "seekable") and file.seekable():
-                            file.seek(0)
-                        else:
-                            raise RuntimeError(f"Cannot retry request on input file {filename!r} after serialization failure") from exc
-                if isinstance(exc, IntegrityError):
-                    raise _as_validation_error(env, exc) from exc
-                if exc.pgcode not in PG_CONCURRENCY_ERRORS_TO_RETRY:
-                    raise
-                if not tryleft:
-                    _logger.info("%s, maximum number of tries reached!", errorcodes.lookup(exc.pgcode))
-                    raise
-
-                wait_time = random.uniform(0.0, 2 ** tryno)
-                _logger.info("%s, %s tries left, try again in %.04f sec...", errorcodes.lookup(exc.pgcode), tryleft, wait_time)
-                time.sleep(wait_time)
-        else:
-            # handled in the "if not tryleft" case
-            raise RuntimeError("unreachable")
-
-    except Exception:
-        env.registry.reset_changes()
-        raise
-
-    if not env.cr.closed:
-        env.cr.commit()  # effectively commits and execute post-commits
-    env.registry.signal_changes()
+    if result is None:
+        _logger.info('The method %s of the object %s cannot return `None`!', method, obj)
     return result
 
 

@@ -1,52 +1,90 @@
-/* @odoo-module */
+/**
+ * @typedef DependencyInManifest
+ * ⚠️ Each dependency of this file in `mail` must be explicitly added in
+ * `web.assets_frontend` in the manifest. This error is not caught by the
+ * standard runbot, only during staging or nightly. The missing dependency might
+ * added by livechat so it only happens when frontend modules are installed and
+ * tested while livechat is not installed.
+ */
+import { getInnerHtml, getOuterHtml } from "@mail/utils/common/html";
 
-import { loadEmoji } from "@web/core/emoji_picker/emoji_picker";
+import { htmlEscape, markup } from "@odoo/owl";
 
-import { escape, unaccent } from "@web/core/utils/strings";
-import { url } from "@web/core/utils/urls";
+import { router } from "@web/core/browser/router";
+import { emojiLoader } from "@web/core/emoji_picker/emoji_loader";
+import { formatList, normalize } from "@web/core/l10n/utils";
+import {
+    createDocumentFragmentFromContent,
+    createElementWithContent,
+    htmlJoin,
+    htmlReplace,
+    htmlReplaceAll,
+    htmlTrim,
+    setElementContent,
+} from "@web/core/utils/html";
+import { escapeRegExp } from "@web/core/utils/strings";
+import { getOrigin } from "@web/core/utils/urls";
+import { setAttributes } from "@web/core/utils/xml";
 
 const urlRegexp =
-    /\b(?:https?:\/\/\d{1,3}(?:\.\d{1,3}){3}|(?:https?:\/\/|(?:www\.))[-a-z0-9@:%._+~#=\u00C0-\u024F\u1E00-\u1EFF]{2,256}\.[a-z]{2,13})\b(?:[-a-z0-9@:%_+~#?&[\]^|{}`\\'$//=\u00C0-\u024F\u1E00-\u1EFF]|,(?!$| )|\.(?!$| |\.)|;(?!$| ))*/gi;
+    /\b(?:https?:\/\/\d{1,3}(?:\.\d{1,3}){3}|(?:https?:\/\/|(?:www\.))[-a-z0-9@:%._+~#=\u00C0-\u024F\u1E00-\u1EFF]{1,256}\.[a-z]{2,13})\b(?:[-a-z0-9@:%_+~#?&[\]^|{}`\\'$//=\u00C0-\u024F\u1E00-\u1EFF]|[.]*[-a-z0-9@:%_+~#?&[\]^|{}`\\'$//=\u00C0-\u024F\u1E00-\u1EFF]|,(?!$| )|\.(?!$| |\.)|;(?!$| ))*/gi;
+const messageUrlRegExp = new RegExp(`^${escapeRegExp(getOrigin())}/mail/message/(\\d+)$`);
 
 /**
- * Escape < > & as html entities
- *
- * @param {string}
- * @return {string}
+ * @param {string|ReturnType<markup>} rawBody
+ * @param {Object} validMentions
+ * @param {import("models").Persona[]} validMentions.partners
+ * @returns {Promise<string|ReturnType<markup>>}
  */
-const _escapeEntities = (function () {
-    const map = { "&": "&amp;", "<": "&lt;", ">": "&gt;" };
-    const escaper = function (match) {
-        return map[match];
-    };
-    const testRegexp = RegExp("(?:&|<|>)");
-    const replaceRegexp = RegExp("(?:&|<|>)", "g");
-    return function (string) {
-        string = string == null ? "" : "" + string;
-        return testRegexp.test(string) ? string.replace(replaceRegexp, escaper) : string;
-    };
-})();
-
-/**
- * @param rawBody {string}
- * @param validRecords {Object}
- * @param validRecords.partners {Partner}
- */
-export async function prettifyMessageContent(rawBody, validRecords = []) {
-    // Suggested URL Javascript regex of http://stackoverflow.com/questions/3809401/what-is-a-good-regular-expression-to-match-a-url
-    // Adapted to make http(s):// not required if (and only if) www. is given. So `should.notmatch` does not match.
-    // And further extended to include Latin-1 Supplement, Latin Extended-A, Latin Extended-B and Latin Extended Additional.
-    const escapedAndCompactContent = escapeAndCompactTextContent(rawBody);
-    let body = escapedAndCompactContent.replace(/&nbsp;/g, " ").trim();
+export function prettifyMessageText(rawBody, { validMentions = {}, thread } = {}) {
+    if (rawBody instanceof markup().constructor) {
+        // markup is already "pretty"
+        return rawBody;
+    }
+    let body = htmlTrim(rawBody);
+    body = htmlReplace(body, /(\r|\n){2,}/g, () => markup`<br/><br/>`);
+    body = htmlReplace(body, /(\r|\n)/g, () => markup`<br/>`);
+    body = htmlReplace(body, /&nbsp;/g, () => " ");
+    body = htmlTrim(body);
     // This message will be received from the mail composer as html content
     // subtype but the urls will not be linkified. If the mail composer
     // takes the responsibility to linkify the urls we end up with double
     // linkification a bit everywhere. Ideally we want to keep the content
     // as text internally and only make html enrichment at display time but
     // the current design makes this quite hard to do.
-    body = generateMentionsLinks(body, validRecords);
+    body = generateMentionsLinks(body, { ...validMentions, thread });
     body = parseAndTransform(body, addLink);
-    body = await _generateEmojisOnHtml(body);
+    return body;
+}
+
+/**
+ * @param {string|ReturnType<markup>} htmlBody
+ */
+export async function generateEmojisOnHtml(htmlBody, { allowEmojiLoading = true } = {}) {
+    let body = htmlBody;
+    if (allowEmojiLoading && !emojiLoader.loaded) {
+        await emojiLoader.load();
+    }
+    if (emojiLoader.loaded) {
+        body = _generateEmojisOnHtml(body);
+    }
+    return body;
+}
+
+/**
+ * @param {string|ReturnType<markup>} rawBody
+ * @param {Object} validMentions
+ * @param {import("models").Persona[]} validMentions.partners
+ * @param rawBody {string|ReturnType<markup>}
+ * @param validRecords {Object}
+ * @param validRecords.partners {Partner}
+ */
+export async function prettifyMessageContent(
+    rawBody,
+    { validMentions = [], allowEmojiLoading = true } = {}
+) {
+    let body = prettifyMessageText(rawBody, { validMentions });
+    body = await generateEmojisOnHtml(body, { allowEmojiLoading });
     return body;
 }
 
@@ -55,25 +93,18 @@ export async function prettifyMessageContent(rawBody, validRecords = []) {
  * should handle it or it should be handled after/before calling parseAndTransform. So if the result
  * of this function is used in a t-raw, be very careful.
  *
- * @param {string} htmlString
+ * @param {string|ReturnType<markup>} htmlString
  * @param {function} transformFunction
- * @returns {string}
+ * @returns {ReturnType<markup>}
  */
 export function parseAndTransform(htmlString, transformFunction) {
-    const openToken = "OPEN" + Date.now();
-    const string = htmlString.replace(/&lt;/g, openToken);
-    let children;
+    const div = document.createElement("div");
     try {
-        children = $("<div>").html(string).contents();
+        setElementContent(div, htmlString);
     } catch {
-        children = $("<div>")
-            .html("<pre>" + string + "</pre>")
-            .contents();
+        div.appendChild(createElementWithContent("pre", htmlString));
     }
-    return _parseAndTransform(children, transformFunction).replace(
-        new RegExp(openToken, "g"),
-        "&lt;"
-    );
+    return _parseAndTransform(Array.from(div.childNodes), transformFunction);
 }
 
 /**
@@ -82,48 +113,69 @@ export function parseAndTransform(htmlString, transformFunction) {
  *   param node
  *   param function
  *   return string
- * @return {string}
+ * @return {ReturnType<markup>}
  */
 function _parseAndTransform(nodes, transformFunction) {
     if (!nodes) {
         return;
     }
-    return Object.values(nodes)
-        .map((node) => {
-            return transformFunction(node, function () {
+    return htmlJoin(
+        Object.values(nodes).map((node) =>
+            transformFunction(node, function () {
                 return _parseAndTransform(node.childNodes, transformFunction);
-            });
-        })
-        .join("");
+            })
+        )
+    );
 }
 
 /**
  * @param {string} text
- * @return {string} linkified text
+ * @return {ReturnType<markup>} linkified text
  */
 function linkify(text) {
     let curIndex = 0;
     let result = "";
     let match;
     while ((match = urlRegexp.exec(text)) !== null) {
-        result += _escapeEntities(text.slice(curIndex, match.index));
         const url = match[0];
-        const href = encodeURI(!/^https?:\/\//i.test(url) ? "http://" + url : url);
-        result += `<a target="_blank" rel="noreferrer noopener" href="${href}">${_escapeEntities(
-            url
-        )}</a>`;
+        const fixedUrl = !/^https?:\/\//i.test(url) ? `http://${url}` : url;
+        if (!URL.canParse(fixedUrl)) {
+            continue;
+        }
+        result = htmlJoin([result, text.slice(curIndex, match.index)]);
+        const { href } = URL.parse(fixedUrl);
+        const link = document.createElement("a");
+        setAttributes(link, {
+            target: "_blank",
+            rel: "noreferrer noopener",
+            href,
+        });
+        link.textContent = url;
+        const messageMatch = messageUrlRegExp.exec(fixedUrl);
+        if (messageMatch !== null) {
+            setAttributes(link, {
+                "data-oe-id": messageMatch[1],
+                "data-oe-model": "mail.message",
+            });
+            link.classList.add("o_message_redirect");
+        }
+        result = htmlJoin([result, getOuterHtml(link)]);
         curIndex = match.index + match[0].length;
     }
-    return result + _escapeEntities(text.slice(curIndex));
+    return htmlJoin([result, text.slice(curIndex)]);
 }
 
+/**
+ * @param {Node} node
+ * @param {function} transformFunction
+ * @return {ReturnType<markup>}
+ */
 export function addLink(node, transformChildren) {
     if (node.nodeType === 3) {
         // text node
-        const linkified = linkify(node.data);
-        if (linkified !== node.data) {
-            const div = document.createElement("div");
-            div.innerHTML = linkified;
+        const linkified = linkify(node.textContent);
+        if (linkified.toString() !== node.textContent) {
+            const div = createElementWithContent("div", linkified);
             for (const childNode of [...div.childNodes]) {
                 node.parentNode.insertBefore(childNode, node);
             }
@@ -133,100 +185,183 @@ export function addLink(node, transformChildren) {
         return node.textContent;
     }
     if (node.tagName === "A") {
-        return node.outerHTML;
+        return getOuterHtml(node);
     }
     transformChildren();
-    return node.outerHTML;
+    return getOuterHtml(node);
+}
+
+function generateMentionElement({ className, id, model, text }) {
+    const link = document.createElement("a");
+    setAttributes(link, {
+        href: router.stateToUrl({ model: model, resId: id }),
+        class: className,
+        "data-oe-id": id,
+        "data-oe-model": model,
+        target: "_blank",
+        contenteditable: "false",
+    });
+    link.textContent = text;
+    return link;
 }
 
 /**
- * Returns an escaped conversion of a content.
- *
- * @param {string} content
- * @returns {string}
+ * @param {import("models").ResPartner} partner
+ * @param {import("models").Thread} thread
  */
-export function escapeAndCompactTextContent(content) {
-    //Removing unwanted extra spaces from message
-    let value = escape(content).trim();
-    value = value.replace(/(\r|\n){2,}/g, "<br/><br/>");
-    value = value.replace(/(\r|\n)/g, "<br/>");
+export function generatePartnerMentionElement(partner, thread) {
+    return generateMentionElement({
+        className: "o_mail_redirect",
+        id: partner.id,
+        model: "res.partner",
+        text: `@${thread?.getPersonaName(partner) ?? partner.name}`,
+    });
+}
 
-    // prevent html space collapsing
-    value = value.replace(/ /g, "&nbsp;").replace(/([^>])&nbsp;([^<])/g, "$1 $2");
-    return value;
+/** @param {import("models").ResRole} role */
+export function generateRoleMentionElement(role) {
+    return generateMentionElement({
+        className: "o-discuss-mention",
+        id: role.id,
+        model: "res.role",
+        text: `@${role.name}`,
+    });
+}
+
+/** @param {string} label */
+export function generateSpecialMentionElement(label) {
+    const link = document.createElement("a");
+    setAttributes(link, {
+        class: "o-discuss-mention",
+        contenteditable: "false",
+    });
+    link.textContent = `@${label}`;
+    return link;
+}
+
+/** @param {import("models").DiscussChannel} channel */
+export function generateChannelMentionElement(channel) {
+    return generateMentionElement({
+        className: `o_channel_redirect${
+            channel.parent_channel_id ? " o_channel_redirect_asThread" : ""
+        }`,
+        id: channel.id,
+        model: "discuss.channel",
+        text: `#${channel.fullNameWithParent}`,
+    });
 }
 
 /**
- * @param body {string}
- * @param validRecords {Object}
- * @param validRecords.partners {Array}
- * @return {string}
+ * @param {string|ReturnType<markup>} body
+ * @param {Object} param1
+ * @param {import("models").ResPartner[]} param1.partners
+ * @param {import("models").ResRole[]} param1.roles
+ * @param {import("models").Thread[]} param1.threads
+ * @param {string[]} param1.specialMentions
+ * @param {import("models").Thread} param1.thread
+ * @return {ReturnType<markup>}
  */
-function generateMentionsLinks(body, { partners = [], threads = [] }) {
+function generateMentionsLinks(
+    body,
+    { channels = [], partners = [], roles = [], specialMentions = [], thread }
+) {
     const mentions = [];
     for (const partner of partners) {
         const placeholder = `@-mention-partner-${partner.id}`;
-        const text = `@${escape(partner.name)}`;
+        const text = `@${thread?.getPersonaName(partner) ?? partner.name}`;
         mentions.push({
-            class: "o_mail_redirect",
-            id: partner.id,
-            model: "res.partner",
+            link: generatePartnerMentionElement(partner, thread),
             placeholder,
-            text,
         });
-        body = body.replace(text, placeholder);
+        body = htmlReplace(body, text, placeholder);
     }
-    for (const thread of threads) {
-        const placeholder = `#-mention-channel-${thread.id}`;
-        const text = `#${escape(thread.displayName)}`;
+    for (const channel of channels) {
+        const placeholder = `#-mention-channel-${channel.id}`;
+        const text = `#${channel.fullNameWithParent}`;
         mentions.push({
-            class: "o_channel_redirect",
-            id: thread.id,
-            model: "discuss.channel",
+            link: generateChannelMentionElement(channel),
             placeholder,
-            text,
         });
-        body = body.replace(text, placeholder);
+        body = htmlReplace(body, text, placeholder);
     }
-    const baseHREF = url("/web");
+    for (const special of specialMentions) {
+        const text = `@${special}`;
+        const placeholder = `@-mention-special-${special}`;
+        mentions.push({
+            link: generateSpecialMentionElement(special),
+            placeholder,
+        });
+        body = htmlReplace(body, text, placeholder);
+    }
+    for (const role of roles) {
+        const placeholder = `@-mention-role-${role.id}`;
+        const text = `@${role.name}`;
+        mentions.push({
+            link: generateRoleMentionElement(role),
+            placeholder,
+        });
+        body = htmlReplace(body, text, placeholder);
+    }
     for (const mention of mentions) {
-        const href = `href='${baseHREF}#model=${mention.model}&id=${mention.id}'`;
-        const attClass = `class='${mention.class}'`;
-        const dataOeId = `data-oe-id='${mention.id}'`;
-        const dataOeModel = `data-oe-model='${mention.model}'`;
-        const target = "target='_blank'";
-        const link = `<a ${href} ${attClass} ${dataOeId} ${dataOeModel} ${target}>${mention.text}</a>`;
-        body = body.replace(mention.placeholder, link);
+        const link = mention.link;
+        body = htmlReplace(body, mention.placeholder, getOuterHtml(link));
     }
-    return body;
+    return htmlEscape(body);
 }
 
 /**
  * @private
- * @param {string} htmlString
- * @returns {string}
+ * @param {string|ReturnType<markup>} htmlString
  */
-async function _generateEmojisOnHtml(htmlString) {
-    const { emojis } = await loadEmoji();
-    for (const emoji of emojis) {
-        for (const source of [...emoji.shortcodes, ...emoji.emoticons]) {
-            const escapedSource = String(source).replace(/([.*+?=^!:${}()|[\]/\\])/g, "\\$1");
-            const regexp = new RegExp("(\\s|^)(" + escapedSource + ")(?=\\s|$)", "g");
-            htmlString = htmlString.replace(regexp, "$1" + emoji.codepoints);
+function _generateEmojisOnHtml(htmlString) {
+    for (const emoji of emojiLoader.emojis) {
+        for (const source of emoji.shortcodes.concat(emoji.emoticons)) {
+            const escapedSource = htmlEscape(source);
+            const regexp = new RegExp(
+                "(\\s|^)(" + escapeRegExp(escapedSource) + ")(?=\\s|$|<)",
+                "g"
+            );
+            htmlString = htmlReplace(htmlString, regexp, (_, group1) => group1 + emoji.codepoints);
         }
     }
-    return htmlString;
+    return htmlEscape(htmlString);
 }
 
+/**
+ * @param {string|ReturnType<markup>} body
+ * @returns {ReturnType<markup>}
+ */
+export function getNonEditableMentions(body) {
+    const doc = createDocumentFragmentFromContent(body);
+    for (const block of doc.body.querySelectorAll(".o_mail_reply_hide")) {
+        block.classList.remove("o_mail_reply_hide");
+    }
+    // for mentioned partner
+    for (const mention of doc.body.querySelectorAll(".o_mail_redirect")) {
+        mention.setAttribute("contenteditable", false);
+    }
+    // for mentioned channel
+    for (const mention of doc.body.querySelectorAll(".o_channel_redirect")) {
+        mention.setAttribute("contenteditable", false);
+    }
+    // for special mentions
+    for (const mention of doc.body.querySelectorAll(".o-discuss-mention")) {
+        mention.setAttribute("contenteditable", false);
+    }
+    return getInnerHtml(doc.body);
+}
+
+/**
+ * @param {string|ReturnType<markup>} htmlString
+ * @returns {string}
+ */
 export function htmlToTextContentInline(htmlString) {
-    const fragment = document.createDocumentFragment();
+    htmlString = htmlReplace(htmlString, /<br\s*\/?>/gi, () => " ");
     const div = document.createElement("div");
-    fragment.appendChild(div);
-    htmlString = htmlString.replace(/<br\s*\/?>/gi, " ");
     try {
-        div.innerHTML = htmlString;
+        setElementContent(div, htmlString);
     } catch {
-        div.innerHTML = `<pre>${htmlString}</pre>`;
+        div.appendChild(createElementWithContent("pre", htmlString));
     }
     return div.textContent
         .trim()
@@ -235,12 +370,89 @@ export function htmlToTextContentInline(htmlString) {
 }
 
 export function convertBrToLineBreak(str) {
-    return new DOMParser().parseFromString(
-        str.replaceAll("<br>", "\n").replaceAll("</br>", "\n"),
-        "text/html"
-    ).body.textContent;
+    str = htmlReplace(str, /<br\s*\/?>/gi, () => "\n");
+    return createDocumentFragmentFromContent(str).body.textContent;
+}
+
+export function convertLineBreakToBr(str) {
+    return htmlReplace(str, /(\r|\n)/g, () => markup`<br/>`);
 }
 
 export function cleanTerm(term) {
-    return unaccent(term.toLowerCase());
+    return typeof term === "string" ? normalize(term) : "";
+}
+
+/**
+ * Parses text to find email: Tagada <address@mail.fr> -> [Tagada, address@mail.fr] or False
+ *
+ * @param {string} text
+ * @returns {[string,string|boolean]|false}
+ */
+export function parseEmail(text) {
+    if (!text) {
+        return;
+    }
+    let result = text.match(/"?(.*?)"? <(.*@.*)>/);
+    if (result) {
+        const name = (result[1] || "").trim().replace(/(^"|"$)/g, "");
+        return [name, (result[2] || "").trim()];
+    }
+    result = text.match(/(.*@.*)/);
+    if (result) {
+        return [String(result[1] || "").trim(), String(result[1] || "").trim()];
+    }
+    return [text, false];
+}
+
+export const EMOJI_REGEX = /\p{Emoji_Presentation}|\p{Emoji}\uFE0F|\u200d/gu;
+
+/**
+ * Wrap emojis present in the given text with a title and return a safe HTML
+ * string.
+ *
+ * @param {string|ReturnType<markup>} content
+ * @returns {ReturnType<markup>}
+ */
+export function decorateEmojis(content) {
+    if (!emojiLoader.loaded || !content) {
+        return content;
+    }
+    const doc = createDocumentFragmentFromContent(content);
+    const nodes = doc.evaluate(
+        ".//text()",
+        doc.body,
+        null,
+        XPathResult.UNORDERED_NODE_SNAPSHOT_TYPE,
+        null
+    );
+    for (let i = 0; i < nodes.snapshotLength; i++) {
+        const node = nodes.snapshotItem(i);
+        const span = document.createElement("span");
+        setElementContent(
+            span,
+            htmlReplaceAll(node.textContent, EMOJI_REGEX, (codepoints) => {
+                if (!emojiLoader.map.has(codepoints)) {
+                    return codepoints;
+                }
+                const title = formatList(emojiLoader.map.get(codepoints).shortcodes, {
+                    style: "unit-narrow",
+                });
+                return markup`<span class="o-mail-emoji" title="${title}">${codepoints}</span>`;
+            })
+        );
+        node.replaceWith(...span.childNodes);
+    }
+    return getInnerHtml(doc.body);
+}
+
+/**
+ * Converts an object of key/value to string, where object represents a attClass with OWL syntax object
+ * and value is evaluation of each key.
+ * Example: "attClassObjectToString({ a: 1, b: 0, c: 1 })" converts to "a c".
+ */
+export function attClassObjectToString(obj) {
+    return Object.entries(obj)
+        .filter(([_, val]) => val)
+        .map(([key, _]) => key)
+        .join(" ");
 }

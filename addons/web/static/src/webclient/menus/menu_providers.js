@@ -1,6 +1,4 @@
-/** @odoo-module **/
-
-import { _lt } from "@web/core/l10n/translation";
+import { _t } from "@web/core/l10n/translation";
 import { registry } from "@web/core/registry";
 import { fuzzyLookup } from "@web/core/utils/search";
 import { computeAppsAndMenuItems } from "@web/webclient/menus/menu_helpers";
@@ -8,13 +6,14 @@ import { DefaultCommandItem } from "@web/core/commands/command_palette";
 
 import { Component } from "@odoo/owl";
 
-class AppIconCommand extends Component {}
-AppIconCommand.template = "web.AppIconCommand";
-AppIconCommand.props = {
-    webIconData: { type: String, optional: true },
-    webIcon: { type: Object, optional: true },
-    ...DefaultCommandItem.props,
-};
+class AppIconCommand extends Component {
+    static template = "web.AppIconCommand";
+    static props = {
+        webIconData: { type: String, optional: true },
+        webIcon: { type: Object, optional: true },
+        ...DefaultCommandItem.props,
+    };
+}
 
 const commandCategoryRegistry = registry.category("command_categories");
 commandCategoryRegistry.add("apps", { namespace: "/" }, { sequence: 10 });
@@ -22,9 +21,9 @@ commandCategoryRegistry.add("menu_items", { namespace: "/" }, { sequence: 20 });
 
 const commandSetupRegistry = registry.category("command_setup");
 commandSetupRegistry.add("/", {
-    emptyMessage: _lt("No menu found"),
-    name: _lt("menus"),
-    placeholder: _lt("Search for a menu..."),
+    emptyMessage: _t("No menu found"),
+    name: _t("menus"),
+    placeholder: _t("Search for a menu..."),
 });
 
 const commandProviderRegistry = registry.category("command_provider");
@@ -34,6 +33,12 @@ commandProviderRegistry.add("menu", {
         const result = [];
         const menuService = env.services.menu;
         let { apps, menuItems } = computeAppsAndMenuItems(menuService.getMenuAsTree("root"));
+        function isAvailable(menu) {
+            return (
+                env.services.offline.offline &&
+                !env.services.offline.isAvailableOffline(menu.actionID)
+            );
+        }
         if (options.searchValue !== "") {
             apps = fuzzyLookup(options.searchValue, apps, (menu) => menu.label);
 
@@ -45,6 +50,7 @@ commandProviderRegistry.add("menu", {
                         menuService.selectMenu(menu);
                     },
                     category: "menu_items",
+                    className: isAvailable(menu) ? "o_disabled_offline" : "",
                     name: menu.parents + " / " + menu.label,
                     href: menu.href || `#menu_id=${menu.id}&amp;action_id=${menu.actionID}`,
                 });
@@ -69,6 +75,7 @@ commandProviderRegistry.add("menu", {
                     menuService.selectMenu(menu);
                 },
                 category: "apps",
+                className: isAvailable(menu) ? "o_disabled_offline" : "",
                 name: menu.label,
                 href: menu.href || `#menu_id=${menu.id}&amp;action_id=${menu.actionID}`,
                 props,

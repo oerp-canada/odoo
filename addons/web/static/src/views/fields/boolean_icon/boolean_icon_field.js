@@ -1,8 +1,6 @@
-/** @odoo-module **/
-
 import { Component } from "@odoo/owl";
 import { registry } from "@web/core/registry";
-import { _lt } from "@web/core/l10n/translation";
+import { _t } from "@web/core/l10n/translation";
 import { standardFieldProps } from "../standard_field_props";
 
 export class BooleanIconField extends Component {
@@ -23,10 +21,10 @@ export class BooleanIconField extends Component {
 
 export const booleanIconField = {
     component: BooleanIconField,
-    displayName: _lt("Boolean Icon"),
+    displayName: _t("Boolean Icon"),
     supportedOptions: [
         {
-            label: _lt("Icon"),
+            label: _t("Icon"),
             name: "icon",
             type: "string",
         },

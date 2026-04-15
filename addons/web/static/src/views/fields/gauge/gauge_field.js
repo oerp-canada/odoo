@@ -1,21 +1,32 @@
-/** @odoo-module **/
-
-import { _lt, _t } from "@web/core/l10n/translation";
-import { loadJS } from "@web/core/assets";
+import { useLayoutEffect, useRef } from "@web/owl2/utils";
+import { _t } from "@web/core/l10n/translation";
+import { loadBundle } from "@web/core/assets";
 import { registry } from "@web/core/registry";
 import { formatFloat } from "@web/views/fields/formatters";
 import { standardFieldProps } from "@web/views/fields/standard_field_props";
 
-import { Component, onWillStart, useEffect, useRef } from "@odoo/owl";
+import { Component, onWillStart } from "@odoo/owl";
 
 export class GaugeField extends Component {
+    static template = "web.GaugeField";
+    static props = {
+        ...standardFieldProps,
+        maxValueField: { type: String, optional: true },
+        maxValue: { type: Number, optional: true },
+        maxTooltip: { type: String, optional: true },
+        title: { type: String, optional: true },
+    };
+    static defaultProps = {
+        maxValue: 100,
+    };
+
     setup() {
         this.chart = null;
         this.canvasRef = useRef("canvas");
 
-        onWillStart(() => loadJS("/web/static/lib/Chart/Chart.js"));
+        onWillStart(async () => await loadBundle("web.chartjs_lib"));
 
-        useEffect(() => {
+        useLayoutEffect(() => {
             this.renderChart();
             return () => {
                 if (this.chart) {
@@ -38,8 +49,11 @@ export class GaugeField extends Component {
 
     renderChart() {
         const gaugeValue = this.props.record.data[this.props.name];
-        let maxValue = Math.max(gaugeValue, this.props.record.data[this.props.maxValueField]);
-        let maxLabel = maxValue;
+        let maxValue = this.props.maxValueField
+            ? this.props.record.data[this.props.maxValueField]
+            : this.props.maxValue;
+        maxValue = Math.max(gaugeValue, maxValue);
+        let maxLabel = this.props.maxTooltip ?? maxValue;
         if (gaugeValue === 0 && maxValue === 0) {
             maxValue = 1;
             maxLabel = 0;
@@ -56,62 +70,68 @@ export class GaugeField extends Component {
                 ],
             },
             options: {
-                circumference: Math.PI,
-                rotation: -Math.PI,
+                circumference: 180,
+                rotation: 270,
                 responsive: true,
-                tooltips: {
-                    displayColors: false,
-                    callbacks: {
-                        label: function (tooltipItems) {
-                            if (tooltipItems.index === 0) {
-                                return _t("Value: ") + gaugeValue;
-                            }
-                            return _t("Max: ") + maxLabel;
+                maintainAspectRatio: false,
+                cutout: "70%",
+                layout: {
+                    padding: 5,
+                },
+                plugins: {
+                    title: {
+                        display: true,
+                        text: this.title,
+                        padding: 4,
+                    },
+                    tooltip: {
+                        displayColors: false,
+                        callbacks: {
+                            label: function (tooltipItem) {
+                                if (tooltipItem.dataIndex === 0) {
+                                    return _t("Value: %(value)s", { value: gaugeValue });
+                                }
+                                return _t("Max: %(max)s", { max: maxLabel });
+                            },
                         },
                     },
                 },
-                title: {
-                    display: true,
-                    text: this.title,
-                    padding: 4,
-                },
-                layout: {
-                    padding: {
-                        bottom: 5,
-                    },
-                },
-                maintainAspectRatio: false,
-                cutoutPercentage: 70,
+                aspectRatio: 2,
             },
         };
         this.chart = new Chart(this.canvasRef.el, config);
     }
 }
 
-GaugeField.template = "web.GaugeField";
-GaugeField.props = {
-    ...standardFieldProps,
-    maxValueField: { type: String },
-    title: { type: String, optional: true },
-};
-
 export const gaugeField = {
     component: GaugeField,
     supportedOptions: [
         {
-            label: _lt("Title"),
+            label: _t("Title"),
             name: "title",
             type: "string",
         },
         {
-            label: _lt("Max value field"),
-            name: "max_value",
+            label: _t("Max value field"),
+            name: "max_value_field",
             type: "field",
             availableTypes: ["integer", "float"],
         },
+        {
+            label: _t("Max value"),
+            name: "max_value",
+            type: "string",
+        },
+        {
+            label: _t("Max tooltip"),
+            name: "max_tooltip",
+            type: "string",
+        }
     ],
     extractProps: ({ options }) => ({
+        maxTooltip: options.max_tooltip,
         maxValueField: options.max_field,
+        maxValue: options.max_value,
         title: options.title,
     }),
 };

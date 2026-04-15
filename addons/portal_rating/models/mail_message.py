@@ -22,12 +22,12 @@ class MailMessage(models.Model):
             }
         return properties_names
 
-    def _portal_message_format(self, properties_names):
+    def _portal_message_format(self, properties_names, options=None):
         """ If requested, add rating information to returned formatted values.
 
         Note: rating information combine both statistics (see 'rating_get_stats'
         if available on model) and rating / publication information. """
-        vals_list = super()._portal_message_format(properties_names)
+        vals_list = super()._portal_message_format(properties_names, options=options)
         if not 'rating' in properties_names:
             return vals_list
 
@@ -41,7 +41,7 @@ class MailMessage(models.Model):
         }
 
         for message, values in zip(self, vals_list):
-            values["rating"] = message_to_rating.get(message.id, {})
+            values["rating_id"] = message_to_rating.get(message.id, {})
 
             record = self.env[message.model].browse(message.res_id)
             if hasattr(record, 'rating_get_stats'):
@@ -56,7 +56,8 @@ class MailMessage(models.Model):
         :param dict rating_values: values coming from reading ratings
           in database;
 
-        :return dict: updated rating_values
+        :returns: updated rating_values
+        :rtype: dict
         """
         publisher_id, publisher_name = rating_values['publisher_id'] or [False, '']
         rating_values['publisher_avatar'] = f'/web/image/res.partner/{publisher_id}/avatar_128/50x50' if publisher_id else ''

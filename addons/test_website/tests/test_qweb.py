@@ -6,19 +6,18 @@ import re
 
 from odoo import tools
 from odoo.addons.base.tests.common import TransactionCaseWithUserDemo
-from odoo.modules.module import get_module_resource
+from odoo.tests import tagged
+
+from odoo.addons.http_routing.tests.common import MockRequest
 
 
+@tagged('at_install', '-post_install')  # LEGACY at_install
 class TestQweb(TransactionCaseWithUserDemo):
-    def _load(self, module, *args):
-        tools.convert_file(
-            self.env, 'test_website',
-            get_module_resource(module, *args),
-            {}, 'init', False, 'test'
-        )
+    def _load(self, module, filepath):
+        tools.convert_file(self.env, module, filepath, {}, 'init')
 
     def test_qweb_cdn(self):
-        self._load('test_website', 'tests', 'template_qweb_test.xml')
+        self._load('test_website', 'tests/template_qweb_test.xml')
 
         website = self.env.ref('website.default_website')
         website.write({
@@ -36,22 +35,18 @@ class TestQweb(TransactionCaseWithUserDemo):
         html = demo_env['ir.qweb']._render('test_website.test_template', {"user": demo}, website_id=website.id)
         asset_bundle_xmlid = 'test_website.test_bundle'
         qweb = self.env['ir.qweb']
-        bundle = qweb._get_asset_bundle(asset_bundle_xmlid, css=True, js=True)
+        bundle = qweb._get_asset_bundle(asset_bundle_xmlid, css=True, js=True, assets_params={'website_id': website.id})
 
         asset_version_js = bundle.get_version('js')
         asset_version_css = bundle.get_version('css')
+        css_url, js_url = bundle.get_links()[-2:]
 
         html = html.strip()
         html = re.sub(r'\?unique=[^"]+', '', html).encode('utf8')
 
-        css_attachement = demo_env['ir.attachment'].search([('url', '=like', f'/web/assets/%-{asset_version_css}/{website.id}/test_website.test_bundle.%')])
-        js_attachement = demo_env['ir.attachment'].search([('url', '=like', f'/web/assets/%-{asset_version_js}/{website.id}/test_website.test_bundle.%')])
-        self.assertEqual(len(css_attachement), 1)
-        self.assertEqual(len(js_attachement), 1)
-
         format_data = {
-            "css": css_attachement.url,
-            "js": js_attachement.url,
+            "css": css_url,
+            "js": js_url,
             "user_id": demo.id,
             "filename": "Marc%20Demo",
             "alt": "Marc Demo",
@@ -82,3 +77,15 @@ class TestQweb(TransactionCaseWithUserDemo):
         <div widget="image"><img src="http://test.cdn/web/image/res.users/%(user_id)s/avatar_1920/%(filename)s" class="img img-fluid" alt="%(alt)s" loading="lazy"/></div>
     </body>
 </html>""" % format_data).encode('utf8'))
+
+        with MockRequest(self.env, website=website):
+            html = demo_env['ir.qweb']._render('test_website.test_template_tatt_qweb', {}, website_id=website.id)
+            self.assertHTMLEqual(html, ("""
+    <html>
+       <body><a href="/">1</a>
+        <a>2</a>
+        <a>3</a>
+        <a>4</a>
+        <a href="">5</a></body>
+    </html>
+    """))

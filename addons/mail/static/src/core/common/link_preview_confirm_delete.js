@@ -1,5 +1,4 @@
-/* @odoo-module */
-
+import { useSubEnv } from "@web/owl2/utils";
 import { Component } from "@odoo/owl";
 
 import { Dialog } from "@web/core/dialog/dialog";
@@ -7,26 +6,31 @@ import { useService } from "@web/core/utils/hooks";
 
 /**
  * @typedef {Object} Props
- * @property {import("@mail/core/common/link_preview_model").LinkPreview} linkPreview
+ * @property {import("models").LinkPreview} linkPreview
+ * @property {function} [delete] Function bound to the delete button
+ * @property {function} [deleteAll] Function bound to the delete all button
  * @property {function} close
  * @property {Component} LinkPreviewListComponent
  * @extends {Component<Props, Env>}
  */
 export class LinkPreviewConfirmDelete extends Component {
     static components = { Dialog };
-    static props = ["linkPreview", "close", "LinkPreview"];
+    static props = ["LinkPreview", "messageLinkPreview", "close"];
     static template = "mail.LinkPreviewConfirmDelete";
 
     setup() {
-        this.rpc = useService("rpc");
+        super.setup();
+        this.store = useService("mail.store");
+        useSubEnv({ inLinkPreviewConfirmDelete: true });
     }
 
     onClickOk() {
-        this.rpc(
-            "/mail/link_preview/delete",
-            { link_preview_id: this.props.linkPreview.id },
-            { shadow: true }
-        );
+        this.props.messageLinkPreview.hide();
+        this.props.close();
+    }
+
+    onClickDeleteAll() {
+        this.props.messageLinkPreview.message_id.hideAllLinkPreviews();
         this.props.close();
     }
 

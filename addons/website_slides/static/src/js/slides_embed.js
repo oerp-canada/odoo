@@ -1,5 +1,4 @@
-/* global PDFSlidesViewer */
-
+// @odoo-module ignore
 /**
  * This is a minimal version of the PDFViewer widget.
  * It is NOT use in the website_slides module, but it is called when embedding
@@ -28,7 +27,8 @@ $(function () {
             this.defaultpage = parseInt($viewer.find('#PDFSlideViewer').data('defaultpage'));
             this.canvas = $viewer.find('canvas')[0];
 
-            this.pdf_viewer = new PDFSlidesViewer(this.slide_url, this.canvas);
+            this.pdf_viewer = new globalThis.PDFSlidesViewer(this.slide_url, this.canvas);
+            this.hasSuggestions = !!this.$(".oe_slides_suggestion_media").length;
             this.pdf_viewer.loadDocument().then(function () {
                 self.on_loaded_file();
             });
@@ -43,9 +43,6 @@ $(function () {
                 this.$('canvas').show();
                 this.$('#page_count').text(this.pdf_viewer.pdf_page_total);
                 this.$('#PDFViewerLoader').hide();
-                if (this.pdf_viewer.pdf_page_total > 1) {
-                    this.$('.o_slide_navigation_buttons').removeClass('hide');
-                }
                 // init first page to display
                 var initpage = this.defaultpage;
                 var pageNum = (initpage > 0 && initpage <= this.pdf_viewer.pdf_page_total) ? initpage : 1;
@@ -76,6 +73,13 @@ $(function () {
                 }
             },
             next: function () {
+                if (
+                    this.pdf_viewer.pdf_page_current >=
+                    this.pdf_viewer.pdf_page_total + this.hasSuggestions
+                ) {
+                    return;
+                }
+
                 var self = this;
                 this.pdf_viewer.nextPage().then(function (pageNum) {
                     if (pageNum) {
@@ -88,12 +92,22 @@ $(function () {
                 });
             },
             previous: function () {
+                const slideSuggestOverlay = this.$("#slide_suggest");
+                if (!slideSuggestOverlay.hasClass('d-none')) {
+                    // Hide suggested slide overlay before changing page nb.
+                    slideSuggestOverlay.addClass('d-none');
+                    this.$("#next").removeClass("disabled");
+                    if (this.pdf_viewer.pdf_page_total <= 1) {
+                        this.$("#previous, #first").addClass("disabled");
+                    }
+                    return;
+                }
                 var self = this;
                 this.pdf_viewer.previousPage().then(function (pageNum) {
                     if (pageNum) {
                         self.on_rendered_page(pageNum);
                     }
-                    self.$("#slide_suggest").addClass('d-none');
+                    slideSuggestOverlay.addClass('d-none');
                 });
             },
             first: function () {
@@ -123,11 +137,16 @@ $(function () {
                 }
             },
             navUpdate: function (pageNum) {
-                this.$('#first').toggleClass('disabled', pageNum < 3 );
-                this.$('#previous').toggleClass('disabled', pageNum < 2 );
-                this.$('#next, #last').removeClass('disabled');
-                this.$('#zoomout').toggleClass('disabled', this.pdf_viewer.pdf_zoom <= MIN_ZOOM);
-                this.$('#zoomin').toggleClass('disabled', this.pdf_viewer.pdf_zoom >= MAX_ZOOM);
+                const pagesCount = this.pdf_viewer.pdf_page_total + this.hasSuggestions;
+                this.$("#first").toggleClass("disabled", pagesCount < 2 || pageNum < 2);
+                this.$("#last").toggleClass(
+                    "disabled",
+                    pagesCount < 2 || pageNum >= this.pdf_viewer.pdf_page_total
+                );
+                this.$("#next").toggleClass("disabled", pageNum >= pagesCount);
+                this.$("#previous").toggleClass("disabled", pageNum <= 1);
+                this.$("#zoomout").toggleClass("disabled", this.pdf_viewer.pdf_zoom <= MIN_ZOOM);
+                this.$("#zoomin").toggleClass("disabled", this.pdf_viewer.pdf_zoom >= MAX_ZOOM);
             },
             // full screen mode
             fullscreen: function () {
@@ -140,8 +159,9 @@ $(function () {
             },
             // display suggestion displayed after last slide
             display_suggested_slides: function () {
-                this.$("#slide_suggest").removeClass('d-none');
-                this.$('#next, #last').addClass('disabled');
+                this.$("#slide_suggest").removeClass("d-none");
+                this.$("#next, #last").addClass("disabled");
+                this.$("#previous, #first").removeClass("disabled");
             },
         };
 
@@ -192,10 +212,10 @@ $(function () {
 
         // switching slide with keyboard
         $(document).keydown(function (ev) {
-            if (ev.keyCode === 37 || ev.keyCode === 38) {
+            if (ev.key === "ArrowLeft" || ev.key === "ArrowUp") {
                 embeddedViewer.previous();
             }
-            if (ev.keyCode === 39 || ev.keyCode === 40) {
+            if (ev.key === "ArrowRight" || ev.key === "ArrowDown") {
                 embeddedViewer.next();
             }
         });
@@ -219,17 +239,6 @@ $(function () {
                 $(this).find('.oe_slides_suggestion_caption').stop().slideUp(250);
             }
         );
-
-        // embed widget page selector
-        $('.oe_slide_js_embed_code_widget input').on('change', function () {
-            var page = parseInt($(this).val());
-            if (!(page > 0 && page <= embeddedViewer.pdf_viewer.pdf_page_total)) {
-                page = 1;
-            }
-            var actualCode = embeddedViewer.$('.slide_embed_code').val();
-            var newCode = actualCode.replace(/(page=).*?([^\d]+)/, '$1' + page + '$2');
-            embeddedViewer.$('.slide_embed_code').val(newCode);
-        });
 
         // To avoid create a dependancy to openerpframework.js, we use JQuery AJAX to post data instead of ajax.jsonRpc
         $('.oe_slide_js_share_email button').on('click', function () {
