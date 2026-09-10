@@ -127,6 +127,12 @@ class PaymentTransaction(models.Model):
             if not any(child.state in ['done', 'cancel'] for child in tx.child_transaction_ids):
                 tx.with_company(tx.company_id)._create_payment()
 
+        # Add the provider reference to payments created before their transaction (e.g., paid with
+        # a token from the payment register wizard), as done for payments created by transactions.
+        for tx in self.filtered(lambda t: t.payment_id and t.provider_reference):
+            if tx.provider_reference not in (tx.payment_id.ref or ''):
+                tx.payment_id.ref = f'{tx.payment_id.ref or tx.reference} - {tx.provider_reference}'
+
     def _create_payment(self, **extra_create_values):
         """Create an `account.payment` record for the current transaction.
 
